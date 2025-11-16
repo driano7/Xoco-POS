@@ -1,0 +1,48 @@
+@import url('https://fonts.googleapis.com/css2?family=Lato:wght@400;500;600;700&display=swap');
+@import 'tailwindcss/base';
+@import 'tailwindcss/components';
+@import 'tailwindcss/utilities';
+
+:root {
+  --brand-bg: #f8f4f1;
+  --brand-surface: #fffdfb;
+  --brand-text: #3b2c27;
+  --brand-muted: #725e56;
+  --brand-ring: rgba(96, 75, 65, 0.35);
+}
+
+.dark {
+  --brand-bg: #382f31;
+  --brand-surface: #403836;
+  --brand-text: #f8f4f1;
+  --brand-muted: #beaaa4;
+  --brand-ring: rgba(247, 179, 98, 0.4);
+}
+
+@layer base {
+  * {
+    @apply border-transparent;
+  }
+
+  body {
+    @apply min-h-screen bg-[var(--brand-bg)] font-sans text-[var(--brand-text)] antialiased;
+  }
+
+  .card {
+    @apply rounded-3xl border border-primary-100 bg-[var(--brand-surface)] shadow-xl shadow-primary-900/5 transition duration-300 dark:border-white/10 dark:bg-primary-900/30;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full bg-primary-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-primary-700 dark:bg-primary-800/40 dark:text-primary-100;
+  }
+}
+
+@layer components {
+  .brand-button {
+    @apply inline-flex items-center justify-center rounded-full bg-primary-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-primary-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-ring)];
+  }
+
+  .brand-button--ghost {
+    @apply inline-flex items-center justify-center rounded-full border border-primary-300 px-5 py-3 text-sm font-semibold text-primary-700 transition hover:bg-primary-100 dark:border-white/30 dark:text-white dark:hover:bg-white/10;
+  }
+}
