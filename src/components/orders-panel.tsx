@@ -23,13 +23,37 @@ const formatOrderCustomer = (order: Order) => {
   const first = (order.user?.firstName ?? order.user?.firstNameEncrypted ?? '').trim();
   const last = (order.user?.lastName ?? order.user?.lastNameEncrypted ?? '').trim();
   const name = `${first} ${last}`.trim() || order.user?.email?.trim() || '';
-  const identifier = order.user?.clientId ?? order.userId ?? '';
+  const identifier = order.clientId ?? order.user?.clientId ?? order.userId ?? '';
 
   if (name && identifier) {
     return `${name} · ${identifier}`;
   }
 
   return name || identifier || 'Cliente';
+};
+
+const buildOrderSearchTerms = (order: Order) => {
+  const names = [
+    order.user?.firstName,
+    order.user?.lastName,
+    order.user?.firstNameEncrypted,
+    order.user?.lastNameEncrypted,
+  ]
+    .filter((value): value is string => Boolean(value && value.trim()))
+    .map((value) => value.trim());
+  const fullName = names.length ? names.join(' ') : null;
+  return [
+    order.id,
+    order.orderNumber,
+    order.ticketCode,
+    order.shortCode,
+    order.clientId,
+    order.user?.clientId,
+    order.user?.email,
+    order.userId,
+    ...names,
+    fullName,
+  ].filter((value): value is string => Boolean(value && value.trim()));
 };
 
 interface OrdersPanelProps {
@@ -48,9 +72,7 @@ export function OrdersPanel({ onSelect }: OrdersPanelProps = {}) {
     }
     const term = filter.trim().toLowerCase();
     const matches = (value?: string | null) => value?.toLowerCase().includes(term) ?? false;
-    return orders.filter((order) =>
-      [order.id, order.orderNumber, order.ticketCode, order.shortCode].some(matches)
-    );
+    return orders.filter((order) => buildOrderSearchTerms(order).some(matches));
   }, [filter, orders]);
 
   const pending = filtered.filter((order) => order.status === 'pending');
@@ -79,12 +101,14 @@ export function OrdersPanel({ onSelect }: OrdersPanelProps = {}) {
               }}
               className="flex flex-col gap-1"
             >
-              <label className="font-semibold uppercase tracking-[0.25em]">Buscar ID</label>
+              <label className="font-semibold uppercase tracking-[0.25em]">
+                Buscar ID o nombre
+              </label>
               <div className="flex flex-wrap items-center gap-2">
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="ID del pedido"
+                  placeholder="ID, nombre o email del cliente"
                   className="rounded-xl border border-primary-100/70 px-3 py-1 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/5 dark:text-white"
                 />
                 <button type="submit" className="brand-button text-xs">
@@ -260,9 +284,7 @@ const OrdersHistoryModal = ({
     }
     const term = query.trim().toLowerCase();
     const matches = (value?: string | null) => value?.toLowerCase().includes(term) ?? false;
-    return orders.filter((order) =>
-      [order.id, order.orderNumber, order.ticketCode, order.shortCode].some(matches)
-    );
+    return orders.filter((order) => buildOrderSearchTerms(order).some(matches));
   }, [orders, query]);
 
   const list = filtered;
@@ -287,11 +309,11 @@ const OrdersHistoryModal = ({
           }}
         >
           <label className="flex flex-col text-[var(--brand-muted)] dark:text-white/70">
-            <span className="font-semibold uppercase tracking-[0.25em]">Buscar ID</span>
+            <span className="font-semibold uppercase tracking-[0.25em]">Buscar ID o nombre</span>
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="ID del pedido"
+              placeholder="ID, nombre o email del cliente"
               className="mt-1 rounded-xl border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:text-white"
             />
           </label>
@@ -311,7 +333,7 @@ const OrdersHistoryModal = ({
         {list.length === 0 ? (
           <p className="text-sm text-[var(--brand-muted)] dark:text-white/80">
             {query
-              ? 'No encontramos pedidos pasados con ese ID.'
+              ? 'No encontramos pedidos pasados con ese ID o nombre.'
               : isFiltered
                 ? 'No encontramos pedidos pasados con ese filtro.'
                 : 'No hay pedidos pasados en este momento.'}

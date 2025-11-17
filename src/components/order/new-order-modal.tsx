@@ -11,6 +11,11 @@ const formatCurrency = (value?: number | null) =>
 const TIP_PRESETS = [5, 10, 15, 20];
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const DIGITS = '0123456789';
+const PUBLIC_SALE_CLIENT_ID = (process.env.NEXT_PUBLIC_PUBLIC_SALE_CLIENT_ID ?? 'AAA-1111').trim();
+const PUBLIC_SALE_USER_ID =
+  (process.env.NEXT_PUBLIC_PUBLIC_SALE_USER_ID ?? process.env.NEXT_PUBLIC_PUBLIC_SALE_CLIENT_ID)?.trim() ??
+  'AAA-1111';
+const PUBLIC_SALE_CLIENT_ID_LOWER = PUBLIC_SALE_CLIENT_ID.toLowerCase();
 
 const generateTicketCode = () => {
   const digits = Array.from({ length: 2 }, () => DIGITS[Math.floor(Math.random() * DIGITS.length)]);
@@ -68,14 +73,26 @@ export function NewOrderModal({ onClose, onSuccess, prefillClientId }: NewOrderM
   const [clientLookupError, setClientLookupError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isPublicSale, setIsPublicSale] = useState(false);
 
   useEffect(() => () => clearCart(), [clearCart]);
 
   useEffect(() => {
     const trimmed = prefillClientId?.trim();
     if (!trimmed) {
+      setIsPublicSale(false);
       return;
     }
+    if (trimmed.toLowerCase() === PUBLIC_SALE_CLIENT_ID_LOWER) {
+      setIsPublicSale(true);
+      setClientIdInput(PUBLIC_SALE_CLIENT_ID);
+      setValidatedCustomer(null);
+      setValidatedIdentifier(null);
+      setClientLookupState('idle');
+      setClientLookupError(null);
+      return;
+    }
+    setIsPublicSale(false);
     setClientIdInput(trimmed);
     setValidatedCustomer(null);
     setValidatedIdentifier(null);
@@ -161,9 +178,13 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
     setClientLookupError(null);
     setClientLookupState('idle');
     setFormError(null);
+    setIsPublicSale(false);
   };
 
   const handleClientLookup = async () => {
+    if (isPublicSale) {
+      return;
+    }
     const trimmed = clientIdInput.trim();
     if (!trimmed) {
       setClientLookupState('error');
@@ -202,7 +223,9 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
       return;
     }
     const trimmedClientId = clientIdInput.trim();
-    if (trimmedClientId && trimmedClientId.toLowerCase() !== validatedIdentifier) {
+    const isUsingPublicSaleId =
+      isPublicSale && trimmedClientId.toLowerCase() === PUBLIC_SALE_CLIENT_ID_LOWER;
+    if (trimmedClientId && !isUsingPublicSaleId && trimmedClientId.toLowerCase() !== validatedIdentifier) {
       setFormError('Valida el ID del cliente antes de registrar el pedido.');
       return;
     }
@@ -213,10 +236,11 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
     try {
       const ticketCode = generateTicketCode();
 
-      const payload = {
-        ticketCode,
-        status: 'pending',
-        currency: 'MXN',
+    const fallbackUserId = isUsingPublicSaleId ? PUBLIC_SALE_USER_ID : undefined;
+    const payload = {
+      ticketCode,
+      status: 'pending',
+      currency: 'MXN',
         items: items.map((item) => ({
           productId: item.productId,
           name: item.name,
@@ -235,8 +259,8 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
           amount: tipAmount,
           percent: appliedPercent,
         },
-        userId: validatedCustomer?.id ?? undefined,
-        clientId: validatedCustomer?.clientId ?? undefined,
+        userId: validatedCustomer?.id ?? fallbackUserId ?? undefined,
+        clientId: trimmedClientId || undefined,
         metadata: notes.trim() || undefined,
       };
 
@@ -413,25 +437,58 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
               setValidatedIdentifier(null);
               setClientLookupError(null);
               setClientLookupState('idle');
+              setIsPublicSale(false);
             }}
             placeholder="ID del cliente o folio de lealtad"
+            disabled={isPublicSale}
             className="flex-1 rounded-xl border border-primary-100/70 px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/5 dark:text-white"
           />
-          <button
-            type="button"
-            onClick={() => void handleClientLookup()}
-            className="brand-button text-xs"
-            disabled={clientLookupState === 'loading'}
-          >
-            {clientLookupState === 'loading' ? 'Validando…' : 'Validar ID'}
-          </button>
+          <div className="flex flex-col gap-2 text-xs">
+            <label className="inline-flex items-center gap-2 font-semibold text-[var(--brand-muted)]">
+              <input
+                type="checkbox"
+                checked={isPublicSale}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  setIsPublicSale(checked);
+                  if (checked) {
+                    setClientIdInput(PUBLIC_SALE_CLIENT_ID);
+                    setValidatedCustomer(null);
+                    setValidatedIdentifier(null);
+                    setClientLookupError(null);
+                    setClientLookupState('idle');
+                  } else {
+                    setClientIdInput('');
+                    setValidatedCustomer(null);
+                    setValidatedIdentifier(null);
+                    setClientLookupError(null);
+                    setClientLookupState('idle');
+                  }
+                }}
+                className="h-4 w-4 rounded border-primary-300 text-primary-600 focus:ring-primary-500"
+              />
+              Venta al público (ID {PUBLIC_SALE_CLIENT_ID})
+            </label>
+            <button
+              type="button"
+              onClick={() => void handleClientLookup()}
+              className="brand-button text-xs"
+              disabled={clientLookupState === 'loading' || isPublicSale}
+            >
+              {clientLookupState === 'loading' ? 'Validando…' : 'Validar ID'}
+            </button>
+          </div>
         </div>
-        {clientLookupState === 'success' && validatedCustomer && (
+        {isPublicSale ? (
+          <div className="mt-2 rounded-xl border border-primary-200/70 bg-primary-50/70 px-3 py-2 text-xs text-primary-700 dark:border-white/20 dark:bg-white/5 dark:text-white">
+            Venta al público activada · ID {PUBLIC_SALE_CLIENT_ID}
+          </div>
+        ) : clientLookupState === 'success' && validatedCustomer ? (
           <div className="mt-2 rounded-xl border border-emerald-200/70 bg-emerald-50/70 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-900/30 dark:text-emerald-100">
             Cliente encontrado: {getClientLabel(validatedCustomer)} · ID{' '}
             {validatedCustomer.clientId ?? validatedCustomer.id}
           </div>
-        )}
+        ) : null}
         {clientLookupState === 'error' && clientLookupError && (
           <div className="mt-2 rounded-xl border border-danger-200/70 bg-danger-50/70 px-3 py-2 text-xs text-danger-700 dark:border-danger-500/30 dark:bg-danger-900/30 dark:text-danger-100">
             {clientLookupError}

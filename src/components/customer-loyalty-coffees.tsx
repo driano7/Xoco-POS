@@ -1,13 +1,14 @@
 'use client';
 
+const RAW_TARGET = Number(process.env.NEXT_PUBLIC_LOYALTY_TARGET ?? 6);
+const MAX_COFFEES = Number.isFinite(RAW_TARGET) && RAW_TARGET > 0 ? Math.floor(RAW_TARGET) : 6;
+
 interface CustomerLoyaltyCoffeesProps {
   count?: number | null;
   customerName?: string | null;
   statusLabel?: string;
   subtitle?: string;
 }
-
-const MAX_COFFEES = 7;
 
 export function CustomerLoyaltyCoffees({
   count = 0,
@@ -66,4 +67,3 @@ export function CustomerLoyaltyCoffees({
     </div>
   );
 }
-

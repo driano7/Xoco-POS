@@ -33,6 +33,7 @@ export interface OrderItemSummary {
 
 export interface Order {
   id: string;
+  clientId?: string | null;
   userId?: string | null;
   orderNumber?: string | null;
   ticketCode?: string | null;
@@ -72,6 +73,7 @@ export interface PrepOrder {
   total?: number | null;
   currency?: string | null;
   userId?: string | null;
+  clientId?: string | null;
   createdAt?: string | null;
 }
 
@@ -111,6 +113,12 @@ export interface PrepTask {
     role?: string | null;
     firstNameEncrypted?: string | null;
     lastNameEncrypted?: string | null;
+  } | null;
+  customer?: {
+    id?: string | null;
+    clientId?: string | null;
+    email?: string | null;
+    name?: string | null;
   } | null;
 }
 

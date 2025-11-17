@@ -6,6 +6,14 @@ const PRODUCTS_TABLE = process.env.SUPABASE_PRODUCTS_TABLE ?? 'products';
 const LOYALTY_PUNCHES_TABLE = process.env.SUPABASE_LOYALTY_PUNCHES_TABLE ?? 'loyalty_points';
 const LOYALTY_TIMEZONE = process.env.LOYALTY_TIMEZONE ?? 'America/Mexico_City';
 const AMERICANO_KEYWORDS = ['americano'];
+const PUBLIC_SALE_IDENTIFIERS = [
+  process.env.SUPABASE_PUBLIC_SALE_USER_ID,
+  process.env.NEXT_PUBLIC_PUBLIC_SALE_USER_ID,
+  process.env.SUPABASE_PUBLIC_SALE_CLIENT_ID,
+  process.env.NEXT_PUBLIC_PUBLIC_SALE_CLIENT_ID,
+]
+  .map((value) => value?.trim().toLowerCase())
+  .filter(Boolean);
 
 const normalizeText = (value?: string | null) =>
   (value ?? '')
@@ -100,6 +108,14 @@ const loadOrderItems = async (orderId: string, snapshot: unknown): Promise<ItemS
   return fetchItemsFromDatabase(orderId);
 };
 
+const isPublicSaleUser = (userId?: string | null) => {
+  if (!userId) {
+    return false;
+  }
+  const normalized = userId.trim().toLowerCase();
+  return PUBLIC_SALE_IDENTIFIERS.includes(normalized);
+};
+
 export const maybeAwardDailyCoffee = async (
   orderId: string,
   userId?: string | null,
@@ -117,13 +133,14 @@ export const maybeAwardDailyCoffee = async (
 
     const punchDate = formatMexicoDate();
 
-    const { data: existing, error: existingError } = await supabaseAdmin
-      .from(LOYALTY_PUNCHES_TABLE)
-      .select('id')
-      .eq('userId', userId)
-      .eq('punchDate', punchDate)
-      .limit(1)
-      .maybeSingle();
+    let query = supabaseAdmin.from(LOYALTY_PUNCHES_TABLE).select('id').limit(1);
+    if (isPublicSaleUser(userId)) {
+      query = query.eq('orderId', orderId);
+    } else {
+      query = query.eq('userId', userId).eq('punchDate', punchDate);
+    }
+
+    const { data: existing, error: existingError } = await query.maybeSingle();
 
     if (existingError && existingError.code !== 'PGRST116') {
       console.warn('No se pudo verificar sellos previos de lealtad:', existingError);

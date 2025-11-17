@@ -8,6 +8,64 @@ const TICKETS_TABLE = process.env.SUPABASE_TICKETS_TABLE ?? 'tickets';
 const ORDER_CODES_TABLE = process.env.SUPABASE_ORDER_CODES_TABLE ?? 'order_codes';
 const ORDER_ITEMS_TABLE = process.env.SUPABASE_ORDER_ITEMS_TABLE ?? 'order_items';
 const PRODUCTS_TABLE = process.env.SUPABASE_PRODUCTS_TABLE ?? 'products';
+const USERS_TABLE = process.env.SUPABASE_USERS_TABLE ?? 'users';
+const ORDER_CLIENT_ID_COLUMN =
+  process.env.SUPABASE_ORDERS_CLIENT_ID_COLUMN?.trim() || null;
+
+const sanitizeEnv = (value?: string | null) => value?.trim() || null;
+
+const PUBLIC_SALE_CLIENT_ID =
+  sanitizeEnv(process.env.SUPABASE_PUBLIC_SALE_CLIENT_ID) ??
+  sanitizeEnv(process.env.NEXT_PUBLIC_PUBLIC_SALE_CLIENT_ID) ??
+  'AAA-1111';
+const PUBLIC_SALE_USER_ID =
+  sanitizeEnv(process.env.SUPABASE_PUBLIC_SALE_USER_ID) ??
+  sanitizeEnv(process.env.NEXT_PUBLIC_PUBLIC_SALE_USER_ID) ??
+  PUBLIC_SALE_CLIENT_ID;
+
+const ensurePublicSaleUser = async () => {
+  if (!PUBLIC_SALE_USER_ID) {
+    return;
+  }
+
+  const identifier = PUBLIC_SALE_CLIENT_ID ?? PUBLIC_SALE_USER_ID;
+
+  const { data: existing, error } = await supabaseAdmin
+    .from(USERS_TABLE)
+    .select('id')
+    .or(`id.eq.${PUBLIC_SALE_USER_ID},"clientId".eq.${identifier}`)
+    .limit(1)
+    .maybeSingle();
+
+  if (existing) {
+    return;
+  }
+
+  if (error && error.code !== 'PGRST116') {
+    throw new Error(`Failed to verify public sale user: ${error.message}`);
+  }
+
+  const email =
+    process.env.SUPABASE_PUBLIC_SALE_EMAIL ??
+    'venta-publico@xoco-pos.local';
+
+  const insertPayload: Record<string, string> = {
+    id: PUBLIC_SALE_USER_ID,
+    clientId: identifier,
+  };
+
+  if (email) {
+    insertPayload.email = email;
+  }
+
+  const { error: insertError } = await supabaseAdmin.from(USERS_TABLE).upsert(insertPayload, {
+    onConflict: 'id',
+  });
+
+  if (insertError) {
+    throw new Error(`Failed to upsert public sale user: ${insertError.message}`);
+  }
+};
 const MAX_RESULTS = Number(process.env.ORDERS_LIMIT ?? 100);
 
 const TICKET_CODE_PREFIX = 'XL-';
@@ -206,42 +264,49 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
 
+    const orderSelectFields = [
+      'id',
+      '"userId"',
+      '"orderNumber"',
+      'status',
+      'total',
+      'currency',
+      '"items"',
+      '"createdAt"',
+      '"updatedAt"',
+    ];
+    if (ORDER_CLIENT_ID_COLUMN) {
+      orderSelectFields.push(`clientId:${ORDER_CLIENT_ID_COLUMN}`);
+    }
+    orderSelectFields.push(
+      [
+        'user:users(',
+        [
+          '"firstNameEncrypted"',
+          '"firstNameIv"',
+          '"firstNameTag"',
+          '"firstNameSalt"',
+          '"lastNameEncrypted"',
+          '"lastNameIv"',
+          '"lastNameTag"',
+          '"lastNameSalt"',
+          '"phoneEncrypted"',
+          '"phoneIv"',
+          '"phoneTag"',
+          '"phoneSalt"',
+          '"clientId"',
+          '"email"',
+        ].join(','),
+        ')',
+      ].join('')
+    );
+    orderSelectFields.push(
+      `order_items:${ORDER_ITEMS_TABLE}(id,"productId",quantity,price)`
+    );
+
     let query = supabaseAdmin
       .from(ORDERS_TABLE)
-      .select(
-        [
-          'id',
-          '"userId"',
-          '"orderNumber"',
-          'status',
-          'total',
-          'currency',
-          '"items"',
-          '"createdAt"',
-          '"updatedAt"',
-          [
-            'user:users(',
-            [
-              '"firstNameEncrypted"',
-              '"firstNameIv"',
-              '"firstNameTag"',
-              '"firstNameSalt"',
-              '"lastNameEncrypted"',
-              '"lastNameIv"',
-              '"lastNameTag"',
-              '"lastNameSalt"',
-              '"phoneEncrypted"',
-              '"phoneIv"',
-              '"phoneTag"',
-              '"phoneSalt"',
-              '"clientId"',
-              '"email"',
-            ].join(','),
-            ')',
-          ].join(''),
-          `order_items:${ORDER_ITEMS_TABLE}(id,"productId",quantity,price)`,
-        ].join(',')
-      )
+      .select(orderSelectFields.join(','))
       .order('createdAt', { ascending: false })
       .limit(MAX_RESULTS);
 
@@ -376,8 +441,29 @@ export async function POST(request: Request) {
       normalizeNumber(payload?.tip?.amount) ??
       null;
     const tipPercent = normalizeNumber(payload?.tip?.percent);
-    const userId =
+    const payloadUserId =
       typeof payload.userId === 'string' && payload.userId.trim() ? payload.userId.trim() : null;
+    const clientId =
+      typeof payload.clientId === 'string' && payload.clientId.trim() ? payload.clientId.trim() : null;
+    const userId =
+      payloadUserId ??
+      (clientId &&
+      PUBLIC_SALE_CLIENT_ID &&
+      PUBLIC_SALE_USER_ID &&
+      clientId.toLowerCase() === PUBLIC_SALE_CLIENT_ID.toLowerCase()
+        ? PUBLIC_SALE_USER_ID
+        : null);
+
+    const normalizedClientId = clientId?.toLowerCase() ?? null;
+    const normalizedPublicClient = PUBLIC_SALE_CLIENT_ID?.toLowerCase() ?? null;
+    const normalizedPublicUserId = PUBLIC_SALE_USER_ID?.toLowerCase() ?? null;
+    const isPublicSaleContext =
+      (normalizedClientId && normalizedPublicClient && normalizedClientId === normalizedPublicClient) ||
+      (payloadUserId && normalizedPublicUserId && payloadUserId.toLowerCase() === normalizedPublicUserId);
+
+    if (isPublicSaleContext) {
+      await ensurePublicSaleUser();
+    }
 
     const items = normalizeOrderItems(payload?.items);
 
@@ -408,6 +494,9 @@ export async function POST(request: Request) {
 
     if (userId) {
       orderRecord.userId = userId;
+    }
+    if (clientId && ORDER_CLIENT_ID_COLUMN) {
+      orderRecord[ORDER_CLIENT_ID_COLUMN] = clientId;
     }
 
     const totalsPayload: Record<string, number | null> = {};

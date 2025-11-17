@@ -379,6 +379,7 @@ const buildOrderFromTicketDetail = (detail: TicketDetail, fallback?: ScannedTick
   return {
     id: detail.order.id,
     userId: detail.order.userId ?? detail.ticket.userId ?? detail.customer?.id ?? '',
+    clientId: detail.customer?.clientId ?? fallback?.customer?.clientId ?? null,
     orderNumber: detail.ticket.ticketCode ?? detail.order.id,
     ticketCode: detail.ticket.ticketCode ?? null,
     status: (detail.order.status as Order['status']) ?? 'pending',
@@ -417,6 +418,7 @@ const buildOrderFromTicketPayload = (ticket: ScannedTicket): Order => {
   return {
     id: ticket.ticketId,
     userId: ticket.customer?.id ?? '',
+    clientId: ticket.customer?.clientId ?? null,
     orderNumber: ticket.ticketId,
     ticketCode: ticket.ticketId,
     status: 'pending',
@@ -439,6 +441,48 @@ const buildOrderFromTicketPayload = (ticket: ScannedTicket): Order => {
 const formatReservationCustomer = (reservation: Reservation) =>
   formatCustomerDisplay(reservation.user, reservation.userId);
 
+const buildReservationSearchTerms = (reservation: Reservation) => {
+  const names = [
+    reservation.user?.firstName,
+    reservation.user?.lastName,
+    reservation.user?.firstNameEncrypted,
+    reservation.user?.lastNameEncrypted,
+  ]
+    .filter((value): value is string => Boolean(value && value.trim()))
+    .map((value) => value.trim());
+  const fullName = names.length ? names.join(' ') : null;
+  const extras = [
+    reservation.user?.email,
+    reservation.user?.clientId,
+    reservation.userId,
+    fullName,
+    reservation.branchId,
+    reservation.branchNumber,
+  ];
+  return [
+    reservation.id,
+    reservation.reservationCode,
+    ...names,
+    ...extras,
+  ].filter((value): value is string => Boolean(value && value.trim()));
+};
+
+const buildPrepTaskSearchTerms = (task: PrepTask) => {
+  const customerValues = [
+    task.customer?.name,
+    task.customer?.email,
+    task.customer?.clientId,
+    task.order?.clientId,
+    task.order?.userId,
+  ];
+  const productValues = [task.product?.name, task.product?.category, task.product?.subcategory];
+  const orderValues = [task.order?.orderNumber, task.order?.id, task.id];
+  const handlerValues = [task.handler?.email];
+  return [...customerValues, ...productValues, ...orderValues, ...handlerValues].filter(
+    (value): value is string => Boolean(value && value.trim())
+  );
+};
+
 const extractCustomerPhone = (user?: MaybeCustomer | null) => {
   if (!user || typeof user.phone !== 'string') {
     return '';
@@ -454,11 +498,50 @@ const getCustomerDisplayName = (customer?: LoyaltyCustomer | null) => {
   return customer.clientId || customer.email || `${customer.userId.slice(0, 6)}…`;
 };
 
+const THREE_HOURS_MS = 3 * 60 * 60 * 1000;
+const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+
 const groupPrepTasks = (tasks: PrepTask[]) => {
   const activeStatuses = new Set(['pending', 'in_progress']);
-  const active = tasks.filter((task) => activeStatuses.has(task.status));
-  const completed = tasks.filter((task) => !activeStatuses.has(task.status));
-  return { active, completed };
+  const active: PrepTask[] = [];
+  const completed: PrepTask[] = [];
+  const past: PrepTask[] = [];
+  const now = Date.now();
+
+  tasks.forEach((task) => {
+    const createdAtMs = task.createdAt ? new Date(task.createdAt).getTime() : null;
+    const age = createdAtMs ? now - createdAtMs : 0;
+    const isExpired = createdAtMs ? age >= TWO_DAYS_MS : false;
+
+    if (task.status === 'completed') {
+      if (isExpired) {
+        return;
+      }
+      completed.push(task);
+      return;
+    }
+
+    if (activeStatuses.has(task.status)) {
+      if (age >= THREE_HOURS_MS) {
+        if (!isExpired) {
+          past.push(task);
+        }
+        return;
+      }
+      active.push(task);
+      return;
+    }
+
+    if (age >= THREE_HOURS_MS) {
+      if (!isExpired) {
+        past.push(task);
+      }
+    } else {
+      active.push(task);
+    }
+  });
+
+  return { active, completed, past };
 };
 
 type DetailState =
@@ -592,6 +675,9 @@ export function PosDashboard() {
   const [snackbar, setSnackbar] = useState<string | null>(null);
   const [showNewOrderForm, setShowNewOrderForm] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const [prepSearchInput, setPrepSearchInput] = useState('');
+  const [prepFilter, setPrepFilter] = useState('');
+  const [showPastPrepModal, setShowPastPrepModal] = useState(false);
   const {
     beverageOptions,
     foodOptions,
@@ -626,9 +712,7 @@ export function PosDashboard() {
     const term = reservationFilter.trim().toLowerCase();
     const matches = (value?: string | null) => value?.toLowerCase().includes(term) ?? false;
     const filterList = (list: Reservation[]) =>
-      list.filter((reservation) =>
-        [reservation.id, reservation.reservationCode].some(matches)
-      );
+      list.filter((reservation) => buildReservationSearchTerms(reservation).some(matches));
     return {
       pending: filterList(basePendingReservations),
       past: filterList(basePastReservations),
@@ -643,9 +727,29 @@ export function PosDashboard() {
     past: basePastReservations.length,
     completed: baseCompletedReservations.length,
   };
-  const { active: activePrep, completed: completedPrep } = useMemo(
+  const { active: baseActivePrep, completed: baseCompletedPrep, past: pastPrep } = useMemo(
     () => groupPrepTasks(prepTasks),
     [prepTasks]
+  );
+  const normalizedPrepFilter = prepFilter.trim().toLowerCase();
+  const filterPrepList = useCallback(
+    (list: PrepTask[]) => {
+      if (!normalizedPrepFilter) {
+        return list;
+      }
+      const matches = (value?: string | null) =>
+        value?.toLowerCase().includes(normalizedPrepFilter) ?? false;
+      return list.filter((task) => buildPrepTaskSearchTerms(task).some(matches));
+    },
+    [normalizedPrepFilter]
+  );
+  const activePrep = useMemo(
+    () => filterPrepList(baseActivePrep),
+    [baseActivePrep, filterPrepList]
+  );
+  const completedPrep = useMemo(
+    () => filterPrepList(baseCompletedPrep),
+    [baseCompletedPrep, filterPrepList]
   );
   const topCustomer = loyaltyStats?.topCustomer ?? null;
   const totalSales = payments?.totalAmount ?? 0;
@@ -919,7 +1023,8 @@ export function PosDashboard() {
               const orderFromDetail = buildOrderFromTicketDetail(detail, parsed.data);
               setDetail({ type: 'order', data: orderFromDetail });
               rememberClientId(
-                orderFromDetail.user?.clientId ??
+                orderFromDetail.clientId ??
+                  orderFromDetail.user?.clientId ??
                   detail.customer?.clientId ??
                   parsed.data.customer?.clientId ??
                   parsed.data.customer?.id ??
@@ -938,7 +1043,8 @@ export function PosDashboard() {
           const fallbackOrder = buildOrderFromTicketPayload(parsed.data);
           setDetail({ type: 'order', data: fallbackOrder });
           rememberClientId(
-            fallbackOrder.user?.clientId ??
+            fallbackOrder.clientId ??
+              fallbackOrder.user?.clientId ??
               parsed.data.customer?.clientId ??
               parsed.data.customer?.id ??
               null
@@ -970,7 +1076,12 @@ export function PosDashboard() {
         const detail = await fetchTicketDetail(trimmed);
         const orderFromDetail = buildOrderFromTicketDetail(detail);
         setDetail({ type: 'order', data: orderFromDetail });
-        rememberClientId(orderFromDetail.user?.clientId ?? detail.customer?.clientId ?? null);
+        rememberClientId(
+          orderFromDetail.clientId ??
+            orderFromDetail.user?.clientId ??
+            detail.customer?.clientId ??
+            null
+        );
         tryCloseScanner();
         return;
       } catch (error) {
@@ -982,7 +1093,7 @@ export function PosDashboard() {
         setDetail({ type: 'order', data: orderMatch });
         setScannerFeedback(null);
         handleCloseScanner();
-        rememberClientId(orderMatch.user?.clientId ?? null);
+        rememberClientId(orderMatch.clientId ?? orderMatch.user?.clientId ?? null);
         return;
       }
 
@@ -1142,17 +1253,57 @@ export function PosDashboard() {
                   <p className="badge">Cola de producción</p>
                   <p className="text-sm text-[var(--brand-muted)]">Ordena y asigna preparaciones de bebidas y alimentos.</p>
                 </div>
-                <div className="flex items-center gap-4 text-sm text-[var(--brand-muted)]">
+                <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--brand-muted)]">
                   {prepLoading && <p>Actualizando...</p>}
                   <button
                     type="button"
+                    onClick={() => setShowPastPrepModal(true)}
+                    className="brand-button text-xs"
+                    disabled={pastPrep.length === 0}
+                  >
+                    Pasados ({pastPrep.length})
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => void refreshPrep()}
-                    className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline dark:text-primary-200"
+                    className="rounded-full border border-primary-200 px-3 py-1 font-semibold text-primary-600 transition hover:bg-primary-50 dark:border-white/20 dark:text-primary-200 disabled:opacity-50"
                   >
                     Actualizar cola
                   </button>
                 </div>
               </div>
+              <form
+                className="flex flex-wrap items-center gap-3 text-xs text-[var(--brand-muted)]"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  setPrepFilter(prepSearchInput);
+                }}
+              >
+                <label className="flex flex-col text-[var(--brand-muted)]">
+                  <span className="font-semibold uppercase tracking-[0.25em]">Buscar cliente</span>
+                  <input
+                    value={prepSearchInput}
+                    onChange={(event) => setPrepSearchInput(event.target.value)}
+                    placeholder="Nombre, email o ID del cliente"
+                    className="mt-1 rounded-xl border border-primary-100/70 px-3 py-1 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/5 dark:text-white"
+                  />
+                </label>
+                <button type="submit" className="brand-button text-xs">
+                  Buscar
+                </button>
+                {prepFilter && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPrepSearchInput('');
+                      setPrepFilter('');
+                    }}
+                    className="brand-button--ghost text-xs"
+                  >
+                    Limpiar
+                  </button>
+                )}
+              </form>
 
               {prepError ? (
                 <div className="rounded-2xl border border-dashed border-danger-300/70 bg-danger-50/60 px-4 py-3 text-sm text-danger-700 dark:border-danger-700/40 dark:bg-danger-900/30 dark:text-danger-100">
@@ -1340,6 +1491,15 @@ export function PosDashboard() {
                 />
               </DetailModal>
             )}
+            {showPastPrepModal && (
+              <DetailModal onClose={() => setShowPastPrepModal(false)}>
+                <PrepQueuePastContent
+                  tasks={pastPrep}
+                  onClose={() => setShowPastPrepModal(false)}
+                  onSelect={(task) => setDetail({ type: 'prep', data: task })}
+                />
+              </DetailModal>
+            )}
           </>
         )}
 
@@ -1363,7 +1523,7 @@ export function PosDashboard() {
                 <SummaryCard label="Pasados" value={pastOrders.length} subtitle="Se limpian a 3 días" />
                 <SummaryCard label="Completados" value={completed.length} subtitle="Histórico cercano" />
                 <SummaryCard label="Reservas activas" value={reservationCounts.pending} subtitle="Próximas 24h" />
-                <SummaryCard label="En barra" value={activePrep.length} subtitle="Cola de producción" />
+                <SummaryCard label="En barra" value={baseActivePrep.length} subtitle="Cola de producción" />
                 <SummaryCard label="Staff en turno" value={`${staffActive}/${staffTotal}`} subtitle="Activos / total" />
                 <SummaryCard label="Cliente top" value={topCustomer?.totalInteractions ?? 0} subtitle={getCustomerDisplayName(topCustomer)} />
                 <SummaryCard label="Propinas" value={formatCurrency(totalTips)} subtitle="Monto acumulado" isCurrency />
@@ -1968,6 +2128,13 @@ const PrepTaskCard = ({ task, onSelect }: { task: PrepTask; onSelect?: (task: Pr
       : task.status === 'completed'
         ? 'Listo'
         : 'Pendiente';
+  const customerLabel =
+    task.customer?.name?.trim() ||
+    task.customer?.email?.trim() ||
+    task.customer?.clientId?.trim() ||
+    task.order?.clientId ||
+    task.order?.userId ||
+    'Cliente sin registro';
 
   return (
     <article
@@ -1994,6 +2161,10 @@ const PrepTaskCard = ({ task, onSelect }: { task: PrepTask; onSelect?: (task: Pr
           <p className="text-base font-semibold">
             {quantity} × {productName}
           </p>
+          <p className="text-xs text-[var(--brand-muted)]">
+            Cliente:{' '}
+            <span className="font-semibold text-primary-900 dark:text-white">{customerLabel}</span>
+          </p>
         </div>
         <span className="text-xs font-semibold text-[var(--brand-muted)]">
           {task.createdAt ? formatDate(task.createdAt) : '—'}
@@ -2013,6 +2184,86 @@ const PrepTaskCard = ({ task, onSelect }: { task: PrepTask; onSelect?: (task: Pr
         {statusLabel}
       </div>
     </article>
+  );
+};
+
+const PrepQueuePastContent = ({
+  tasks,
+  onClose,
+  onSelect,
+}: {
+  tasks: PrepTask[];
+  onClose: () => void;
+  onSelect?: (task: PrepTask) => void;
+}) => {
+  const [query, setQuery] = useState('');
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) {
+      return tasks;
+    }
+    const term = query.trim().toLowerCase();
+    const matches = (value?: string | null) => value?.toLowerCase().includes(term) ?? false;
+    return tasks.filter((task) => buildPrepTaskSearchTerms(task).some(matches));
+  }, [query, tasks]);
+
+  return (
+    <div className="space-y-4 text-[var(--brand-text)] dark:text-white">
+      <div className="flex items-center justify-between">
+        <h3 className="text-2xl font-semibold">Pedidos pasados en barra</h3>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-xs font-bold uppercase tracking-[0.3em] text-[var(--brand-text)] underline dark:text-white"
+        >
+          Cerrar
+        </button>
+      </div>
+      <p className="text-sm text-[var(--brand-muted)]">
+        Listado de pedidos que superaron las 3 horas sin marcarse como entregados. Se eliminan
+        automáticamente después de 2 días.
+      </p>
+      <form
+        className="flex flex-wrap items-center gap-2 text-xs text-[var(--brand-muted)] dark:text-white/80"
+        onSubmit={(event) => event.preventDefault()}
+      >
+        <label className="flex flex-col">
+          <span className="font-semibold uppercase tracking-[0.25em]">Buscar cliente</span>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Nombre, email o ID"
+            className="mt-1 rounded-xl border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:text-white"
+          />
+        </label>
+        <button type="submit" className="brand-button text-xs">
+          Buscar
+        </button>
+        {query && (
+          <button type="button" onClick={() => setQuery('')} className="brand-button--ghost text-xs">
+            Limpiar
+          </button>
+        )}
+      </form>
+      {filtered.length === 0 ? (
+        <p className="text-sm text-[var(--brand-muted)] dark:text-white/80">
+          {query ? 'No encontramos pedidos pasados con ese dato.' : 'Sin pedidos pendientes de seguimiento.'}
+        </p>
+      ) : (
+        <div className="max-h-[65vh] space-y-3 overflow-y-auto pr-2">
+          {filtered.map((task) => (
+            <PrepTaskCard
+              key={task.id}
+              task={task}
+              onSelect={(selected) => {
+                onSelect?.(selected);
+                onClose();
+              }}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -2624,64 +2875,80 @@ const PrepTaskDetailContent = ({
   task: PrepTask;
   onMarkCompleted?: (task: PrepTask) => void;
   actionState?: DetailActionState;
-}) => (
-  <div className="space-y-4 text-base">
-    <div className="rounded-2xl bg-primary-100/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-primary-700 dark:bg-primary-500/20 dark:text-primary-100">
-      Pedido en elaboración
+}) => {
+  const customerLabel =
+    task.customer?.name?.trim() ||
+    task.customer?.email?.trim() ||
+    task.customer?.clientId?.trim() ||
+    task.order?.clientId ||
+    task.order?.userId ||
+    'Cliente sin registro';
+
+  return (
+    <div className="space-y-4 text-base">
+      <div className="rounded-2xl bg-primary-100/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-primary-700 dark:bg-primary-500/20 dark:text-primary-100">
+        Pedido en elaboración
+      </div>
+      <header>
+        <p className="text-xs uppercase tracking-[0.35em] text-primary-400 font-bold underline">
+          {task.order?.orderNumber ?? task.order?.id ?? task.id}
+        </p>
+        <h3 className="text-2xl font-semibold text-primary-700 dark:text-primary-100">Pedido en barra</h3>
+        <p className="text-sm font-semibold text-primary-900 dark:text-white">
+          {formatDate(task.createdAt)}
+        </p>
+      </header>
+      <div className="grid gap-3 rounded-2xl border border-primary-100/70 bg-primary-50/60 p-4 text-base dark:border-white/10 dark:bg-white/5">
+        <DetailRow
+          label="Cliente"
+          value={
+            <span className="font-bold text-primary-900 dark:text-white">{customerLabel}</span>
+          }
+        />
+        <DetailRow
+          label="Producto"
+          value={
+            <span className="font-bold text-primary-900 dark:text-white">
+              {task.product?.name ?? 'Sin producto'}
+            </span>
+          }
+        />
+        <DetailRow
+          label="Cantidad"
+          value={
+            <span className="font-bold text-primary-900 dark:text-white">
+              {String(task.orderItem?.quantity ?? 1)}
+            </span>
+          }
+        />
+        <DetailRow
+          label="Total estimado"
+          value={
+            <span className="font-bold text-primary-900 dark:text-white">
+              {formatCurrency(task.amount)}
+            </span>
+          }
+        />
+        <DetailRow
+          label="Asignado a"
+          value={
+            <span className="font-bold text-primary-900 dark:text-white">
+              {task.handler?.email ?? 'Sin asignar'}
+            </span>
+          }
+        />
+      </div>
+      {onMarkCompleted && (
+        <DetailActionFooter
+          label="Marcar como completado"
+          onClick={() => onMarkCompleted(task)}
+          disabled={actionState?.isLoading}
+          actionState={actionState}
+        />
+      )}
     </div>
-    <header>
-      <p className="text-xs uppercase tracking-[0.35em] text-primary-400 font-bold underline">
-        {task.order?.orderNumber ?? task.order?.id ?? task.id}
-      </p>
-      <h3 className="text-2xl font-semibold text-primary-700 dark:text-primary-100">Pedido en barra</h3>
-      <p className="text-sm font-semibold text-primary-900 dark:text-white">
-        {formatDate(task.createdAt)}
-      </p>
-    </header>
-    <div className="grid gap-3 rounded-2xl border border-primary-100/70 bg-primary-50/60 p-4 text-base dark:border-white/10 dark:bg-white/5">
-      <DetailRow
-        label="Producto"
-        value={
-          <span className="font-bold text-primary-900 dark:text-white">
-            {task.product?.name ?? 'Sin producto'}
-          </span>
-        }
-      />
-      <DetailRow
-        label="Cantidad"
-        value={
-          <span className="font-bold text-primary-900 dark:text-white">
-            {String(task.orderItem?.quantity ?? 1)}
-          </span>
-        }
-      />
-      <DetailRow
-        label="Total estimado"
-        value={
-          <span className="font-bold text-primary-900 dark:text-white">
-            {formatCurrency(task.amount)}
-          </span>
-        }
-      />
-      <DetailRow
-        label="Asignado a"
-        value={
-          <span className="font-bold text-primary-900 dark:text-white">
-            {task.handler?.email ?? 'Sin asignar'}
-          </span>
-        }
-      />
-    </div>
-    {onMarkCompleted && (
-      <DetailActionFooter
-        label="Marcar como completado"
-        onClick={() => onMarkCompleted(task)}
-        disabled={actionState?.isLoading}
-        actionState={actionState}
-      />
-    )}
-  </div>
-);
+  );
+};
 
 const CustomerDetailContent = ({
   customer,
@@ -3170,6 +3437,8 @@ const SmartScannerPanel = ({
   useEffect(() => {
     let stream: MediaStream | null = null;
     let raf: number | null = null;
+    let fallbackControls: import('@zxing/browser').IScannerControls | null = null;
+    let fallbackReader: import('@zxing/browser').BrowserMultiFormatReader | null = null;
     const hasDetector = typeof window !== 'undefined' && Boolean(window.BarcodeDetector);
     setIsDetectorSupported(hasDetector);
 
@@ -3205,6 +3474,41 @@ const SmartScannerPanel = ({
             raf = requestAnimationFrame(scan);
           };
           scan();
+        } else {
+          try {
+            const BrowserModule = await import('@zxing/browser');
+            const BrowserMultiFormatReader = BrowserModule.BrowserMultiFormatReader;
+            const ZXingNotFoundException =
+              (BrowserModule as Record<string, unknown>).NotFoundException ?? null;
+            fallbackReader = new BrowserMultiFormatReader(undefined, {
+              delayBetweenScanAttempts: 200,
+              delayBetweenScanSuccess: 800,
+            });
+            fallbackControls = await fallbackReader.decodeFromVideoDevice(
+              undefined,
+              videoRef.current ?? undefined,
+              (result, error) => {
+                if (result?.getText()) {
+                  onPayload(result.getText());
+                }
+                const isNotFoundError =
+                  typeof ZXingNotFoundException === 'function' &&
+                  error instanceof ZXingNotFoundException;
+                if (error && !isNotFoundError) {
+                  console.warn('QR fallback error:', error);
+                }
+              }
+            );
+            setIsDetectorSupported(true);
+          } catch (fallbackError) {
+            console.error('Fallback QR scanner error:', fallbackError);
+            setIsDetectorSupported(false);
+            setCameraError(
+              fallbackError instanceof Error
+                ? fallbackError.message
+                : 'No pudimos inicializar el lector. Usa la entrada manual.'
+            );
+          }
         }
       } catch (error) {
         setCameraError(
@@ -3223,6 +3527,17 @@ const SmartScannerPanel = ({
       }
       if (raf) {
         cancelAnimationFrame(raf);
+      }
+      if (fallbackControls) {
+        fallbackControls.stop();
+      }
+      if (fallbackReader) {
+        if ('reset' in fallbackReader && typeof fallbackReader.reset === 'function') {
+          fallbackReader.reset();
+        }
+        if ('stop' in fallbackReader && typeof fallbackReader.stop === 'function') {
+          fallbackReader.stop();
+        }
       }
     };
   }, [onPayload]);
@@ -3457,11 +3772,11 @@ const ReservationsSearchBar = ({
         }}
       >
         <label className="flex flex-col text-[var(--brand-muted)]">
-          <span className="font-semibold uppercase tracking-[0.25em]">Buscar ID</span>
+          <span className="font-semibold uppercase tracking-[0.25em]">Buscar ID o nombre</span>
           <input
             value={value}
             onChange={(event) => setValue(event.target.value)}
-            placeholder="ID de la reserva"
+            placeholder="ID, nombre o email del cliente"
             className="mt-1 rounded-xl border border-primary-100/70 px-3 py-1 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/5 dark:text-white"
           />
         </label>
@@ -3516,7 +3831,7 @@ const ReservationHistoryContent = ({
     const term = query.trim().toLowerCase();
     const matches = (value?: string | null) => value?.toLowerCase().includes(term) ?? false;
     return reservations.filter((reservation) =>
-      [reservation.id, reservation.reservationCode].some(matches)
+      buildReservationSearchTerms(reservation).some(matches)
     );
   }, [query, reservations]);
 
@@ -3539,11 +3854,11 @@ const ReservationHistoryContent = ({
         }}
       >
         <label className="flex flex-col text-white/70">
-          <span className="font-semibold uppercase tracking-[0.25em]">Buscar ID</span>
+          <span className="font-semibold uppercase tracking-[0.25em]">Buscar ID o nombre</span>
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="ID de la reserva"
+            placeholder="ID, nombre o email del cliente"
             className="mt-1 rounded-xl border border-white/20 bg-transparent px-3 py-1 text-sm text-white focus:border-white focus:outline-none"
           />
         </label>
@@ -3559,7 +3874,7 @@ const ReservationHistoryContent = ({
       {filtered.length === 0 ? (
         <p className="text-sm text-[var(--brand-muted)] dark:text-white/80">
           {query
-            ? 'No encontramos reservas pasadas con ese ID.'
+            ? 'No encontramos reservas pasadas con ese ID o nombre.'
             : hasFilter
               ? 'No encontramos reservas pasadas con ese filtro.'
               : 'No hay reservas pasadas disponibles.'}
