@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { MenuItem } from '@/hooks/use-menu-options';
 
@@ -66,22 +66,22 @@ export function SearchableDropdown({
     [sortedOptions, value]
   );
 
-  const resetQueryState = () => {
+  const resetQueryState = useCallback(() => {
     setQuery('');
     setActiveIndex(0);
-  };
+  }, []);
 
-  const closeDropdown = () => {
+  const closeDropdown = useCallback(() => {
     setIsOpen(false);
     resetQueryState();
     requestAnimationFrame(() => buttonRef.current?.focus());
-  };
+  }, [resetQueryState]);
 
-  const openDropdown = () => {
+  const openDropdown = useCallback(() => {
     setIsOpen(true);
     const selectedIndex = sortedOptions.findIndex((option) => option.id === value);
     setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
-  };
+  }, [sortedOptions, value]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -94,7 +94,7 @@ export function SearchableDropdown({
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [isOpen]);
+  }, [closeDropdown, isOpen]);
 
   useEffect(() => {
     if (!isOpen) {

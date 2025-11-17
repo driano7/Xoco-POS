@@ -4,8 +4,10 @@ const CUTOFF_HOUR = 23;
 const CUTOFF_MINUTE = 59;
 const CUTOFF_SECOND = 59;
 const CUTOFF_MS = 999;
-const PAST_RETENTION_DAYS = 3;
-const PAST_RETENTION_MS = PAST_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const PAST_HIDE_DAYS = 3;
+const PAST_PURGE_DAYS = 365;
+const PAST_HIDE_MS = PAST_HIDE_DAYS * 24 * 60 * 60 * 1000;
+const PAST_PURGE_MS = PAST_PURGE_DAYS * 24 * 60 * 60 * 1000;
 
 const setEndOfDay = (date: Date) => {
   const copy = new Date(date);
@@ -92,20 +94,37 @@ const deriveReservationStatus = (reservation: Reservation, now: Date) => {
   return 'pending';
 };
 
-const isPastExpired = (timestamp?: string | null, now = new Date()) => {
+const isOlderThan = (timestamp?: string | null, thresholdMs?: number, now = new Date()) => {
+  if (!thresholdMs) {
+    return false;
+  }
   const parsed = parseIso(timestamp);
   if (!parsed) {
     return false;
   }
-  return now.getTime() - parsed.getTime() > PAST_RETENTION_MS;
+  return now.getTime() - parsed.getTime() > thresholdMs;
 };
 
-const shouldDropPastOrder = (order: Order, now: Date) =>
-  order.status === 'past' && isPastExpired(order.updatedAt ?? order.createdAt, now);
+const shouldHidePastOrder = (order: Order, now: Date) =>
+  order.status === 'past' && isOlderThan(order.updatedAt ?? order.createdAt, PAST_HIDE_MS, now);
 
-const shouldDropPastReservation = (reservation: Reservation, now: Date) =>
+const shouldPurgePastOrder = (order: Order, now: Date) =>
+  order.status === 'past' && isOlderThan(order.updatedAt ?? order.createdAt, PAST_PURGE_MS, now);
+
+const shouldHidePastReservation = (reservation: Reservation, now: Date) =>
   (reservation.status === 'past' || reservation.status === 'cancelled') &&
-  isPastExpired(reservation.updatedAt ?? reservation.createdAt, now);
+  isOlderThan(reservation.updatedAt ?? reservation.createdAt, PAST_HIDE_MS, now);
+
+const shouldPurgePastReservation = (reservation: Reservation, now: Date) =>
+  (reservation.status === 'past' || reservation.status === 'cancelled') &&
+  isOlderThan(reservation.updatedAt ?? reservation.createdAt, PAST_PURGE_MS, now);
+
+const annotateHiddenFlag = <T extends { isHidden?: boolean }>(record: T, hidden: boolean): T => {
+  if (record.isHidden === hidden) {
+    return record;
+  }
+  return { ...record, isHidden: hidden };
+};
 
 export const applyOrderStatusRules = (orders: Order[], now = new Date()): Order[] =>
   orders.map((order) => {
@@ -123,7 +142,11 @@ export const applyReservationStatusRules = (reservations: Reservation[], now = n
   });
 
 export const purgeExpiredPastOrders = (orders: Order[], now = new Date()) =>
-  orders.filter((order) => !shouldDropPastOrder(order, now));
+  orders
+    .map((order) => annotateHiddenFlag(order, shouldHidePastOrder(order, now)))
+    .filter((order) => !shouldPurgePastOrder(order, now));
 
 export const purgeExpiredPastReservations = (reservations: Reservation[], now = new Date()) =>
-  reservations.filter((reservation) => !shouldDropPastReservation(reservation, now));
+  reservations
+    .map((reservation) => annotateHiddenFlag(reservation, shouldHidePastReservation(reservation, now)))
+    .filter((reservation) => !shouldPurgePastReservation(reservation, now));

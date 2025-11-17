@@ -47,6 +47,7 @@ export interface Order {
   user?: OrderUserInfo | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  isHidden?: boolean;
 }
 
 export interface Reservation {
@@ -64,6 +65,7 @@ export interface Reservation {
   status?: ReservationStatus | string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  isHidden?: boolean;
 }
 
 export interface PrepOrder {
@@ -480,13 +482,34 @@ export async function completeOrder(orderId: string): Promise<void> {
   }
 }
 
-export async function completeReservation(reservationId: string): Promise<void> {
+const updateReservationStatus = async (
+  reservationId: string,
+  status: 'completed' | 'cancelled'
+) => {
   const url = buildApiUrl(`/api/reservations/${reservationId}/complete`);
-  const response = await fetch(url, { method: 'POST' });
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ status }),
+  });
 
   if (!response.ok) {
-    throw new Error('No pudimos confirmar la reservación');
+    const message =
+      status === 'cancelled'
+        ? 'No pudimos cancelar la reservación'
+        : 'No pudimos confirmar la reservación';
+    throw new Error(message);
   }
+};
+
+export async function completeReservation(reservationId: string): Promise<void> {
+  await updateReservationStatus(reservationId, 'completed');
+}
+
+export async function cancelReservation(reservationId: string): Promise<void> {
+  await updateReservationStatus(reservationId, 'cancelled');
 }
 
 export async function fetchTicketDetail(identifier: string): Promise<TicketDetail> {

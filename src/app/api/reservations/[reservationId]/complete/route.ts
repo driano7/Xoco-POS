@@ -2,8 +2,9 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-server';
 
 const RESERVATIONS_TABLE = process.env.SUPABASE_RESERVATIONS_TABLE ?? 'reservations';
+const ALLOWED_STATUSES = new Set(['completed', 'cancelled']);
 
-export async function POST(_: Request, context: { params: { reservationId?: string } }) {
+export async function POST(request: Request, context: { params: { reservationId?: string } }) {
   const reservationId = context.params?.reservationId?.trim();
 
   if (!reservationId) {
@@ -14,13 +15,27 @@ export async function POST(_: Request, context: { params: { reservationId?: stri
   }
 
   try {
+    let requestedStatus: string | null = null;
+    try {
+      const payload = await request.json();
+      if (payload && typeof payload.status === 'string') {
+        requestedStatus = payload.status.trim().toLowerCase();
+      }
+    } catch {
+      requestedStatus = null;
+    }
+
+    const status = requestedStatus && ALLOWED_STATUSES.has(requestedStatus)
+      ? requestedStatus
+      : 'completed';
+
     const now = new Date().toISOString();
     const {
       data,
       error,
     } = await supabaseAdmin
       .from(RESERVATIONS_TABLE)
-      .update({ status: 'completed', updatedAt: now })
+      .update({ status, updatedAt: now })
       .eq('id', reservationId)
       .select('id')
       .maybeSingle();
@@ -36,11 +51,11 @@ export async function POST(_: Request, context: { params: { reservationId?: stri
       );
     }
 
-    return NextResponse.json({ success: true, data: { id: data.id } });
+    return NextResponse.json({ success: true, data: { id: data.id, status } });
   } catch (error) {
-    console.error('Error confirmando reservación:', error);
+    console.error('Error actualizando reservación:', error);
     return NextResponse.json(
-      { success: false, error: 'No pudimos confirmar la reservación' },
+      { success: false, error: 'No pudimos actualizar la reservación' },
       { status: 500 }
     );
   }

@@ -62,18 +62,19 @@ interface OrdersPanelProps {
 
 export function OrdersPanel({ onSelect }: OrdersPanelProps = {}) {
   const { orders, isLoading, error, refresh } = useOrders();
+  const visibleOrders = useMemo(() => orders.filter((order) => !order.isHidden), [orders]);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('');
   const [showPastModal, setShowPastModal] = useState(false);
 
   const filtered = useMemo(() => {
     if (!filter.trim()) {
-      return orders;
+      return visibleOrders;
     }
     const term = filter.trim().toLowerCase();
     const matches = (value?: string | null) => value?.toLowerCase().includes(term) ?? false;
-    return orders.filter((order) => buildOrderSearchTerms(order).some(matches));
-  }, [filter, orders]);
+    return visibleOrders.filter((order) => buildOrderSearchTerms(order).some(matches));
+  }, [filter, visibleOrders]);
 
   const pending = filtered.filter((order) => order.status === 'pending');
   const past = filtered.filter((order) => order.status === 'past');
@@ -85,11 +86,11 @@ export function OrdersPanel({ onSelect }: OrdersPanelProps = {}) {
         <div>
           <p className="badge">Pedidos</p>
           <h3 className="mt-2 text-2xl font-bold text-primary-700 dark:text-primary-50">
-            Estado de órdenes ({orders.length})
+            Estado de órdenes ({visibleOrders.length})
           </h3>
           <p className="text-sm text-[var(--brand-muted)]">
-            Cada pedido incluye su ticket POS. Seguimos la regla de corte 23:59 y limpiamos
-            pendientes no atendidos a los 3 días.
+            Cada pedido incluye su ticket POS. Seguimos la regla de corte 23:59, ocultamos los
+            pendientes al tercer día y los depuramos pasado un año.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--brand-muted)]">

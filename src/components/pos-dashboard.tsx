@@ -31,6 +31,7 @@ import {
   completeOrder,
   completePrepTask,
   completeReservation,
+  cancelReservation,
   fetchTicketDetail,
 } from '@/lib/api';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -67,6 +68,9 @@ const groupOrders = (orders: Order[]) => {
   const completed: Order[] = [];
 
   orders.forEach((order) => {
+    if (order.isHidden) {
+      return;
+    }
     if (order.status === 'completed') {
       completed.push(order);
       return;
@@ -98,6 +102,9 @@ const groupReservations = (reservations: Reservation[]) => {
   const completed: Reservation[] = [];
 
   reservations.forEach((reservation) => {
+    if (reservation.isHidden) {
+      return;
+    }
     const status = (reservation.status ?? 'pending').toLowerCase();
     if (status === 'completed') {
       completed.push(reservation);
@@ -499,7 +506,8 @@ const getCustomerDisplayName = (customer?: LoyaltyCustomer | null) => {
 };
 
 const THREE_HOURS_MS = 3 * 60 * 60 * 1000;
-const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+const PREP_HIDE_MS = 2 * 24 * 60 * 60 * 1000;
+const PREP_PURGE_MS = 365 * 24 * 60 * 60 * 1000;
 
 const groupPrepTasks = (tasks: PrepTask[]) => {
   const activeStatuses = new Set(['pending', 'in_progress']);
@@ -511,10 +519,15 @@ const groupPrepTasks = (tasks: PrepTask[]) => {
   tasks.forEach((task) => {
     const createdAtMs = task.createdAt ? new Date(task.createdAt).getTime() : null;
     const age = createdAtMs ? now - createdAtMs : 0;
-    const isExpired = createdAtMs ? age >= TWO_DAYS_MS : false;
+    const isHidden = createdAtMs ? age >= PREP_HIDE_MS : false;
+    const isPurged = createdAtMs ? age >= PREP_PURGE_MS : false;
+
+    if (isPurged) {
+      return;
+    }
 
     if (task.status === 'completed') {
-      if (isExpired) {
+      if (isHidden) {
         return;
       }
       completed.push(task);
@@ -523,7 +536,7 @@ const groupPrepTasks = (tasks: PrepTask[]) => {
 
     if (activeStatuses.has(task.status)) {
       if (age >= THREE_HOURS_MS) {
-        if (!isExpired) {
+        if (!isHidden) {
           past.push(task);
         }
         return;
@@ -533,7 +546,7 @@ const groupPrepTasks = (tasks: PrepTask[]) => {
     }
 
     if (age >= THREE_HOURS_MS) {
-      if (!isExpired) {
+      if (!isHidden) {
         past.push(task);
       }
     } else {
@@ -671,7 +684,9 @@ export function PosDashboard() {
     setDays: setPartnerDays,
   } = usePartnerMetrics();
   const [activeSection, setActiveSection] = useState<NavSection>('home');
-  const [reservationOverrides, setReservationOverrides] = useState<Record<string, 'completed'>>({});
+  const [reservationOverrides, setReservationOverrides] = useState<
+    Record<string, 'completed' | 'cancelled'>
+  >({});
   const [snackbar, setSnackbar] = useState<string | null>(null);
   const [showNewOrderForm, setShowNewOrderForm] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
@@ -685,16 +700,24 @@ export function PosDashboard() {
     error: menuError,
     refresh: refreshMenu,
   } = useMenuOptions();
+  const visibleOrders = useMemo(() => orders.filter((order) => !order.isHidden), [orders]);
+  const visibleReservations = useMemo(
+    () => reservations.filter((reservation) => !reservation.isHidden),
+    [reservations]
+  );
   const reservationsWithOverrides = useMemo(
     () =>
-      reservations.map((reservation) =>
+      visibleReservations.map((reservation) =>
         reservationOverrides[reservation.id]
           ? { ...reservation, status: reservationOverrides[reservation.id] }
           : reservation
       ),
-    [reservationOverrides, reservations]
+    [reservationOverrides, visibleReservations]
   );
-  const { pending, past: pastOrders, completed } = useMemo(() => groupOrders(orders), [orders]);
+  const { pending, past: pastOrders, completed } = useMemo(
+    () => groupOrders(visibleOrders),
+    [visibleOrders]
+  );
   const {
     pending: basePendingReservations,
     past: basePastReservations,
@@ -768,7 +791,10 @@ export function PosDashboard() {
   const [customerQuery, setCustomerQuery] = useState('');
   const [customerFilter, setCustomerFilter] = useState('');
   const [prefilledClientId, setPrefilledClientId] = useState<string | null>(null);
-  const loyaltyCustomers = loyaltyStats?.customers ?? [];
+  const loyaltyCustomers = useMemo(
+    () => loyaltyStats?.customers ?? [],
+    [loyaltyStats]
+  );
   const filteredCustomers = useMemo(() => {
     if (!customerFilter.trim()) {
       return loyaltyCustomers;
@@ -952,6 +978,29 @@ export function PosDashboard() {
     }
   };
 
+  const handleCancelReservation = async (reservation: Reservation) => {
+    setActionState({ isLoading: true, message: null, error: null });
+    try {
+      await cancelReservation(reservation.id);
+      setReservationOverrides((prev) => ({ ...prev, [reservation.id]: 'cancelled' }));
+      await refreshReservations();
+      setActionState({
+        isLoading: false,
+        message: 'Reservación cancelada correctamente',
+        error: null,
+      });
+      setSnackbar('Reservación cancelada.');
+      setDetail(null);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'No pudimos cancelar la reservación. Intenta más tarde.';
+      setActionState({ isLoading: false, message: null, error: message });
+      setSnackbar(message);
+    }
+  };
+
   const handleScannedReservationConfirm = async (reservation: ScannedReservation) => {
     if (!reservation.id) {
       setSnackbar('El QR no incluye un ID de reservación válido.');
@@ -980,26 +1029,35 @@ export function PosDashboard() {
 
   const normalizeCode = (value?: string | null) => value?.trim().toLowerCase() ?? '';
 
-  const tryMatchOrder = (code: string) =>
-    orders.find((order) =>
-      [order.id, order.orderNumber, order.ticketCode, order.shortCode].some(
-        (candidate) => normalizeCode(candidate) === code
-      )
-    );
+  const tryMatchOrder = useCallback(
+    (code: string) =>
+      visibleOrders.find((order) =>
+        [order.id, order.orderNumber, order.ticketCode, order.shortCode].some(
+          (candidate) => normalizeCode(candidate) === code
+        )
+      ),
+    [visibleOrders]
+  );
 
-  const tryMatchReservation = (code: string) =>
-    reservations.find((reservation) =>
-      [reservation.id, reservation.reservationCode].some(
-        (candidate) => normalizeCode(candidate) === code
-      )
-    );
+  const tryMatchReservation = useCallback(
+    (code: string) =>
+      visibleReservations.find((reservation) =>
+        [reservation.id, reservation.reservationCode].some(
+          (candidate) => normalizeCode(candidate) === code
+        )
+      ),
+    [visibleReservations]
+  );
 
-  const tryMatchCustomer = (code: string) =>
-    loyaltyCustomers.find((customer) =>
-      [customer.clientId, customer.userId, customer.email].some(
-        (candidate) => normalizeCode(candidate) === code
-      )
-    );
+  const tryMatchCustomer = useCallback(
+    (code: string) =>
+      loyaltyCustomers.find((customer) =>
+        [customer.clientId, customer.userId, customer.email].some(
+          (candidate) => normalizeCode(candidate) === code
+        )
+      ),
+    [loyaltyCustomers]
+  );
 
   const handleScannerPayload = useCallback(
     async (payload: string) => {
@@ -1117,7 +1175,14 @@ export function PosDashboard() {
 
       setSnackbar('No encontramos un registro con ese código.');
     },
-    [loyaltyCustomers, orders, rememberClientId, reservations]
+    [
+      handleCloseScanner,
+      loyaltyCustomers,
+      rememberClientId,
+      tryMatchCustomer,
+      tryMatchOrder,
+      tryMatchReservation,
+    ]
   );
 
   useEffect(() => {
@@ -1331,7 +1396,7 @@ export function PosDashboard() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="badge">Reservas compartidas</p>
-                  <p className="text-sm text-[var(--brand-muted)]">Seguimos la lógica de corte 23:59 y limpiamos reservas pasadas después de 3 días.</p>
+                  <p className="text-sm text-[var(--brand-muted)]">Seguimos la lógica de corte 23:59; ocultamos reservas pasadas después de 3 días y las depuramos al año.</p>
                 </div>
                 <ReservationsSearchBar
                   onSearch={(value) => setReservationFilter(value)}
@@ -1445,6 +1510,7 @@ export function PosDashboard() {
                     <ReservationDetailContent
                       reservation={detail.data}
                       onConfirmReservation={handleConfirmReservation}
+                      onCancelReservation={handleCancelReservation}
                       actionState={actionState}
                     />
                   )}
@@ -1519,8 +1585,8 @@ export function PosDashboard() {
               <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
                 <SummaryCard label="Ventas turno" value={formatCurrency(totalSales)} subtitle="Últimas 24h" isCurrency />
                 <SummaryCard label="Pedidos activos" value={pending.length} subtitle="Pendientes" />
-                <SummaryCard label="Pedidos totales" value={orders.length} subtitle="Últimos 100" />
-                <SummaryCard label="Pasados" value={pastOrders.length} subtitle="Se limpian a 3 días" />
+                <SummaryCard label="Pedidos totales" value={visibleOrders.length} subtitle="Últimos 100 visibles" />
+                <SummaryCard label="Pasados" value={pastOrders.length} subtitle="Se ocultan a 3 días" />
                 <SummaryCard label="Completados" value={completed.length} subtitle="Histórico cercano" />
                 <SummaryCard label="Reservas activas" value={reservationCounts.pending} subtitle="Próximas 24h" />
                 <SummaryCard label="En barra" value={baseActivePrep.length} subtitle="Cola de producción" />
@@ -2220,8 +2286,8 @@ const PrepQueuePastContent = ({
         </button>
       </div>
       <p className="text-sm text-[var(--brand-muted)]">
-        Listado de pedidos que superaron las 3 horas sin marcarse como entregados. Se eliminan
-        automáticamente después de 2 días.
+        Listado de pedidos que superaron las 3 horas sin marcarse como entregados. Los ocultamos
+        después de 2 días y los depuramos automáticamente al cumplirse un año.
       </p>
       <form
         className="flex flex-wrap items-center gap-2 text-xs text-[var(--brand-muted)] dark:text-white/80"
@@ -2628,29 +2694,38 @@ const DetailActionFooter = ({
   onClick,
   disabled,
   actionState,
+  variant = 'primary',
 }: {
   label: string;
   onClick: () => void;
   disabled?: boolean;
   actionState?: DetailActionState;
-}) => (
-  <div className="space-y-2">
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className="w-full rounded-2xl bg-primary-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:opacity-40"
-    >
-      {disabled ? 'Procesando…' : label}
-    </button>
-    {actionState?.message && (
-      <p className="text-xs font-semibold text-emerald-600">{actionState.message}</p>
-    )}
-    {actionState?.error && (
-      <p className="text-xs font-semibold text-danger-600">{actionState.error}</p>
-    )}
-  </div>
-);
+  variant?: 'primary' | 'danger';
+}) => {
+  const baseClasses =
+    variant === 'danger'
+      ? 'bg-danger-600 hover:bg-danger-700'
+      : 'bg-primary-600 hover:bg-primary-700';
+
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        className={`w-full rounded-2xl px-4 py-2 text-sm font-semibold text-white transition disabled:opacity-40 ${baseClasses}`}
+      >
+        {disabled ? 'Procesando…' : label}
+      </button>
+      {actionState?.message && (
+        <p className="text-xs font-semibold text-emerald-600">{actionState.message}</p>
+      )}
+      {actionState?.error && (
+        <p className="text-xs font-semibold text-danger-600">{actionState.error}</p>
+      )}
+    </div>
+  );
+};
 
 const OrderDetailContent = ({
   order,
@@ -2795,10 +2870,12 @@ const OrderDetailContent = ({
 const ReservationDetailContent = ({
   reservation,
   onConfirmReservation,
+  onCancelReservation,
   actionState,
 }: {
   reservation: Reservation;
   onConfirmReservation?: (reservation: Reservation) => void;
+  onCancelReservation?: (reservation: Reservation) => void;
   actionState?: DetailActionState;
 }) => {
   const customerName = extractCustomerName(reservation.user);
@@ -2855,13 +2932,26 @@ const ReservationDetailContent = ({
           <p className="mt-1">{reservation.message}</p>
         </div>
       )}
-      {onConfirmReservation && (
-        <DetailActionFooter
-          label="Confirmar reservación"
-          onClick={() => onConfirmReservation(reservation)}
-          disabled={actionState?.isLoading}
-          actionState={actionState}
-        />
+      {(onConfirmReservation || onCancelReservation) && (
+        <div className="space-y-3">
+          {onConfirmReservation && (
+            <DetailActionFooter
+              label="Confirmar reservación"
+              onClick={() => onConfirmReservation(reservation)}
+              disabled={actionState?.isLoading}
+              actionState={actionState}
+            />
+          )}
+          {onCancelReservation && (
+            <DetailActionFooter
+              label="Cancelar reservación"
+              onClick={() => onCancelReservation(reservation)}
+              disabled={actionState?.isLoading}
+              actionState={undefined}
+              variant="danger"
+            />
+          )}
+        </div>
       )}
     </div>
   );
