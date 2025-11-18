@@ -464,9 +464,13 @@ export async function fetchPrepQueue(status?: PrepStatus): Promise<PrepTask[]> {
   return payload.data;
 }
 
-export async function enqueueOrder(orderId: string): Promise<void> {
+export async function enqueueOrder(orderId: string, staffId?: string | null): Promise<void> {
   const url = buildApiUrl(`/api/orders/${orderId}/queue`);
-  const response = await fetch(url, { method: 'POST' });
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: staffId ? { 'Content-Type': 'application/json' } : undefined,
+    body: staffId ? JSON.stringify({ staffId }) : undefined,
+  });
 
   if (!response.ok) {
     throw new Error('No pudimos mover el pedido a la cola de producción');

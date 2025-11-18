@@ -11,7 +11,7 @@ const normalizeNumber = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-export async function POST(_: Request, context: { params: { orderId?: string } }) {
+export async function POST(request: Request, context: { params: { orderId?: string } }) {
   const orderId = context.params?.orderId?.trim();
 
   if (!orderId) {
@@ -19,6 +19,16 @@ export async function POST(_: Request, context: { params: { orderId?: string } }
   }
 
   try {
+    let assignedStaffId: string | null = null;
+    try {
+      const body = (await request.json()) as { staffId?: string | null };
+      if (body?.staffId && typeof body.staffId === 'string') {
+        assignedStaffId = body.staffId.trim() || null;
+      }
+    } catch {
+      assignedStaffId = null;
+    }
+
     const ensureOrderItemsSnapshot = async () => {
       const {
         data: existingItems,
@@ -130,7 +140,7 @@ export async function POST(_: Request, context: { params: { orderId?: string } }
           .from(PREP_QUEUE_TABLE)
           .update({
             status: 'pending',
-            handledByStaffId: null,
+            handledByStaffId: assignedStaffId ?? null,
             updatedAt: now,
             completedAt: null,
           })
@@ -152,6 +162,7 @@ export async function POST(_: Request, context: { params: { orderId?: string } }
     const payload = tasksToCreate.map((itemId) => ({
       orderItemId: itemId,
       status: 'pending',
+      handledByStaffId: assignedStaffId ?? null,
     }));
 
     const {
