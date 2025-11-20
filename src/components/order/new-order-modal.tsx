@@ -56,11 +56,18 @@ export function NewOrderModal({ onClose, onSuccess, prefillClientId }: NewOrderM
     removeItem,
     clearCart,
   } = useCartStore();
-  const { beverageOptions, foodOptions, getMenuItemById, isLoading: menuLoading, error: menuError } =
-    useMenuOptions();
+  const {
+    beverageOptions,
+    foodOptions,
+    packageOptions,
+    getMenuItemById,
+    isLoading: menuLoading,
+    error: menuError,
+  } = useMenuOptions();
   const [notes, setNotes] = useState('');
   const [selectedBeverage, setSelectedBeverage] = useState<string | null>(null);
   const [selectedFood, setSelectedFood] = useState<string | null>(null);
+  const [selectedPackage, setSelectedPackage] = useState<string | null>(null);
   const [tipSelection, setTipSelection] = useState<'preset' | 'custom' | null>(null);
   const [selectedTipPercent, setSelectedTipPercent] = useState<number | null>(null);
   const [customTipPercent, setCustomTipPercent] = useState('');
@@ -168,6 +175,7 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
     setNotes('');
     setSelectedBeverage(null);
     setSelectedFood(null);
+    setSelectedPackage(null);
     setTipSelection(null);
     setSelectedTipPercent(null);
     setCustomTipPercent('');
@@ -346,6 +354,24 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
             if (selectedId) {
               handleQuickAdd(selectedId);
               setSelectedFood(null);
+            }
+          }}
+          allowClear
+        />
+      </div>
+      <div className="mt-4">
+        <SearchableDropdown
+          id="new-order-packages"
+          label="Paquetes"
+          options={packageOptions}
+          placeholder="Combos, kits u ofertas del menú editorial"
+          helperText="Basado en xococafe.netlify.app/uses"
+          value={selectedPackage}
+          onChange={(selectedId) => {
+            setSelectedPackage(selectedId);
+            if (selectedId) {
+              handleQuickAdd(selectedId);
+              setSelectedPackage(null);
             }
           }}
           allowClear

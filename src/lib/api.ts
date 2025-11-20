@@ -411,6 +411,95 @@ export interface PartnerMetrics {
   advanced: PartnerAdvancedMetrics;
 }
 
+export type AdvancedMetricsSectionId =
+  | 'clients'
+  | 'sales'
+  | 'payments'
+  | 'orders'
+  | 'analytics'
+  | 'employees'
+  | 'inventory';
+
+export interface AdvancedMetricsSection {
+  title: string;
+  hasData: boolean;
+  cards: Array<{ label: string; value: string | number; hint?: string }>;
+  bars: Array<{ label: string; value: number; secondary?: number }>;
+  message?: string;
+  table?: {
+    columns: string[];
+    rows: Array<Record<string, string | number>>;
+  };
+  extraTables?: Array<{
+    title: string;
+    table: {
+      columns: string[];
+      rows: Array<Record<string, string | number>>;
+    };
+  }>;
+}
+
+export interface ForecastPayload {
+  restock: Array<{
+    id: string;
+    name: string;
+    quantity: number;
+    avgDailyUse: number;
+    daysRemaining: number | null;
+    nextRestock?: string | null;
+  }>;
+  production: Array<{
+    id: string;
+    name: string;
+    dailyAverage: number;
+    weeklyDemand: number;
+    peakHour: string;
+  }>;
+  salesWindows: Array<{
+    label: string;
+    days: number;
+    revenue: number;
+    orders: number;
+    busiestDay: string;
+    topActivity: Array<{ day: string; hour: string; count: number }>;
+  }>;
+  branchDemand: Array<{
+    branch: string;
+    points: Array<{ date: string; revenue: number }>;
+  }>;
+}
+
+export interface MarketingInsights {
+  salesClusters: Array<{
+    name: string;
+    description: string;
+    count: number;
+    avgTicket: number;
+    chart: {
+      points: Array<{ orders: number; spent: number }>;
+      centroid: { orders: number; spent: number };
+    };
+  }>;
+  productSuggestions: Array<{ product: string; reason: string }>;
+  bestHours: Array<{ day: string; hour: string; count: number }>;
+  orderInference: Array<{ type: string; probability: number; drivers: string }>;
+  landingMarkov: Array<{ from: string; to: string; probability: number }>;
+  inventoryBayesian: Array<{ item: string; risk: string; recommendation: string }>;
+  anomalies: Array<{ label: string; description: string }>;
+}
+
+export interface AdvancedMetricsPayload {
+  range: string;
+  rangeLabel: string;
+  since: string;
+  until: string;
+  hasData: boolean;
+  rangeAvailability: Record<string, boolean>;
+  sections: Record<AdvancedMetricsSectionId, AdvancedMetricsSection>;
+  forecasts: ForecastPayload;
+  marketing: MarketingInsights;
+}
+
 const API_BASE = process.env.NEXT_PUBLIC_POS_API_URL?.trim();
 
 const buildApiUrl = (
@@ -733,6 +822,40 @@ export async function fetchPartnerMetrics(days?: number): Promise<PartnerMetrics
   }
 
   const payload = (await response.json()) as { success: boolean; data?: PartnerMetrics };
+
+  if (!payload.success || !payload.data) {
+    throw new Error('Respuesta inválida del servidor');
+  }
+
+  return payload.data;
+}
+
+export async function fetchAdvancedMetrics(
+  range?: string,
+  extraParams?: Record<string, string>
+): Promise<AdvancedMetricsPayload> {
+  const params: Record<string, string> = {};
+  if (range) {
+    params.range = range;
+  }
+  if (extraParams) {
+    Object.entries(extraParams).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        params[key] = value;
+      }
+    });
+  }
+  const url = buildApiUrl('/api/advanced-metrics', Object.keys(params).length ? params : undefined);
+  const response = await fetch(url, { cache: 'no-store' });
+
+  if (!response.ok) {
+    throw new Error('No pudimos cargar las métricas avanzadas');
+  }
+
+  const payload = (await response.json()) as {
+    success: boolean;
+    data?: AdvancedMetricsPayload;
+  };
 
   if (!payload.success || !payload.data) {
     throw new Error('Respuesta inválida del servidor');

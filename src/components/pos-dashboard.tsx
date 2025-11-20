@@ -8,6 +8,7 @@ import { usePrepQueue } from '@/hooks/use-prep-queue';
 import { usePayments } from '@/hooks/use-payments';
 import { useStaff } from '@/hooks/use-staff';
 import { usePartnerMetrics } from '@/hooks/use-partner-metrics';
+import { useAdvancedMetrics } from '@/hooks/use-advanced-metrics';
 import { usePagination } from '@/hooks/use-pagination';
 import { OrdersPanel } from '@/components/orders-panel';
 import { NewOrderModal } from '@/components/order/new-order-modal';
@@ -25,6 +26,11 @@ import type {
   StaffMember,
   StaffSessionRecord,
   PartnerMetrics,
+  AdvancedMetricsSection,
+  AdvancedMetricsPayload,
+  AdvancedMetricsSectionId,
+  ForecastPayload,
+  MarketingInsights,
   TicketDetail,
 } from '@/lib/api';
 import {
@@ -36,7 +42,7 @@ import {
   fetchTicketDetail,
 } from '@/lib/api';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
+import type { FormEvent, ReactNode, WheelEvent } from 'react';
 import { useAuth, type AuthenticatedStaff, type ShiftType, type StaffRole } from '@/providers/auth-provider';
 import { encryptSensitiveSnapshot, decryptField } from '@/lib/secure-fields';
 
@@ -776,11 +782,23 @@ type ScanResult =
   | { type: 'reservation'; data: ScannedReservation }
   | { type: 'customer'; data: ScannedCustomer };
 
-type NavSection = 'home' | 'metrics' | 'employees' | 'payments' | 'permissions' | 'notifications';
+type NavSection =
+  | 'home'
+  | 'metrics'
+  | 'advancedMetrics'
+  | 'forecasts'
+  | 'marketing'
+  | 'employees'
+  | 'payments'
+  | 'permissions'
+  | 'notifications';
 
 const NAV_ITEMS: { id: NavSection; label: string }[] = [
   { id: 'home', label: 'Home' },
   { id: 'metrics', label: 'Métricas' },
+  { id: 'advancedMetrics', label: 'Métricas avanzadas' },
+  { id: 'forecasts', label: 'Pronósticos' },
+  { id: 'marketing', label: 'Marketing' },
   { id: 'employees', label: 'Empleados' },
   { id: 'payments', label: 'Pagos y cortes' },
   { id: 'permissions', label: 'Permisos' },
@@ -1052,6 +1070,16 @@ export function PosDashboard() {
     selectedDays: partnerDays,
     setDays: setPartnerDays,
   } = usePartnerMetrics();
+  const {
+    metrics: advancedMetrics,
+    isLoading: advancedMetricsLoading,
+    error: advancedMetricsError,
+    selectedRange: advancedMetricsRange,
+    setRange: setAdvancedMetricsRange,
+    refresh: refreshAdvancedMetrics,
+    setExtraParams: setAdvancedMetricsQuery,
+  } = useAdvancedMetrics('14d');
+  const [marketingRange, setMarketingRange] = useState('14d');
   const [activeSection, setActiveSection] = useState<NavSection>('home');
   const [reservationOverrides, setReservationOverrides] = useState<
     Record<string, 'completed' | 'cancelled'>
@@ -1439,14 +1467,23 @@ export function PosDashboard() {
   }, [payments, prepTasks]);
 
   const navItems = useMemo(() => {
+    let items = NAV_ITEMS;
     if (user?.role === 'barista') {
-      return NAV_ITEMS.filter((item) => !BARISTA_NAV_EXCLUSIONS.includes(item.id));
+      items = items.filter((item) => !BARISTA_NAV_EXCLUSIONS.includes(item.id));
+    } else if (user?.role === 'gerente') {
+      items = items.filter((item) => !GERENTE_NAV_EXCLUSIONS.includes(item.id));
     }
-    if (user?.role === 'gerente') {
-      return NAV_ITEMS.filter((item) => !GERENTE_NAV_EXCLUSIONS.includes(item.id));
+    if (!isSocio) {
+      items = items.filter(
+        (item) => item.id !== 'advancedMetrics' && item.id !== 'forecasts' && item.id !== 'marketing'
+      );
     }
-    return NAV_ITEMS;
-  }, [user?.role]);
+    return items;
+  }, [user?.role, isSocio]);
+
+  useEffect(() => {
+    setAdvancedMetricsQuery({ marketing_range: marketingRange });
+  }, [marketingRange, setAdvancedMetricsQuery]);
 
   useEffect(() => {
     setManagerInventory((prev) => {
@@ -2710,7 +2747,60 @@ export function PosDashboard() {
                 />
               </section>
             )}
-          </>
+      </>
+    )}
+
+        {activeSection === 'advancedMetrics' && isSocio && (
+          <section className="card p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <span className="badge">Analítica consolidada</span>
+                <h2 className="mt-3 text-2xl font-semibold">Métricas avanzadas</h2>
+              </div>
+            </div>
+            <AdvancedMetricsPanel
+              metrics={advancedMetrics}
+              isLoading={advancedMetricsLoading}
+              error={advancedMetricsError}
+              selectedRange={advancedMetricsRange}
+              onRangeChange={setAdvancedMetricsRange}
+              onRefresh={() => void refreshAdvancedMetrics()}
+            />
+          </section>
+        )}
+
+        {activeSection === 'forecasts' && isSocio && (
+          <section className="card p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <span className="badge">Planeación operativa</span>
+                <h2 className="mt-3 text-2xl font-semibold">Pronósticos</h2>
+              </div>
+            </div>
+            <ForecastPanel
+              forecasts={advancedMetrics?.forecasts ?? null}
+              isLoading={advancedMetricsLoading}
+              error={advancedMetricsError}
+              onRefresh={() => void refreshAdvancedMetrics()}
+            />
+          </section>
+        )}
+
+        {activeSection === 'marketing' && isSocio && (
+          <section className="card p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <span className="badge">Inteligencia comercial</span>
+                <h2 className="mt-3 text-2xl font-semibold">Marketing & analítica predictiva</h2>
+              </div>
+            </div>
+            <MarketingPanel
+              insights={advancedMetrics?.marketing ?? null}
+              selectedRange={marketingRange}
+              onRangeChange={(value) => setMarketingRange(value)}
+              onRefresh={() => void refreshAdvancedMetrics()}
+            />
+          </section>
         )}
 
         {activeSection === 'payments' && user.role !== 'gerente' && (
@@ -4567,199 +4657,10 @@ const PartnerMetricsContent = ({
         </div>
       )}
 
-      {partnerMetrics?.advanced && (
-        <PartnerAdvancedReporting advanced={partnerMetrics.advanced} partnerDays={partnerDays} />
-      )}
-
       <PartnerFiscalControls folio={fiscalFolio} onUpdate={handleFolioUpdate} onIssue={handleIssueFolio} />
     </div>
   );
 };
-
-const AdvancedStat = ({ label, value, hint }: { label: string; value: string; hint?: string }) => (
-  <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
-    <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">{label}</p>
-    <p className="mt-1 text-2xl font-semibold text-primary-700 dark:text-primary-100">{value}</p>
-    {hint && <p className="text-xs text-[var(--brand-muted)]">{hint}</p>}
-  </div>
-);
-
-const PartnerAdvancedReporting = ({
-  advanced,
-  partnerDays,
-}: {
-  advanced: PartnerMetrics['advanced'];
-  partnerDays: number;
-}) => {
-  const totalSales = advanced.dailySales.reduce((sum, entry) => sum + entry.sales, 0);
-  const totalOrders = advanced.dailySales.reduce((sum, entry) => sum + entry.orders, 0);
-  const averageDailySales = advanced.dailySales.length ? totalSales / advanced.dailySales.length : 0;
-  const averageOrders = advanced.dailySales.length ? totalOrders / advanced.dailySales.length : 0;
-  const recentDaily = advanced.dailySales.slice(-Math.min(advanced.dailySales.length, 7)).reverse();
-  const customerTotal =
-    advanced.customerSegments.newCustomers + advanced.customerSegments.returningCustomers || 0;
-  const vipShare =
-    customerTotal > 0 ? advanced.customerSegments.vipCustomers / customerTotal : 0;
-  const orderStatusTotal = advanced.orderStatus.reduce((sum, entry) => sum + entry.count, 0);
-
-  const formatTrendLabel = (date: string) => {
-    const parsed = new Date(`${date}T00:00:00Z`);
-    if (Number.isNaN(parsed.getTime())) {
-      return date;
-    }
-    return parsed.toLocaleDateString('es-MX', {
-      weekday: 'short',
-      day: '2-digit',
-      month: 'short',
-    });
-  };
-
-  return (
-    <div className="rounded-3xl border border-primary-100/70 bg-gradient-to-br from-white/90 via-white/70 to-primary-50/60 p-5 text-sm shadow-sm dark:border-white/10 dark:from-slate-900/40 dark:via-slate-900/30 dark:to-primary-900/20">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="badge">Reporting avanzado</p>
-          <p className="text-sm text-[var(--brand-muted)]">
-            Herramienta inspirada en Frappe Books, adaptada a las métricas del POS para dirección.
-          </p>
-        </div>
-        <p className="text-xs text-[var(--brand-muted)]">Ventana analizada: {partnerDays} días</p>
-      </div>
-      <div className="mt-4 grid gap-4 md:grid-cols-3">
-        <AdvancedStat
-          label="Venta promedio diaria"
-          value={formatCurrency(Number(averageDailySales.toFixed(2)))}
-          hint="Basado en ventas registradas"
-        />
-        <AdvancedStat
-          label="Órdenes promedio"
-          value={`${averageOrders.toFixed(1)}`}
-          hint="Órdenes/día"
-        />
-        <AdvancedStat
-          label="Tasa de propina"
-          value={formatPercentValue(advanced.tipPerformance.tipRate)}
-          hint={`Promedio ${formatCurrency(advanced.tipPerformance.avgTip)}`}
-        />
-      </div>
-      <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
-          <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
-            Tendencia diaria
-          </p>
-          <ul className="mt-3 space-y-2">
-            {recentDaily.length === 0 ? (
-              <p className="text-xs text-[var(--brand-muted)]">Sin movimientos registrados.</p>
-            ) : (
-              recentDaily.map((entry) => (
-                <li
-                  key={entry.date}
-                  className="flex items-center justify-between rounded-2xl border border-primary-50/70 bg-white/60 px-3 py-2 dark:border-white/10 dark:bg-white/5"
-                >
-                  <div>
-                    <p className="font-semibold">{formatTrendLabel(entry.date)}</p>
-                    <p className="text-xs text-[var(--brand-muted)]">
-                      {entry.orders} órdenes · Propinas {formatCurrency(entry.tips)}
-                    </p>
-                  </div>
-                  <p className="font-semibold text-primary-600 dark:text-primary-200">
-                    {formatCurrency(entry.sales)}
-                  </p>
-                </li>
-              ))
-            )}
-          </ul>
-        </div>
-        <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
-          <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
-            Métodos de pago
-          </p>
-          <ul className="mt-3 space-y-2">
-            {advanced.paymentMethods.length === 0 ? (
-              <p className="text-xs text-[var(--brand-muted)]">Sin registros de pago.</p>
-            ) : (
-              advanced.paymentMethods.slice(0, 5).map((entry) => (
-                <li key={entry.method} className="flex items-center justify-between text-sm">
-                  <span>{getPaymentMethodLabel(entry.method)}</span>
-                  <span className="text-xs text-[var(--brand-muted)]">
-                    {formatCurrency(entry.amount)} · {formatPercentValue(entry.percent)}
-                  </span>
-                </li>
-              ))
-            )}
-          </ul>
-          <div className="mt-4 rounded-2xl border border-primary-50/80 px-3 py-2 text-xs text-[var(--brand-muted)] dark:border-white/10">
-            <p className="uppercase tracking-[0.35em]">Estado de órdenes</p>
-            {advanced.orderStatus.length === 0 ? (
-              <p className="mt-1 text-sm">Sin datos.</p>
-            ) : (
-              <ul className="mt-1 space-y-1 text-sm">
-                {advanced.orderStatus.slice(0, 5).map((entry) => (
-                  <li key={entry.status} className="flex items-center justify-between">
-                    <span>{entry.status}</span>
-                    <span className="text-xs text-[var(--brand-muted)]">
-                      {entry.count}{' '}
-                      {orderStatusTotal
-                        ? `· ${formatPercentValue(entry.count / orderStatusTotal, 0)}`
-                        : ''}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      </div>
-      <div className="mt-4 grid gap-4 md:grid-cols-3">
-        {[
-          {
-            label: 'Clientes nuevos',
-            value: advanced.customerSegments.newCustomers,
-            percent:
-              customerTotal > 0
-                ? formatPercentValue(advanced.customerSegments.newCustomers / customerTotal)
-                : '0.0%',
-          },
-          {
-            label: 'Clientes recurrentes',
-            value: advanced.customerSegments.returningCustomers,
-            percent:
-              customerTotal > 0
-                ? formatPercentValue(advanced.customerSegments.returningCustomers / customerTotal)
-                : '0.0%',
-          },
-          {
-            label: 'Clientes VIP',
-            value: advanced.customerSegments.vipCustomers,
-            percent: formatPercentValue(vipShare),
-          },
-        ].map((segment) => (
-          <div
-            key={segment.label}
-            className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5"
-          >
-            <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
-              {segment.label}
-            </p>
-            <p className="mt-1 text-2xl font-semibold text-primary-700 dark:text-primary-100">
-              {segment.value}
-            </p>
-            <p className="text-xs text-[var(--brand-muted)]">{segment.percent} del total</p>
-          </div>
-        ))}
-      </div>
-      <div className="mt-4 rounded-2xl border border-primary-100/70 bg-primary-50/60 px-4 py-3 text-sm text-primary-900 dark:border-white/10 dark:bg-primary-900/40 dark:text-primary-100">
-        <p className="text-xs uppercase tracking-[0.35em]">Propinas acumuladas</p>
-        <p className="text-2xl font-semibold">{formatCurrency(advanced.tipPerformance.totalTips)}</p>
-        <p className="text-xs text-[var(--brand-muted)]">
-          Tasa efectiva {formatPercentValue(advanced.tipPerformance.tipRate)} · Promedio{' '}
-          {formatCurrency(advanced.tipPerformance.avgTip)} por pago
-        </p>
-      </div>
-    </div>
-  );
-};
-
 const PartnerFiscalControls = ({
   folio,
   onUpdate,
@@ -4844,6 +4745,1058 @@ const PartnerFiscalControls = ({
           Generar folio
         </button>
       </div>
+  </div>
+);
+};
+
+const ADVANCED_RANGE_OPTIONS: Array<{ value: string; label: string; disabled?: boolean }> = [
+  { value: '1d', label: '24h' },
+  { value: '3d', label: '3 días' },
+  { value: '7d', label: '7 días' },
+  { value: '14d', label: '14 días' },
+  { value: '30d', label: '30 días · mantenimiento', disabled: true },
+  { value: '60d', label: '60 días' },
+  { value: '90d', label: '90 días' },
+  { value: '180d', label: '180 días' },
+  { value: '365d', label: '365 días' },
+  { value: '2y', label: '2 años' },
+  { value: '3y', label: '3 años' },
+  { value: '5y', label: '5 años' },
+  { value: '10y', label: '10 años' },
+];
+
+const MARKETING_RANGE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '7d', label: '7 días' },
+  { value: '14d', label: '14 días' },
+  { value: '30d', label: '30 días' },
+  { value: '60d', label: '60 días' },
+  { value: '90d', label: '90 días' },
+];
+
+const ADVANCED_SECTION_ORDER: AdvancedMetricsSectionId[] = [
+  'clients',
+  'sales',
+  'payments',
+  'orders',
+  'analytics',
+  'employees',
+  'inventory',
+];
+
+const EXPORT_FORMATS: Array<{ value: 'csv' | 'xlsx'; label: string }> = [
+  { value: 'csv', label: 'CSV' },
+  { value: 'xlsx', label: 'Excel' },
+];
+
+const AdvancedMetricsPanel = ({
+  metrics,
+  isLoading,
+  error,
+  selectedRange,
+  onRangeChange,
+  onRefresh,
+}: {
+  metrics: AdvancedMetricsPayload | null;
+  isLoading: boolean;
+  error: string | null;
+  selectedRange: string;
+  onRangeChange: (range: string) => void;
+  onRefresh: () => void;
+}) => {
+  const [exportFormat, setExportFormat] = useState<'csv' | 'xlsx'>('csv');
+  const [focusedSection, setFocusedSection] = useState<AdvancedMetricsSectionId>('clients');
+
+  const handleExport = () => {
+    if (typeof window === 'undefined' || !metrics) {
+      return;
+    }
+    const params = new URLSearchParams({
+      range: selectedRange,
+      section: focusedSection,
+      export: exportFormat,
+    });
+    const anchor = document.createElement('a');
+    anchor.href = `/api/advanced-metrics?${params.toString()}`;
+    anchor.setAttribute('target', '_blank');
+    anchor.rel = 'noopener noreferrer';
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  };
+
+  const availability = metrics?.rangeAvailability ?? {};
+  const sectionData = metrics?.sections ?? ({} as Record<AdvancedMetricsSectionId, AdvancedMetricsSection>);
+
+  return (
+    <div className="mt-4 rounded-3xl border border-primary-100/70 bg-gradient-to-br from-white/90 to-amber-50/60 p-5 text-sm shadow-sm dark:border-white/10 dark:from-slate-900/40 dark:to-amber-900/20">
+      <div className="flex flex-wrap items-center gap-4 text-sm">
+        <label className="flex items-center gap-2 text-xs font-semibold">
+          Periodo:
+          <select
+            value={selectedRange}
+            onChange={(event) => onRangeChange(event.target.value)}
+            className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] dark:border-white/10"
+          >
+            {ADVANCED_RANGE_OPTIONS.map((option) => (
+              <option
+                key={option.value}
+                value={option.value}
+                disabled={option.disabled || (availability ? availability[option.value] === false : false)}
+              >
+                {option.label}
+                {availability && availability[option.value] === false ? ' · sin datos' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="flex items-center gap-3 text-xs">
+          {EXPORT_FORMATS.map((format) => (
+            <label key={format.value} className="flex items-center gap-1">
+              <input
+                type="radio"
+                name="advanced-export"
+                value={format.value}
+                checked={exportFormat === format.value}
+                onChange={() => setExportFormat(format.value)}
+              />
+              {format.label}
+            </label>
+          ))}
+          <button type="button" className="brand-button" onClick={handleExport} disabled={!metrics}>
+            Descargar vista
+          </button>
+        </div>
+        <button
+          type="button"
+          className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline dark:text-primary-200"
+          onClick={onRefresh}
+        >
+          Refrescar métricas
+        </button>
+      </div>
+      {error && (
+        <div className="rounded-2xl border border-danger-200 bg-danger-50/70 px-4 py-3 text-sm text-danger-700 dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
+          {error}
+        </div>
+      )}
+      {isLoading && <p className="text-sm text-[var(--brand-muted)]">Cargando métricas avanzadas…</p>}
+      {!isLoading && metrics && !metrics.hasData && (
+        <p className="text-sm text-[var(--brand-muted)]">Rango seleccionado sin datos disponibles.</p>
+      )}
+      {!isLoading && metrics && (
+        <div className="mt-5 space-y-5">
+          {ADVANCED_SECTION_ORDER.map((sectionId) => (
+            <AdvancedMetricsSectionBlock
+              key={sectionId}
+              sectionId={sectionId}
+              section={sectionData[sectionId]}
+              isFocused={focusedSection === sectionId}
+              onFocus={() => setFocusedSection(sectionId)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AdvancedMetricsSectionBlock = ({
+  sectionId,
+  section,
+  isFocused,
+  onFocus,
+}: {
+  sectionId: AdvancedMetricsSectionId;
+  section?: AdvancedMetricsSection;
+  isFocused: boolean;
+  onFocus: () => void;
+}) => {
+  if (!section) {
+    return null;
+  }
+  return (
+    <div
+      className={`rounded-3xl border p-5 text-sm shadow-sm transition dark:border-white/10 ${
+        isFocused ? 'border-primary-400/80 shadow-lg' : 'border-primary-100/70'
+      }`}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">{section.title}</p>
+          {!section.hasData && <p className="text-xs text-[var(--brand-muted)]">Sin datos en este rango.</p>}
+        </div>
+        <button
+          type="button"
+          className="rounded-full border border-primary-100/70 px-3 py-1 text-xs font-semibold text-primary-600 hover:border-primary-300 dark:border-white/10"
+          onClick={onFocus}
+        >
+          {isFocused ? 'Seleccionado para exportar' : 'Exportar esta sección'}
+        </button>
+      </div>
+      {section.cards.length > 0 && (
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {section.cards.map((card) => (
+            <div
+              key={card.label}
+              className="rounded-2xl border border-primary-100/70 bg-white/80 px-4 py-3 font-semibold text-primary-700 dark:border-white/10 dark:bg-white/5 dark:text-primary-100"
+            >
+              <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">{card.label}</p>
+              <p className="mt-1 text-2xl">{card.value}</p>
+              {card.hint && <p className="text-xs text-[var(--brand-muted)]">{card.hint}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+      {section.bars.length > 0 && (
+        <div className="mt-4 space-y-2">
+          {section.bars.map((bar) => {
+            const secondaryValue =
+              typeof bar.secondary === 'number'
+                ? sectionId === 'clients'
+                  ? formatCurrency(bar.secondary)
+                  : bar.secondary
+                : null;
+            const secondaryLabel = sectionId === 'clients' ? 'Gastado' : 'Secundario';
+            return (
+              <div key={`${sectionId}-${bar.label}`} className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span>{bar.label}</span>
+                  <span className="font-semibold underline text-primary-700 dark:text-primary-200">{bar.value}</span>
+                </div>
+                <div className="h-2 rounded-full bg-primary-50/70 dark:bg-white/10">
+                  <div
+                    className="h-2 rounded-full bg-primary-500"
+                    style={{ width: `${Math.min(100, (bar.value / (section.bars[0]?.value || 1)) * 100)}%` }}
+                  />
+                </div>
+                {secondaryValue !== null && (
+                  <p className="text-xs text-[var(--brand-muted)]">
+                    {secondaryLabel}:{' '}
+                    <span className="font-semibold underline">{secondaryValue}</span>
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {section.table && section.table.rows.length > 0 && (
+        <MetricsTable table={section.table} tableKey={`${sectionId}-primary`} />
+      )}
+      {section.extraTables?.map((extra) => (
+        <div key={`${sectionId}-${extra.title}`} className="mt-4 rounded-2xl border border-primary-50/80 bg-white/70 p-3 dark:border-white/10 dark:bg-white/5">
+          <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">{extra.title}</p>
+          <MetricsTable table={extra.table} tableKey={`${sectionId}-${extra.title}-extra`} compact />
+        </div>
+      ))}
+      {section.message && <p className="mt-3 text-xs text-[var(--brand-muted)]">{section.message}</p>}
+    </div>
+  );
+};
+
+const MetricsTable = ({
+  table,
+  tableKey,
+  compact,
+}: {
+  table: NonNullable<AdvancedMetricsSection['table']>;
+  tableKey: string;
+  compact?: boolean;
+}) => {
+  const visibleRows = table.rows.slice(0, 5);
+  return (
+    <div className={`mt-4 overflow-x-auto ${compact ? 'text-[0.7rem]' : ''}`}>
+      <table className="w-full min-w-[420px] table-auto text-xs">
+        <thead>
+          <tr className="text-left text-[var(--brand-muted)]">
+            {table.columns.map((column) => (
+              <th key={`${tableKey}-${column}`} className="px-3 py-2 font-semibold">
+                {column}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {visibleRows.map((row, index) => (
+            <tr
+              key={`${tableKey}-row-${index}`}
+              className="border-t border-primary-50/80 text-[var(--brand-text)] dark:border-white/10 dark:text-white"
+            >
+              {table.columns.map((column) => (
+                <td key={`${tableKey}-${column}-${index}`} className="px-3 py-2">
+                  {row[column] ?? '—'}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {table.rows.length > 5 && (
+        <p className="mt-2 text-[0.7rem] text-[var(--brand-muted)]">Mostrando 5 de {table.rows.length} registros.</p>
+      )}
+    </div>
+  );
+};
+
+const ForecastPanel = ({
+  forecasts,
+  isLoading,
+  error,
+  onRefresh,
+}: {
+  forecasts: ForecastPayload | null;
+  isLoading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+}) => {
+  const branchHighlights = forecasts?.branchDemand
+    ? forecasts.branchDemand
+        .flatMap((branch) =>
+          branch.points.map((point) => ({
+            branch: branch.branch,
+            date: point.date,
+            revenue: point.revenue,
+          }))
+        )
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 5)
+    : [];
+
+  return (
+    <div className="mt-4 rounded-3xl border border-primary-100/70 bg-gradient-to-br from-white/90 to-amber-50/60 p-5 text-sm shadow-sm dark:border-white/10 dark:from-slate-900/40 dark:to-amber-900/20">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-[var(--brand-muted)]">
+          Genera recomendaciones con base en consumos, inventario y horarios de venta.
+        </p>
+        <button
+          type="button"
+          className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline dark:text-primary-200"
+          onClick={onRefresh}
+        >
+          Recalcular pronóstico
+        </button>
+      </div>
+      {error && (
+        <div className="mt-4 rounded-2xl border border-danger-200 bg-danger-50/70 px-4 py-3 text-sm text-danger-700 dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
+          {error}
+        </div>
+      )}
+      {isLoading && <p className="mt-4 text-sm text-[var(--brand-muted)]">Calculando pronósticos…</p>}
+      {!isLoading && !forecasts && !error && (
+        <p className="mt-4 text-sm text-[var(--brand-muted)]">Sin datos disponibles para generar pronósticos.</p>
+      )}
+      {!isLoading && forecasts && (
+        <>
+          <div className="mt-4 grid gap-5 lg:grid-cols-2">
+            <ForecastTable
+              title="Reposición de insumos"
+              columns={['#', 'Insumo', 'Stock actual', 'Consumo diario', 'Días restantes', 'Próximo surtido']}
+              rows={(forecasts.restock ?? []).map((entry, index) => ({
+                '#': index + 1,
+                Insumo: entry.name,
+                'Stock actual': `${entry.quantity.toFixed(1)} u`,
+                'Consumo diario': `${entry.avgDailyUse} u`,
+                'Días restantes': entry.daysRemaining ?? '—',
+                'Próximo surtido': entry.nextRestock
+                  ? new Date(entry.nextRestock).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' })
+                  : 'Calcular manual',
+              }))}
+            />
+            <ForecastTable
+              title="Producción sugerida"
+              columns={['#', 'Producto', 'Demanda semanal', 'Promedio diario', 'Hora pico']}
+              rows={(forecasts.production ?? []).map((entry, index) => ({
+                '#': index + 1,
+                Producto: entry.name,
+                'Demanda semanal': `${entry.weeklyDemand}`,
+                'Promedio diario': `${entry.dailyAverage}`,
+                'Hora pico': entry.peakHour,
+              }))}
+            />
+          </div>
+          <div className="mt-6 space-y-4">
+            {(forecasts.salesWindows ?? []).map((window) => (
+              <ForecastSalesWindow key={window.days} window={window} />
+            ))}
+          </div>
+          {forecasts.branchDemand && forecasts.branchDemand.length > 0 && (
+            <div className="mt-6 space-y-3">
+              <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">Curvas por sucursal</p>
+              {forecasts.branchDemand.map((branch) => (
+                <div
+                  key={branch.branch}
+                  className="rounded-2xl border border-primary-50/80 bg-white/80 p-4 text-xs dark:border-white/10 dark:bg-white/5"
+                >
+                  <p className="font-semibold text-primary-700 dark:text-primary-100">{branch.branch}</p>
+                  {branch.points.length === 0 ? (
+                    <p className="text-[var(--brand-muted)]">Sin historial.</p>
+                  ) : (
+                    <div className="mt-2 space-y-1">
+                      {branch.points.map((point) => (
+                        <div key={`${branch.branch}-${point.date}`} className="flex items-center justify-between">
+                          <span>{point.date}</span>
+                          <span className="font-semibold">{formatCurrency(point.revenue)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+              <p className="text-[0.7rem] text-[var(--brand-muted)]">
+                Nota: cada curva refleja la demanda estimada diaria por sucursal; una pendiente al alza indica mayor venta esperada y sirve para ajustar personal e inventario local.
+              </p>
+              {branchHighlights.length > 0 && (
+                <div className="rounded-2xl border border-primary-50/80 bg-white/90 p-4 text-xs dark:border-white/10 dark:bg-white/5">
+                  <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">Top 5 picos por sucursal</p>
+                  <div className="mt-2 overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="text-[0.7rem] uppercase tracking-widest text-[var(--brand-muted)]">
+                          <th className="py-1 pr-2">#</th>
+                          <th className="py-1 pr-2">Sucursal</th>
+                          <th className="py-1 pr-2">Fecha</th>
+                          <th className="py-1 text-right">Venta estimada</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {branchHighlights.map((highlight, index) => (
+                          <tr key={`${highlight.branch}-${highlight.date}`} className="border-t border-primary-50/70 text-[var(--brand-text)] dark:border-white/10">
+                            <td className="py-1 pr-2 font-semibold">{index + 1}</td>
+                            <td className="py-1 pr-2">{highlight.branch}</td>
+                            <td className="py-1 pr-2">{highlight.date}</td>
+                            <td className="py-1 text-right font-semibold">{formatCurrency(highlight.revenue)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
+
+const ForecastTable = ({
+  title,
+  columns,
+  rows,
+}: {
+  title: string;
+  columns: string[];
+  rows: Array<Record<string, string | number>>;
+}) => (
+  <div className="rounded-2xl border border-primary-50/80 bg-white/80 p-4 text-xs dark:border-white/10 dark:bg-white/5">
+    <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">{title}</p>
+    {rows.length === 0 ? (
+      <p className="mt-3 text-[var(--brand-muted)]">Sin datos suficientes.</p>
+    ) : (
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full min-w-[420px] table-auto text-[0.7rem]">
+          <thead>
+            <tr className="text-left text-[var(--brand-muted)]">
+              {columns.map((column) => (
+                <th key={`${title}-${column}`} className="px-3 py-2 font-semibold">
+                  {column}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={`${title}-row-${index}`} className="border-t border-primary-50/80 text-[var(--brand-text)] dark:border-white/10 dark:text-white">
+                {columns.map((column) => (
+                  <td key={`${title}-${column}-${index}`} className="px-3 py-2">
+                    {row[column] ?? '—'}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </div>
+);
+
+const ForecastSalesWindow = ({
+  window,
+}: {
+  window: ForecastPayload['salesWindows'][number];
+}) => (
+  <div className="rounded-3xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+    <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">{window.label}</p>
+    <div className="mt-3 flex flex-wrap gap-3">
+      <MetricPill label="Venta estimada" value={formatCurrency(window.revenue)} />
+      <MetricPill label="Órdenes previstas" value={`${window.orders}`} />
+      <MetricPill
+        label="Día más activo"
+        value={
+          window.busiestDay !== 'Sin datos'
+            ? new Date(window.busiestDay).toLocaleDateString('es-MX', {
+                weekday: 'long',
+                month: 'short',
+                day: 'numeric',
+              })
+            : 'Sin datos'
+        }
+      />
+    </div>
+    <p className="mt-3 text-xs text-[var(--brand-muted)]">
+      Ajusta el inventario dinámico del dropdown de bebidas/alimentos según el pico esperado para garantizar abasto.
+    </p>
+    {window.topActivity && window.topActivity.length > 0 ? (
+      <div className="mt-4 text-xs">
+        <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">Horarios más activos</p>
+        <ul className="mt-2 space-y-1">
+          {window.topActivity.map((slot, index) => (
+            <li
+              key={`${window.days}-${slot.day}-${slot.hour}-${index}`}
+              className="flex items-center justify-between rounded-2xl border border-primary-50/80 px-3 py-2 text-[var(--brand-text)] dark:border-white/10 dark:text-white"
+            >
+              <span>
+                {slot.day} · {slot.hour}
+              </span>
+              <span className="font-semibold">{slot.count} órdenes</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : (
+      <p className="mt-2 text-xs text-[var(--brand-muted)]">Sin datos de horarios activos.</p>
+    )}
+  </div>
+);
+
+type ClusterChartData = MarketingInsights['salesClusters'][number]['chart'];
+
+const ClusterChartGraphic = ({
+  chart,
+  width = 260,
+  height = 160,
+  className = '',
+  svgRef,
+}: {
+  chart: ClusterChartData;
+  width?: number;
+  height?: number;
+  className?: string;
+  svgRef?: (element: SVGSVGElement | null) => void;
+}) => {
+  const basePoints = chart.points.length
+    ? chart.points
+    : [{ orders: chart.centroid.orders, spent: chart.centroid.spent }];
+  const orderedPoints = [...basePoints].sort((a, b) => a.orders - b.orders);
+  const orderValues = [...basePoints.map((point) => point.orders), chart.centroid.orders];
+  const spentValues = [...basePoints.map((point) => point.spent), chart.centroid.spent];
+  const minOrders = Math.min(...orderValues);
+  const maxOrders = Math.max(...orderValues);
+  const minSpent = Math.min(...spentValues);
+  const maxSpent = Math.max(...spentValues);
+  const ordersRange = maxOrders - minOrders || 1;
+  const spentRange = maxSpent - minSpent || 1;
+  const padX = width * 0.08;
+  const padY = height * 0.12;
+  const scaleX = (value: number) => padX + ((value - minOrders) / ordersRange) * (width - padX * 2);
+  const scaleY = (value: number) => height - padY - ((value - minSpent) / spentRange) * (height - padY * 2);
+  const buildTicks = (min: number, max: number, count = 4) => {
+    const ticks: Array<{ value: number; label: string }> = [];
+    const step = (max - min) / count;
+    for (let i = 0; i <= count; i += 1) {
+      const value = min + step * i;
+      ticks.push({ value, label: typeof value === 'number' ? value.toFixed(0) : `${value}` });
+    }
+    return ticks;
+  };
+  const ticksX = buildTicks(minOrders, maxOrders);
+  const ticksY = buildTicks(minSpent, maxSpent);
+
+  return (
+    <svg
+      ref={svgRef}
+      viewBox={`0 0 ${width} ${height}`}
+      className={`w-full ${className}`}
+      role="img"
+      aria-label="Diagrama de dispersión del cluster"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <defs>
+        <linearGradient id="cluster-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="rgba(255,255,255,0.9)" />
+          <stop offset="100%" stopColor="rgba(255,255,255,0.4)" />
+        </linearGradient>
+      </defs>
+      <rect x={0} y={0} width={width} height={height} rx={20} fill="url(#cluster-bg)" />
+      <line x1={padX} y1={height - padY} x2={width - padX} y2={height - padY} stroke="#c7b9b3" strokeWidth={1} />
+      <line x1={padX} y1={padY} x2={padX} y2={height - padY} stroke="#c7b9b3" strokeWidth={1} />
+      {ticksX.map((tick) => (
+        <g key={`tick-x-${tick.value}`}>
+          <line
+            x1={scaleX(tick.value)}
+            y1={height - padY}
+            x2={scaleX(tick.value)}
+            y2={height - padY + 6}
+            stroke="#9b6a4c"
+            strokeWidth={1}
+          />
+          <text
+            x={scaleX(tick.value)}
+            y={height - padY + 16}
+            fontSize={9}
+            textAnchor="middle"
+            fill="#7b5b44"
+          >
+            {tick.label}
+          </text>
+        </g>
+      ))}
+      {ticksY.map((tick) => (
+        <g key={`tick-y-${tick.value}`}>
+          <line
+            x1={padX - 6}
+            y1={scaleY(tick.value)}
+            x2={padX}
+            y2={scaleY(tick.value)}
+            stroke="#9b6a4c"
+            strokeWidth={1}
+          />
+          <text
+            x={padX - 8}
+            y={scaleY(tick.value) + 3}
+            fontSize={9}
+            textAnchor="end"
+            fill="#7b5b44"
+          >
+            {tick.label}
+          </text>
+        </g>
+      ))}
+      {orderedPoints.length > 1 && (
+        <polyline
+          points={orderedPoints
+            .map((point) => `${scaleX(point.orders)},${scaleY(point.spent)}`)
+            .join(' ')}
+          fill="none"
+          stroke="#8c4b2f"
+          strokeWidth={1.5}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          opacity={0.5}
+        />
+      )}
+      {orderedPoints.map((point, index) => (
+        <g key={`point-${point.orders}-${point.spent}-${index}`}>
+          <circle
+            cx={scaleX(point.orders)}
+            cy={scaleY(point.spent)}
+            r={4.5}
+            fill="rgba(148, 64, 30, 0.65)"
+            stroke="#7a2f13"
+            strokeWidth={0.8}
+          />
+          <text
+            x={scaleX(point.orders) + 6}
+            y={scaleY(point.spent) - 6}
+            fontSize={9}
+            fill="#4a2412"
+          >
+            {formatCurrency(point.spent)}
+          </text>
+        </g>
+      ))}
+      <circle
+        cx={scaleX(chart.centroid.orders)}
+        cy={scaleY(chart.centroid.spent)}
+        r={7}
+        fill="#cb6120"
+        stroke="#fff"
+        strokeWidth={1.5}
+      />
+      <text
+        x={scaleX(chart.centroid.orders)}
+        y={scaleY(chart.centroid.spent) - 10}
+        fontSize={10}
+        textAnchor="middle"
+        fontWeight="bold"
+        fill="#552b1a"
+      >
+        {`${chart.centroid.orders.toFixed(1)} ord · ${formatCurrency(chart.centroid.spent)}`}
+      </text>
+      <text x={width - padX} y={height - padY / 3} fontSize={10} textAnchor="end" fill="#7b6c65">
+        Órdenes
+      </text>
+      <text
+        x={padX / 3}
+        y={padY}
+        fontSize={10}
+        fill="#7b6c65"
+        transform={`rotate(-90 ${padX / 3} ${padY})`}
+      >
+        Consumo
+      </text>
+    </svg>
+  );
+};
+
+const MarketingPanel = ({
+  insights,
+  selectedRange,
+  onRangeChange,
+  onRefresh,
+}: {
+  insights: MarketingInsights | null;
+  selectedRange: string;
+  onRangeChange: (range: string) => void;
+  onRefresh: () => void;
+}) => {
+  const [activeCluster, setActiveCluster] = useState<MarketingInsights['salesClusters'][number] | null>(null);
+  const [chartZoom, setChartZoom] = useState(1);
+  const modalSvgRef = useRef<SVGSVGElement | null>(null);
+
+  useEffect(() => {
+    if (activeCluster) {
+      setChartZoom(1);
+    }
+  }, [activeCluster]);
+
+  const clampZoom = (value: number) => Number(Math.min(3, Math.max(1, value)).toFixed(2));
+
+  const handleModalWheel = (event: WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const delta = event.deltaY * -0.001;
+    setChartZoom((prev) => clampZoom(prev + delta));
+  };
+
+  const handleZoomStep = (step: number) => {
+    setChartZoom((prev) => clampZoom(prev + step));
+  };
+
+  const handleDownload = () => {
+    if (!modalSvgRef.current || !activeCluster) return;
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const svgElement = modalSvgRef.current;
+    const serializer = new XMLSerializer();
+    const source = serializer.serializeToString(svgElement);
+    const svgBlob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' });
+    const svgUrl = URL.createObjectURL(svgBlob);
+    const image = new window.Image();
+    const width = svgElement.viewBox?.baseVal?.width || svgElement.clientWidth || 640;
+    const height = svgElement.viewBox?.baseVal?.height || svgElement.clientHeight || 380;
+
+    image.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d');
+      if (!context) {
+        URL.revokeObjectURL(svgUrl);
+        return;
+      }
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, width, height);
+      context.drawImage(image, 0, 0, width, height);
+      URL.revokeObjectURL(svgUrl);
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          return;
+        }
+        const pngUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = pngUrl;
+        link.download = `${activeCluster.name.replace(/\s+/g, '-').toLowerCase()}.png`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(pngUrl);
+      }, 'image/png');
+    };
+
+    image.onerror = () => {
+      URL.revokeObjectURL(svgUrl);
+    };
+
+    image.src = svgUrl;
+  };
+
+  const modalChartBase = { width: 640, height: 380 };
+  const zoomedWidth = Math.round(modalChartBase.width * chartZoom);
+  const zoomedHeight = Math.round(modalChartBase.height * chartZoom);
+
+  return (
+    <div className="mt-4 space-y-6 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <label className="flex items-center gap-2 text-xs font-semibold">
+          Horizonte:
+          <select
+            value={selectedRange}
+            onChange={(event) => onRangeChange(event.target.value)}
+            className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] dark:border-white/10"
+          >
+            {MARKETING_RANGE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline dark:text-primary-200"
+          onClick={onRefresh}
+        >
+          Recalcular marketing
+        </button>
+      </div>
+
+      {!insights ? (
+        <p className="text-sm text-[var(--brand-muted)]">Sin datos suficientes para marketing.</p>
+      ) : (
+        <>
+          <div>
+            <p className="badge">Segmentación (k-means simulado)</p>
+            <p className="mt-2 text-xs text-[var(--brand-muted)]">
+              Agrupamos clientes por gasto y frecuencia para activar campañas personalizadas.
+            </p>
+            <div className="mt-3 grid gap-3 lg:grid-cols-3">
+              {insights.salesClusters.map((cluster) => (
+                <div
+                  key={cluster.name}
+                  className="rounded-2xl border border-primary-50/80 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5"
+                >
+                  <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">{cluster.name}</p>
+                  <p className="mt-1 text-sm">{cluster.description}</p>
+                  <p className="mt-2 text-sm">
+                    Clientes: <span className="font-semibold">{cluster.count}</span>
+                  </p>
+                  <p className="text-sm">
+                    Ticket promedio:{' '}
+                    <span className="font-semibold">{formatCurrency(cluster.avgTicket)}</span>
+                  </p>
+                  <div className="mt-3">
+                    <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">Gráfico</p>
+                    <button
+                      type="button"
+                      onClick={() => setActiveCluster(cluster)}
+                      className="mt-2 block w-full rounded-2xl border border-primary-100/70 bg-gradient-to-br from-white to-primary-50/30 p-2 text-left transition hover:border-primary-300 dark:border-white/10"
+                    >
+                      <ClusterChartGraphic chart={cluster.chart} />
+                      <p className="mt-2 text-xs text-[var(--brand-muted)]">
+                        Clic para ampliar, zoom y descarga.
+                      </p>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="rounded-2xl border border-primary-50/80 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
+              <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">Sugerencias de producto</p>
+              <ul className="mt-3 space-y-2 text-sm">
+                {insights.productSuggestions.length === 0 ? (
+                  <li className="text-[var(--brand-muted)]">Sin recomendaciones por ahora.</li>
+                ) : (
+                  insights.productSuggestions.map((item) => (
+                    <li
+                      key={item.product}
+                      className="flex items-center justify-between rounded-xl border border-primary-50/80 px-3 py-2 dark:border-white/10"
+                    >
+                      <span className="font-semibold">{item.product}</span>
+                      <span className="text-xs text-[var(--brand-muted)]">{item.reason}</span>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </div>
+            <div className="rounded-2xl border border-primary-50/80 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
+              <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">Top horarios</p>
+              <ul className="mt-3 space-y-2">
+                {insights.bestHours.length === 0 ? (
+                  <li className="text-[var(--brand-muted)]">Sin registros.</li>
+                ) : (
+                  insights.bestHours.map((slot) => (
+                    <li
+                      key={`${slot.day}-${slot.hour}`}
+                      className="flex items-center justify-between rounded-xl border border-primary-50/80 px-3 py-2 dark:border-white/10"
+                    >
+                      <span>
+                        {slot.day} · {slot.hour}
+                      </span>
+                      <span className="font-semibold">{slot.count} pedidos</span>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </div>
+          </div>
+
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="rounded-2xl border border-primary-50/80 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
+              <p className="badge">Inferencia de pedidos</p>
+              <p className="mt-1 text-xs text-[var(--brand-muted)]">
+                Modelo heurístico que estima tipo de pedido (pick-up, reservación, delivery).
+              </p>
+              <ul className="mt-3 space-y-2">
+                {insights.orderInference.map((entry) => (
+                  <li key={entry.type} className="rounded-xl border border-primary-50/80 px-3 py-2 text-sm dark:border-white/10">
+                    <p className="font-semibold">
+                      {entry.type}: {entry.probability}%
+                    </p>
+                    <p className="text-xs text-[var(--brand-muted)]">{entry.drivers}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="rounded-2xl border border-primary-50/80 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+              <p className="badge">Cadenas de Markov (landing)</p>
+              <ul className="mt-3 space-y-2">
+                {insights.landingMarkov.length === 0 ? (
+                  <li className="text-xs text-[var(--brand-muted)]">Sin navegación registrada.</li>
+                ) : (
+                  insights.landingMarkov.map((transition) => (
+                    <li
+                      key={`${transition.from}-${transition.to}`}
+                      className="rounded-xl border border-primary-50/80 px-3 py-2 dark:border-white/10"
+                    >
+                      <p className="font-semibold">
+                        {transition.from} ➜ {transition.to}
+                      </p>
+                      <p className="text-xs text-[var(--brand-muted)]">{transition.probability}% probabilidad</p>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </div>
+          </div>
+
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="rounded-2xl border border-primary-50/80 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+              <p className="badge">Inventario · Redes Bayesianas</p>
+              <ul className="mt-3 space-y-2">
+                {insights.inventoryBayesian.length === 0 ? (
+                  <li className="text-xs text-[var(--brand-muted)]">Sin indicadores críticos.</li>
+                ) : (
+                  insights.inventoryBayesian.map((item) => (
+                    <li key={item.item} className="rounded-xl border border-primary-50/80 px-3 py-2 dark:border-white/10">
+                      <p className="font-semibold">
+                        {item.item} · Riesgo {item.risk}
+                      </p>
+                      <p className="text-xs text-[var(--brand-muted)]">{item.recommendation}</p>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </div>
+            <div className="rounded-2xl border border-primary-50/80 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+              <p className="badge">Anomalías detectadas</p>
+              <ul className="mt-3 space-y-2">
+                {insights.anomalies.length === 0 ? (
+                  <li className="text-xs text-[var(--brand-muted)]">No se detectaron eventos atípicos.</li>
+                ) : (
+                  insights.anomalies.map((anom, index) => (
+                    <li
+                      key={`${anom.label}-${index}`}
+                      className="rounded-xl border border-danger-200/70 px-3 py-2 text-danger-700 dark:border-danger-500/30 dark:text-danger-100"
+                    >
+                      <p className="font-semibold">{anom.label}</p>
+                      <p className="text-xs">{anom.description}</p>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </div>
+          </div>
+        </>
+      )}
+
+      {activeCluster && (
+        <DetailModal onClose={() => setActiveCluster(null)}>
+          <div className="space-y-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="badge">Cluster k-means</p>
+                <h3 className="mt-2 text-2xl font-semibold text-primary-700 dark:text-primary-100">
+                  {activeCluster.name}
+                </h3>
+                <p className="text-sm text-[var(--brand-muted)]">{activeCluster.description}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveCluster(null)}
+                className="rounded-full border border-primary-100/70 px-3 py-1 text-xs font-semibold text-[var(--brand-text)] transition hover:bg-primary-50 dark:border-white/20 dark:text-white"
+              >
+                Cerrar
+              </button>
+            </div>
+            <div
+              className="rounded-3xl border border-primary-100/70 bg-white/60 p-4 dark:border-white/20 dark:bg-primary-900/20"
+              onWheel={handleModalWheel}
+            >
+              <p className="text-xs text-[var(--brand-muted)]">
+                Usa el scroll o los controles para hacer zoom (x{chartZoom.toFixed(2)}). Desplázate en el recuadro para explorar.
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="rounded-full border border-primary-100/70 px-3 py-1 text-xs font-semibold text-[var(--brand-text)] hover:bg-primary-50 dark:border-white/20 dark:text-white"
+                    onClick={() => handleZoomStep(-0.25)}
+                  >
+                    −
+                  </button>
+                  <input
+                    type="range"
+                    min={1}
+                    max={3}
+                    step={0.25}
+                    value={chartZoom}
+                    onChange={(event) => setChartZoom(clampZoom(Number(event.target.value)))}
+                    className="h-1 w-32 accent-primary-500"
+                  />
+                  <button
+                    type="button"
+                    className="rounded-full border border-primary-100/70 px-3 py-1 text-xs font-semibold text-[var(--brand-text)] hover:bg-primary-50 dark:border-white/20 dark:text-white"
+                    onClick={() => handleZoomStep(0.25)}
+                  >
+                    +
+                  </button>
+                </div>
+                <span className="font-semibold text-primary-600 dark:text-primary-200">{chartZoom.toFixed(2)}x</span>
+              </div>
+              <div className="mt-3 overflow-auto" style={{ cursor: chartZoom > 1 ? 'grab' : 'default' }}>
+                <ClusterChartGraphic
+                  chart={activeCluster.chart}
+                  width={zoomedWidth}
+                  height={zoomedHeight}
+                  svgRef={(element) => {
+                    modalSvgRef.current = element;
+                  }}
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs text-[var(--brand-muted)]">
+                Centroid: {activeCluster.chart.centroid.orders} órdenes / {formatCurrency(activeCluster.chart.centroid.spent)}.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  className="rounded-full border border-primary-100/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.35em] text-primary-600 transition hover:bg-primary-50 dark:border-white/20 dark:text-white"
+                  onClick={handleDownload}
+                >
+                  Descargar PNG
+                </button>
+              </div>
+            </div>
+          </div>
+        </DetailModal>
+      )}
     </div>
   );
 };

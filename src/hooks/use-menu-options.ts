@@ -47,6 +47,7 @@ const FOOD_KEYWORDS = [
   'brownie',
   'galleta',
 ];
+const PACKAGE_KEYWORDS = ['paquete', 'combo', 'kit', 'box', 'use'];
 
 const normalize = (value?: string | null) => value?.trim().toLowerCase() ?? '';
 
@@ -139,6 +140,18 @@ export function useMenuOptions() {
     () => menuItems.filter((item) => classifyProduct(item) === 'food'),
     [menuItems]
   );
+  const packageOptions = useMemo(() => {
+    const matchesKeyword = (value?: string | null) => {
+      const normalized = normalize(value);
+      return PACKAGE_KEYWORDS.some((keyword) => normalized.includes(keyword));
+    };
+    return menuItems.filter(
+      (item) =>
+        matchesKeyword(item.label) ||
+        matchesKeyword(item.category) ||
+        matchesKeyword(item.subcategory)
+    );
+  }, [menuItems]);
 
   const getMenuItemById = useCallback(
     (id: string | null | undefined) => (id ? menuMap.get(id) ?? null : null),
@@ -148,6 +161,7 @@ export function useMenuOptions() {
   return {
     beverageOptions,
     foodOptions,
+    packageOptions,
     allMenuItems: menuItems,
     getMenuItemById,
     isLoading,
