@@ -1,22 +1,43 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-server';
 
+export const dynamic = 'force-dynamic';
+
 const ORDERS_TABLE = process.env.SUPABASE_ORDERS_TABLE ?? 'orders';
 const PAYMENTS_TABLE = process.env.SUPABASE_PAYMENTS_TABLE ?? 'payments';
 const CUSTOMER_METRICS_VIEW =
   process.env.SUPABASE_CUSTOMER_METRICS_VIEW ?? 'v_customer_last_month';
 const REPORTS_TABLE = process.env.SUPABASE_REPORTS_TABLE ?? 'report_requests';
 
-const DAYS = Number(process.env.PARTNER_METRICS_DAYS ?? 30);
+const DEFAULT_DAYS = Number(process.env.PARTNER_METRICS_DAYS ?? 30);
+const VIP_SPENT_THRESHOLD = Number(process.env.PARTNER_VIP_THRESHOLD ?? 1200);
 
 const toNumber = (value: unknown) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-export async function GET() {
+const getDateKey = (value?: string | null) => {
+  const parsed = value ? new Date(value) : new Date();
+  return Number.isNaN(parsed?.getTime?.()) ? new Date().toISOString().slice(0, 10) : parsed.toISOString().slice(0, 10);
+};
+
+type DailyTotals = { sales: number; orders: number; tips: number };
+
+const ensureBucket = (collection: Map<string, DailyTotals>, key: string) => {
+  if (!collection.has(key)) {
+    collection.set(key, { sales: 0, orders: 0, tips: 0 });
+  }
+  return collection.get(key)!;
+};
+
+export async function GET(request: Request) {
   try {
-    const since = new Date(Date.now() - DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const { searchParams } = new URL(request.url);
+    const requestedDays = Number(searchParams.get('days'));
+    const daysWindow =
+      Number.isFinite(requestedDays) && requestedDays > 0 ? Math.min(requestedDays, 360) : DEFAULT_DAYS;
+    const since = new Date(Date.now() - daysWindow * 24 * 60 * 60 * 1000).toISOString();
 
     const [
       { data: orders, error: ordersError },
@@ -30,7 +51,7 @@ export async function GET() {
         .gte('createdAt', since),
       supabaseAdmin
         .from(PAYMENTS_TABLE)
-        .select('id,amount,"tipAmount",status,"createdAt"')
+        .select('id,amount,"tipAmount",status,"createdAt",method')
         .gte('createdAt', since),
       supabaseAdmin.from(CUSTOMER_METRICS_VIEW).select('clientId,orders,spent,items'),
       supabaseAdmin
@@ -76,12 +97,84 @@ export async function GET() {
       tipsTotal: Number(tipsTotal.toFixed(2)),
     };
 
+    const dailyCollection = new Map<string, DailyTotals>();
+    const orderStatusMap = new Map<string, number>();
+
+    (orders ?? []).forEach((order) => {
+      const bucket = ensureBucket(dailyCollection, getDateKey(order.createdAt));
+      bucket.sales += toNumber(order.total);
+      bucket.orders += 1;
+
+      const statusKey = (order.status ?? 'desconocido').toLowerCase();
+      orderStatusMap.set(statusKey, (orderStatusMap.get(statusKey) ?? 0) + 1);
+    });
+
+    const paymentMethodMap = new Map<string, number>();
+
+    (payments ?? []).forEach((payment) => {
+      const bucket = ensureBucket(dailyCollection, getDateKey(payment.createdAt));
+      bucket.tips += toNumber(payment.tipAmount);
+
+      const methodKey = (payment.method ?? 'otro').toLowerCase();
+      paymentMethodMap.set(methodKey, (paymentMethodMap.get(methodKey) ?? 0) + toNumber(payment.amount));
+    });
+
+    const dailySales = Array.from(dailyCollection.entries())
+      .map(([date, totals]) => ({
+        date,
+        sales: Number(totals.sales.toFixed(2)),
+        orders: totals.orders,
+        tips: Number(totals.tips.toFixed(2)),
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    const paymentMethodsRaw = Array.from(paymentMethodMap.entries()).map(([method, amount]) => ({
+      method,
+      amount: Number(amount.toFixed(2)),
+    }));
+
+    const paymentVolume = paymentMethodsRaw.reduce((sum, entry) => sum + entry.amount, 0);
+    const paymentMethods = paymentMethodsRaw.map((entry) => ({
+      ...entry,
+      percent: paymentVolume ? Number((entry.amount / paymentVolume).toFixed(4)) : 0,
+    }));
+
+    const orderStatus = Array.from(orderStatusMap.entries())
+      .map(([status, count]) => ({ status, count }))
+      .sort((a, b) => b.count - a.count);
+
+    const newCustomers =
+      customerView?.filter((entry) => (entry.orders ?? 0) <= 1).length ?? 0;
+    const returningCustomers = (customerView?.length ?? 0) - newCustomers;
+    const vipCustomers = customerView
+      ? customerView.filter((entry) => toNumber(entry.spent) >= VIP_SPENT_THRESHOLD).length
+      : 0;
+
+    const tipPerformance = {
+      totalTips: Number(tipsTotal.toFixed(2)),
+      avgTip: payments && payments.length ? Number((tipsTotal / payments.length).toFixed(2)) : 0,
+      tipRate: paymentsTotal ? Number((tipsTotal / paymentsTotal).toFixed(4)) : 0,
+    };
+
+    const advanced = {
+      dailySales,
+      paymentMethods,
+      orderStatus,
+      customerSegments: {
+        newCustomers,
+        returningCustomers: Math.max(0, returningCustomers),
+        vipCustomers,
+      },
+      tipPerformance,
+    };
+
     return NextResponse.json({
       success: true,
       data: {
         metrics,
         loyalty,
         reports: reports ?? [],
+        advanced,
       },
     });
   } catch (error) {

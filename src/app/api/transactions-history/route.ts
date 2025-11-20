@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-server';
+
+export const dynamic = 'force-dynamic';
 import { withDecryptedUserNames } from '@/lib/customer-decrypt';
 
 const ORDERS_TABLE = process.env.SUPABASE_ORDERS_TABLE ?? 'orders';

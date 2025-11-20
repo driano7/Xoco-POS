@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-server';
+
+export const dynamic = 'force-dynamic';
 import { withDecryptedUserNames, type RawUserRecord } from '@/lib/customer-decrypt';
 
 const PREP_QUEUE_TABLE = process.env.SUPABASE_PREP_QUEUE_TABLE ?? 'prep_queue';
@@ -15,6 +17,117 @@ const MAX_RESULTS = Number(process.env.PREP_QUEUE_LIMIT ?? 100);
 const normalizeNumber = (value: unknown) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const normalizeProductId = (value: unknown) => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  return null;
+};
+
+type StoredOrderItem = {
+  productId?: string | null;
+  name?: string | null;
+  category?: string | null;
+  subcategory?: string | null;
+};
+
+const parseStoredOrderItems = (value: unknown): StoredOrderItem[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => {
+      const record = entry as Record<string, unknown>;
+      return {
+        productId: normalizeProductId(record.productId ?? record.id),
+        name: typeof record.name === 'string' ? record.name : null,
+        category: typeof record.category === 'string' ? record.category : null,
+        subcategory: typeof record.subcategory === 'string' ? record.subcategory : null,
+      };
+    })
+    .filter(
+      (item) => item.productId || item.name || item.category || item.subcategory
+    );
+};
+
+const resolveSnapshotProduct = (
+  order: (Record<string, unknown> & { items?: unknown }) | null,
+  orderItem: { productId?: string | null } | null
+) => {
+  if (!order) {
+    return null;
+  }
+  const storedItems = parseStoredOrderItems(order.items);
+  if (!storedItems.length) {
+    return null;
+  }
+  const normalizedProductId = normalizeProductId(orderItem?.productId);
+  const match = normalizedProductId
+    ? storedItems.find((item) => item.productId === normalizedProductId)
+    : storedItems[0];
+  if (!match) {
+    return null;
+  }
+  return {
+    id: match.productId ?? normalizedProductId ?? null,
+    name: match.name ?? null,
+    category: match.category ?? null,
+    subcategory: match.subcategory ?? null,
+  };
+};
+
+const DEMO_STAFF_NAME_OVERRIDES: Record<string, string> = {
+  'barista-demo': 'Demo Barista',
+  'manager-demo': 'Demo Gerente',
+  'socio-demo': 'Socio socio.demo',
+  'socio-cots': 'Socio cots.21d',
+  'socio-ale': 'Socio aleisgales99',
+  'socio-jhon': 'Socio garcia.aragon.jhon23',
+  'super-criptec': 'Super donovan',
+  'super-demo': 'Super demo',
+  'socio-donovan': 'Socio donovanriano',
+};
+
+type NormalizedStaffRecord = {
+  id: string;
+  email?: string | null;
+  role?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+};
+
+const buildStaffFullName = (first?: string | null, last?: string | null) => {
+  const parts = [first?.trim(), last?.trim()].filter((value): value is string => Boolean(value));
+  if (!parts.length) {
+    return null;
+  }
+  return parts.join(' ');
+};
+
+const resolveHandlerName = (handler?: NormalizedStaffRecord | null, staffId?: string | null) => {
+  if (handler) {
+    if (handler.firstName) {
+      return handler.firstName;
+    }
+    const displayName = buildStaffFullName(handler.firstName, handler.lastName);
+    if (displayName) {
+      return displayName;
+    }
+    if (handler.email) {
+      return handler.email;
+    }
+  }
+  if (!staffId) {
+    return null;
+  }
+  const normalizedId = staffId.toLowerCase();
+  return DEMO_STAFF_NAME_OVERRIDES[normalizedId] ?? staffId;
 };
 
 export async function GET(request: Request) {
@@ -82,6 +195,7 @@ export async function GET(request: Request) {
       'currency',
       '"userId"',
       '"createdAt"',
+      '"items"',
     ];
     if (ORDER_CLIENT_ID_COLUMN) {
       orderSelectFields.push(`clientId:${ORDER_CLIENT_ID_COLUMN}`);
@@ -151,19 +265,36 @@ export async function GET(request: Request) {
 
     const orderItemMap = new Map((orderItems ?? []).map((item) => [item.id, item]));
     const orderMap = new Map(
-      ((orders ?? []) as Array<{ id?: string | null }>)
+      ((orders ?? []) as unknown as Array<{ id?: string | number | null } & Record<string, unknown>>)
         .filter((order) => Boolean(order?.id))
-        .map((order) => [String(order.id), order])
+        .map((order) => [String(order.id), order] as const)
     );
     const productMap = new Map(
       ((products ?? []) as Array<{ id?: string | null }>)
         .filter((product) => Boolean(product?.id))
         .map((product) => [String(product.id), product])
     );
+    const normalizedStaff = (staff ?? [])
+      .filter((member) => Boolean(member?.id))
+      .map((member) => {
+        const typedMember = member as RawUserRecord & { id: string | null };
+        const decrypted = withDecryptedUserNames(member as RawUserRecord);
+        const firstName =
+          typeof decrypted?.firstName === 'string'
+            ? decrypted.firstName.trim() || null
+            : null;
+        const lastName =
+          typeof decrypted?.lastName === 'string' ? decrypted.lastName.trim() || null : null;
+        return {
+          id: String(typedMember.id),
+          email: typeof typedMember?.email === 'string' ? typedMember.email.trim() || null : null,
+          role: typeof typedMember?.role === 'string' ? typedMember.role.trim() || null : null,
+          firstName,
+          lastName,
+        };
+      });
     const staffMap = new Map(
-      ((staff ?? []) as Array<{ id?: string | null }>)
-        .filter((member) => Boolean(member?.id))
-        .map((member) => [String(member.id), member])
+      normalizedStaff.map((member) => [String(member.id), member] as const)
     );
     const customerMap = new Map(
       (users ?? [])
@@ -212,17 +343,25 @@ export async function GET(request: Request) {
 
     const enriched = tasks.map((task) => {
       const item = orderItemMap.get(task.orderItemId) || null;
-      const order = item ? orderMap.get(item.orderId) || null : null;
-      const product = item ? productMap.get(item.productId) || null : null;
+      const order = item
+        ? ((orderMap.get(item.orderId) as (Record<string, unknown> & { items?: unknown }) | null) ??
+            null)
+        : null;
+      const dbProduct = item ? productMap.get(item.productId) || null : null;
+      const fallbackProduct = dbProduct ? null : resolveSnapshotProduct(order, item);
+      const resolvedProduct = dbProduct ?? fallbackProduct ?? null;
       const handler = task.handledByStaffId ? staffMap.get(task.handledByStaffId) || null : null;
       const customer = buildCustomerPayload(order ?? null);
+
+      const handlerName = resolveHandlerName(handler, task.handledByStaffId ?? null);
 
       return {
         ...task,
         orderItem: item,
         order,
-        product,
+        product: resolvedProduct,
         handler,
+        handlerName,
         customer,
         amount: normalizeNumber(item?.price) * normalizeNumber(item?.quantity),
       };

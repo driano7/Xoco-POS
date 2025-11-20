@@ -19,15 +19,44 @@ export async function POST(request: Request, context: { params: { orderId?: stri
   }
 
   try {
-    let assignedStaffId: string | null = null;
+    const sanitizeStaffId = (value?: string | null) => {
+      if (!value) {
+        return null;
+      }
+      const trimmed = value.trim();
+      return trimmed || null;
+    };
+
+    const { searchParams } = new URL(request.url);
+    let assignedStaffId: string | null = sanitizeStaffId(searchParams.get('staffId'));
     try {
-      const body = (await request.json()) as { staffId?: string | null };
-      if (body?.staffId && typeof body.staffId === 'string') {
-        assignedStaffId = body.staffId.trim() || null;
+      const body = (await request.json()) as { staffId?: string | null } | null;
+      if (body && typeof body.staffId === 'string') {
+        assignedStaffId = sanitizeStaffId(body.staffId);
       }
     } catch {
       assignedStaffId = null;
     }
+
+    if (!assignedStaffId) {
+      const staffHeader = request.headers.get('x-xoco-staff-id') ?? request.headers.get('x-xoco-staffid');
+      assignedStaffId = sanitizeStaffId(staffHeader);
+    }
+
+    const sanitizePaymentMethod = (value?: string | null) => {
+      if (!value) {
+        return null;
+      }
+      const trimmed = value.trim().toLowerCase();
+      if (!trimmed) {
+        return null;
+      }
+      const allowed = new Set(['debito', 'credito', 'transferencia', 'efectivo', 'cripto']);
+      return allowed.has(trimmed) ? trimmed : 'otro';
+    };
+
+    const paymentMethodHeader = request.headers.get('x-xoco-payment-method');
+    const trackedPaymentMethod = sanitizePaymentMethod(paymentMethodHeader);
 
     const ensureOrderItemsSnapshot = async () => {
       const {
@@ -105,7 +134,12 @@ export async function POST(request: Request, context: { params: { orderId?: stri
 
     let tasksToCreate = orderItemIds;
 
-    let existingTasks: { id: string | null; orderItemId: string | null; status?: string | null }[] = [];
+    let existingTasks: {
+      id: string | null;
+      orderItemId: string | null;
+      status?: string | null;
+      handledByStaffId?: string | null;
+    }[] = [];
 
     if (orderItemIds.length) {
       const {
@@ -113,7 +147,7 @@ export async function POST(request: Request, context: { params: { orderId?: stri
         error: existingError,
       } = await supabaseAdmin
         .from(PREP_QUEUE_TABLE)
-        .select('id,"orderItemId",status')
+        .select('id,"orderItemId",status,"handledByStaffId"')
         .in('orderItemId', orderItemIds);
 
       if (existingError) {
@@ -149,6 +183,30 @@ export async function POST(request: Request, context: { params: { orderId?: stri
           console.error('No se pudo reactivar tareas en la cola:', resetError);
         }
       }
+      if (assignedStaffId) {
+        const pendingTasksToAssign = existingTasks
+          .filter(
+            (task) =>
+              task.id &&
+              task.status === 'pending' &&
+              task.handledByStaffId !== assignedStaffId
+          )
+          .map((task) => task.id)
+          .filter(Boolean);
+        if (pendingTasksToAssign.length) {
+          const now = new Date().toISOString();
+          const { error: assignError } = await supabaseAdmin
+            .from(PREP_QUEUE_TABLE)
+            .update({
+              handledByStaffId: assignedStaffId,
+              updatedAt: now,
+            })
+            .in('id', pendingTasksToAssign);
+          if (assignError) {
+            console.warn('No se pudo asignar tareas pendientes al personal activo:', assignError);
+          }
+        }
+      }
     }
 
     if (!tasksToCreate.length) {
@@ -175,9 +233,16 @@ export async function POST(request: Request, context: { params: { orderId?: stri
     }
 
     const now = new Date().toISOString();
+    const orderUpdatePayload: Record<string, unknown> = {
+      status: 'pending',
+      updatedAt: now,
+    };
+    if (trackedPaymentMethod) {
+      orderUpdatePayload.queuedPaymentMethod = trackedPaymentMethod;
+    }
     const { error: updateError } = await supabaseAdmin
       .from(ORDERS_TABLE)
-      .update({ status: 'pending', updatedAt: now })
+      .update(orderUpdatePayload)
       .eq('id', orderId);
 
     if (updateError) {

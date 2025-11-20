@@ -74,6 +74,7 @@ export function NewOrderModal({ onClose, onSuccess, prefillClientId }: NewOrderM
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPublicSale, setIsPublicSale] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<string | null>(null);
 
   useEffect(() => () => clearCart(), [clearCart]);
 
@@ -179,6 +180,7 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
     setClientLookupState('idle');
     setFormError(null);
     setIsPublicSale(false);
+    setPaymentMethod(null);
   };
 
   const handleClientLookup = async () => {
@@ -230,6 +232,11 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
       return;
     }
 
+    if (!paymentMethod) {
+      setFormError('Selecciona un método de pago antes de registrar el pedido.');
+      return;
+    }
+
     setIsSubmitting(true);
     setFormError(null);
 
@@ -262,6 +269,7 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
         userId: validatedCustomer?.id ?? fallbackUserId ?? undefined,
         clientId: trimmedClientId || undefined,
         metadata: notes.trim() || undefined,
+        paymentMethod,
       };
 
       const response = await fetch('/api/orders', {
@@ -589,6 +597,41 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
           Propina aplicada: <span className="font-semibold">{formatCurrency(tipAmount)}</span>
           {typeof appliedPercent === 'number' && ` (${appliedPercent.toFixed(1)}%)`}
         </p>
+      </div>
+
+      <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+        <p className="text-sm font-semibold text-primary-700 dark:text-primary-100">Método de pago</p>
+        <p className="mt-1 text-xs text-[var(--brand-muted)]">
+          Selecciona cómo se liquidó este pedido antes de registrarlo.
+        </p>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {[
+            { key: 'debito', label: 'Débito' },
+            { key: 'credito', label: 'Crédito' },
+            { key: 'transferencia', label: 'Transferencia' },
+            { key: 'efectivo', label: 'Efectivo' },
+            { key: 'cripto', label: 'Cripto' },
+          ].map((method) => {
+            const isActive = paymentMethod === method.key;
+            return (
+              <button
+                type="button"
+                key={method.key}
+                onClick={() => setPaymentMethod(method.key)}
+                className={`rounded-2xl border px-3 py-2 text-xs font-semibold transition ${
+                  isActive
+                    ? 'border-primary-500 bg-primary-100 text-primary-800 dark:border-primary-300 dark:bg-primary-500/20 dark:text-primary-100'
+                    : 'border-primary-100 text-[var(--brand-text)] dark:border-white/20 dark:text-white'
+                }`}
+              >
+                {method.label}
+              </button>
+            );
+          })}
+        </div>
+        {!paymentMethod && (
+          <p className="mt-2 text-xs text-danger-500">Este campo es obligatorio.</p>
+        )}
       </div>
 
       <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">

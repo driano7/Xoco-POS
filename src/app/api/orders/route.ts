@@ -264,17 +264,20 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
 
-    const orderSelectFields = [
-      'id',
-      '"userId"',
-      '"orderNumber"',
-      'status',
-      'total',
-      'currency',
-      '"items"',
-      '"createdAt"',
-      '"updatedAt"',
-    ];
+  const orderSelectFields = [
+    'id',
+    '"userId"',
+    '"orderNumber"',
+    'status',
+    'total',
+    'currency',
+    '"items"',
+    '"createdAt"',
+    '"updatedAt"',
+    '"queuedPaymentMethod"',
+    '"tipAmount"',
+    '"tipPercent"',
+  ];
     if (ORDER_CLIENT_ID_COLUMN) {
       orderSelectFields.push(`clientId:${ORDER_CLIENT_ID_COLUMN}`);
     }
@@ -490,6 +493,8 @@ export async function POST(request: Request) {
       currency,
       total,
       items: orderItemsSnapshot,
+      queuedPaymentMethod: paymentMethod ?? null,
+      orderNumber: ticketCode,
     };
 
     if (userId) {

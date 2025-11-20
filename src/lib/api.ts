@@ -48,6 +48,9 @@ export interface Order {
   createdAt?: string | null;
   updatedAt?: string | null;
   isHidden?: boolean;
+  queuedPaymentMethod?: string | null;
+  tipAmount?: number | null;
+  tipPercent?: number | null;
 }
 
 export interface Reservation {
@@ -77,6 +80,7 @@ export interface PrepOrder {
   userId?: string | null;
   clientId?: string | null;
   createdAt?: string | null;
+  items?: OrderItemSummary[] | null;
 }
 
 export interface PrepOrderItem {
@@ -113,9 +117,12 @@ export interface PrepTask {
     id?: string | null;
     email?: string | null;
     role?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
     firstNameEncrypted?: string | null;
     lastNameEncrypted?: string | null;
   } | null;
+  handlerName?: string | null;
   customer?: {
     id?: string | null;
     clientId?: string | null;
@@ -230,6 +237,9 @@ export interface ReportRequest {
 export interface PaymentsDashboard {
   totalAmount: number;
   totalTips: number;
+  monthlyTipsTotal?: number;
+  monthlyTipPeriodStart?: string | null;
+  monthlyTipPeriodEnd?: string | null;
   payments: PaymentRecord[];
   methodBreakdown: PaymentMethodBreakdown[];
   statusBreakdown: PaymentStatusBreakdown[];
@@ -350,6 +360,34 @@ export interface TransactionHistoryEntry {
   createdAt?: string | null;
 }
 
+export interface PartnerAdvancedMetrics {
+  dailySales: Array<{
+    date: string;
+    sales: number;
+    orders: number;
+    tips: number;
+  }>;
+  paymentMethods: Array<{
+    method: string;
+    amount: number;
+    percent: number;
+  }>;
+  orderStatus: Array<{
+    status: string;
+    count: number;
+  }>;
+  customerSegments: {
+    newCustomers: number;
+    returningCustomers: number;
+    vipCustomers: number;
+  };
+  tipPerformance: {
+    totalTips: number;
+    avgTip: number;
+    tipRate: number;
+  };
+}
+
 export interface PartnerMetrics {
   metrics: {
     salesTotal: number;
@@ -370,6 +408,7 @@ export interface PartnerMetrics {
     }>;
   };
   reports: ReportRequest[];
+  advanced: PartnerAdvancedMetrics;
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_POS_API_URL?.trim();
@@ -464,11 +503,29 @@ export async function fetchPrepQueue(status?: PrepStatus): Promise<PrepTask[]> {
   return payload.data;
 }
 
-export async function enqueueOrder(orderId: string, staffId?: string | null): Promise<void> {
-  const url = buildApiUrl(`/api/orders/${orderId}/queue`);
+export async function enqueueOrder(
+  orderId: string,
+  params?: { staffId?: string | null; staffName?: string | null; paymentMethod?: string | null }
+): Promise<void> {
+  const staffId = params?.staffId?.trim() ? params.staffId.trim() : null;
+  const staffName = params?.staffName?.trim() ? params.staffName.trim() : null;
+  const paymentMethod = params?.paymentMethod?.trim() ? params.paymentMethod.trim() : null;
+  const url = buildApiUrl(`/api/orders/${orderId}/queue`, staffId ? { staffId } : undefined);
+  const headers: Record<string, string> = {};
+  if (staffId) {
+    headers['Content-Type'] = 'application/json';
+    headers['X-XOCO-Staff-Id'] = staffId;
+  }
+  if (staffName) {
+    headers['X-XOCO-Staff-Name'] = staffName;
+  }
+  if (paymentMethod) {
+    headers['X-XOCO-Payment-Method'] = paymentMethod;
+  }
+
   const response = await fetch(url, {
     method: 'POST',
-    headers: staffId ? { 'Content-Type': 'application/json' } : undefined,
+    headers: Object.keys(headers).length ? headers : undefined,
     body: staffId ? JSON.stringify({ staffId }) : undefined,
   });
 

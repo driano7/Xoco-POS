@@ -18,10 +18,16 @@ export async function GET(request: Request) {
     const hours = Number(searchParams.get('hours')) || DEFAULT_WINDOW_HOURS;
     const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
 
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const monthStartIso = monthStart.toISOString();
+
     const [
       { data: payments, error: paymentsError },
       { data: orders, error: ordersError },
       { data: reportRequests, error: reportsError },
+      { data: monthlyTipsRows, error: monthlyTipsError },
     ] = await Promise.all([
       supabaseAdmin
         .from(PAYMENTS_TABLE)
@@ -42,13 +48,15 @@ export async function GET(request: Request) {
         )
         .order('createdAt', { ascending: false })
         .limit(20),
+      supabaseAdmin.from(PAYMENTS_TABLE).select('"tipAmount"').gte('createdAt', monthStartIso),
     ]);
 
-    if (paymentsError || ordersError || reportsError) {
+    if (paymentsError || ordersError || reportsError || monthlyTipsError) {
       const message =
         paymentsError?.message ||
         ordersError?.message ||
         reportsError?.message ||
+        monthlyTipsError?.message ||
         'Supabase error';
       throw new Error(message);
     }
@@ -92,11 +100,19 @@ export async function GET(request: Request) {
       (report) => report.status === 'queued' || report.status === 'processing'
     );
 
+    const monthlyTipsTotal = (monthlyTipsRows ?? []).reduce(
+      (sum, row) => sum + toNumber((row as { tipAmount?: unknown })?.tipAmount),
+      0
+    );
+
     return NextResponse.json({
       success: true,
       data: {
         totalAmount: Number(totalAmount.toFixed(2)),
         totalTips: Number(totalTips.toFixed(2)),
+        monthlyTipsTotal: Number(monthlyTipsTotal.toFixed(2)),
+        monthlyTipPeriodStart: monthStartIso,
+        monthlyTipPeriodEnd: new Date().toISOString(),
         payments: enrichedPayments,
         methodBreakdown,
         statusBreakdown,

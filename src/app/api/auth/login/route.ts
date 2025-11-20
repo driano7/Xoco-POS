@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '@/lib/supabase-server';
@@ -16,11 +17,11 @@ const SOCIO_ACCOUNTS = [
   { email: 'cots.21d@gmail.com', id: 'socio-cots' },
   { email: 'aleisgales99@gmail.com', id: 'socio-ale' },
   { email: 'garcia.aragon.jhon23@gmail.com', id: 'socio-jhon' },
+  { email: 'donovanriano@gmail.com', id: 'socio-donovan' },
 ];
 
 const SUPERUSER_ACCOUNTS = [
-  { email: 'donovanriano@gmail.com', id: 'super-donovan', password: SOCIO_DEMO_PASSWORD },
-  { email: 'donovan@criptec.io', id: 'super-criptec', password: SOCIO_DEMO_PASSWORD },
+  { email: 'donovan@criptec.io', id: 'super-criptec', password: SUPERUSER_PASSWORD },
   { email: 'super.demo@xoco.local', id: 'super-demo', password: SUPERUSER_PASSWORD },
 ];
 
@@ -30,11 +31,22 @@ type StaffPreset = Partial<AuthenticatedStaff> & {
   demoPassword?: string;
 };
 
+type StaffDbRecord = {
+  id: string;
+  email?: string | null;
+  passwordHash?: string | null;
+  role?: string | null;
+  branchId?: string | null;
+  createdAt?: string | null;
+  firstNameEncrypted?: string | null;
+  lastNameEncrypted?: string | null;
+};
+
 const STAFF_PRESETS: Record<string, StaffPreset> = {
   'barista.demo@xoco.local': {
     id: 'barista-demo',
     role: 'barista',
-    firstName: 'Demo',
+    firstName: 'Barista',
     lastName: 'Barista',
     shiftType: 'full_time',
     branchId: 'MATRIZ',
@@ -44,7 +56,7 @@ const STAFF_PRESETS: Record<string, StaffPreset> = {
   'gerente.demo@xoco.local': {
     id: 'manager-demo',
     role: 'gerente',
-    firstName: 'Demo',
+    firstName: 'Gerente',
     lastName: 'Gerente',
     shiftType: 'full_time',
     branchId: 'MATRIZ',
@@ -58,8 +70,22 @@ SOCIO_ACCOUNTS.forEach((account) => {
   STAFF_PRESETS[account.email.toLowerCase()] = {
     id: account.id,
     role: 'socio',
-    firstName: 'Socio',
-    lastName: account.email.split('@')[0],
+    firstName:
+      account.email.toLowerCase() === 'cots.21d@gmail.com'
+        ? 'Sergio'
+        : account.email.toLowerCase() === 'aleisgales99@gmail.com'
+          ? 'Alejandro'
+          : account.email.toLowerCase() === 'garcia.aragon.jhon23@gmail.com'
+            ? 'Juan'
+            : 'Socio',
+    lastName:
+      account.email.toLowerCase() === 'cots.21d@gmail.com'
+        ? 'Cortés'
+        : account.email.toLowerCase() === 'aleisgales99@gmail.com'
+          ? 'Galván'
+          : account.email.toLowerCase() === 'garcia.aragon.jhon23@gmail.com'
+            ? 'García'
+            : account.email.split('@')[0],
     shiftType: 'full_time',
     branchId: 'MATRIZ',
     branchName: 'Consejo Xoco',
@@ -72,8 +98,14 @@ SUPERUSER_ACCOUNTS.forEach((account) => {
   STAFF_PRESETS[account.email.toLowerCase()] = {
     id: account.id,
     role: 'superuser',
-    firstName: 'Super',
-    lastName: account.email.split('@')[0],
+    firstName:
+      account.email.toLowerCase() === 'donovan@criptec.io'
+        ? 'Donovan'
+        : 'Super',
+    lastName:
+      account.email.toLowerCase() === 'donovan@criptec.io'
+        ? 'Riaño'
+        : account.email.split('@')[0],
     shiftType: 'full_time',
     branchId: 'MATRIZ',
     branchName: 'Consejo Xoco',
@@ -89,6 +121,13 @@ const sanitizeRole = (role?: string | null): StaffRole => {
   return 'barista';
 };
 
+const extractRole = (role?: string | null): StaffRole | null => {
+  if (role === 'barista' || role === 'gerente' || role === 'socio' || role === 'superuser') {
+    return role;
+  }
+  return null;
+};
+
 const normalizeShift = (email: string, fallback: ShiftType = 'part_time'): ShiftType => {
   return STAFF_PRESETS[email.toLowerCase()]?.shiftType ?? fallback;
 };
@@ -101,13 +140,65 @@ const normalizeName = (value?: string | null) => {
   return trimmed || null;
 };
 
+const readStoredName = (value?: unknown) => (typeof value === 'string' ? value.trim() || null : null);
+
 const passwordMatchesDemo = (email: string, password: string) => {
   const preset = STAFF_PRESETS[email];
   if (!preset) {
     return false;
   }
   const expected = preset.demoPassword ?? DEMO_PASSWORD;
-  return password === expected;
+  if (password === expected) {
+    return true;
+  }
+  if (preset.role === 'superuser' && password === SOCIO_DEMO_PASSWORD) {
+    return true;
+  }
+  return false;
+};
+
+const toDbRole = (role: StaffRole) => (role === 'superuser' ? 'socio' : role);
+
+const provisionStaffRecord = async ({
+  email,
+  preset,
+}: {
+  email: string;
+  preset?: StaffPreset;
+}): Promise<StaffDbRecord> => {
+  const normalizedRole = sanitizeRole(preset?.role ?? 'barista');
+  const insertPayload: Record<string, unknown> = {
+    id: randomUUID(),
+    email,
+    role: toDbRole(normalizedRole),
+    branchId: preset?.branchId ?? 'MATRIZ',
+    firstNameEncrypted: preset?.firstName ?? null,
+    lastNameEncrypted: preset?.lastName ?? null,
+    is_active: true,
+  };
+
+  const { data, error } = await supabaseAdmin
+    .from(STAFF_TABLE)
+    .insert(insertPayload)
+    .select(
+      [
+        'id',
+        'email',
+        '"passwordHash"',
+        'role',
+        '"branchId"',
+        '"createdAt"',
+        '"firstNameEncrypted"',
+        '"lastNameEncrypted"',
+      ].join(',')
+    )
+    .single<StaffDbRecord>();
+
+  if (error) {
+    throw new Error(`No pudimos registrar el perfil del staff: ${error.message}`);
+  }
+
+  return data;
 };
 
 export async function POST(request: Request) {
@@ -127,7 +218,9 @@ export async function POST(request: Request) {
     const trimmedEmail = email.trim();
     const normalizedEmail = trimmedEmail.toLowerCase();
 
-    const { data: staffRecord, error: staffError } = await supabaseAdmin
+    const preset = STAFF_PRESETS[normalizedEmail] ?? {};
+
+    const { data: initialStaffRecord, error: staffError } = await supabaseAdmin
       .from(STAFF_TABLE)
       .select(
         [
@@ -142,10 +235,16 @@ export async function POST(request: Request) {
         ].join(',')
       )
       .ilike('email', normalizedEmail)
-      .maybeSingle();
+      .maybeSingle<StaffDbRecord>();
 
     if (staffError) {
       throw new Error(staffError.message);
+    }
+
+    let staffRecord: StaffDbRecord | null = initialStaffRecord;
+
+    if (!staffRecord) {
+      staffRecord = await provisionStaffRecord({ email: trimmedEmail, preset });
     }
 
     let passwordIsValid =
@@ -173,17 +272,18 @@ export async function POST(request: Request) {
       typeof staffRecord === 'object' && staffRecord !== null && 'id' in staffRecord
         ? (staffRecord as { id?: string | null }).id
         : null;
-    const preset =
+    const presetOverride =
       STAFF_PRESETS[normalizedEmail] ??
       (recordId && STAFF_PRESETS[recordId.toLowerCase()]) ??
+      preset ??
       {};
 
     const branchId =
-      preset.branchId ??
+      presetOverride.branchId ??
       (typeof staffRecord === 'object' && staffRecord !== null && 'branchId' in staffRecord
         ? (staffRecord as { branchId?: string | null }).branchId ?? null
         : null);
-    let branchName = preset.branchName ?? null;
+    let branchName = presetOverride.branchName ?? null;
 
     if (!branchName && branchId) {
       const { data: branch, error: branchError } = await supabaseAdmin
@@ -197,38 +297,70 @@ export async function POST(request: Request) {
       branchName = branch?.name ?? branch?.code ?? branchId;
     }
 
+    if (recordId) {
+      const desiredFirst = normalizeName(presetOverride.firstName);
+      const desiredLast = normalizeName(presetOverride.lastName);
+      const currentFirst = readStoredName(
+        (staffRecord as { firstNameEncrypted?: string | null })?.firstNameEncrypted
+      );
+      const currentLast = readStoredName(
+        (staffRecord as { lastNameEncrypted?: string | null })?.lastNameEncrypted
+      );
+      const updates: Record<string, string> = {};
+      if (desiredFirst && desiredFirst !== currentFirst) {
+        updates.firstNameEncrypted = desiredFirst;
+      }
+      if (desiredLast && desiredLast !== currentLast) {
+        updates.lastNameEncrypted = desiredLast;
+      }
+      if (Object.keys(updates).length) {
+        const { error: updateNamesError } = await supabaseAdmin
+          .from(STAFF_TABLE)
+          .update(updates)
+          .eq('id', recordId);
+        if (updateNamesError) {
+          console.warn('No pudimos actualizar los nombres del staff:', updateNamesError);
+        } else {
+          staffRecord = { ...(staffRecord ?? ({} as StaffDbRecord)), ...updates };
+        }
+      }
+    }
+
+    const storedRole = extractRole(
+      typeof staffRecord === 'object' && staffRecord !== null && 'role' in staffRecord
+        ? (staffRecord as { role?: string | null }).role ?? null
+        : null
+    );
+    const effectiveRole = presetOverride.role ?? storedRole ?? 'barista';
+
     const user: AuthenticatedStaff = {
       id:
         recordId ??
-        preset.id ??
+        presetOverride.id ??
         normalizedEmail,
       email:
         (typeof staffRecord === 'object' && staffRecord !== null && 'email' in staffRecord
           ? (staffRecord as { email?: string | null }).email ?? trimmedEmail
           : trimmedEmail),
-      role: sanitizeRole(
-        (typeof staffRecord === 'object' && staffRecord !== null && 'role' in staffRecord
-          ? (staffRecord as { role?: string | null }).role
-          : null) ?? preset.role ?? 'barista'
-      ),
+      role: effectiveRole,
       branchId,
       branchName,
-      shiftType: normalizeShift(normalizedEmail, preset.shiftType ?? 'part_time'),
+      shiftType: normalizeShift(normalizedEmail, presetOverride.shiftType ?? 'part_time'),
       hourlyRate: DEFAULT_HOURLY_RATE,
       firstName: normalizeName(
-        preset.firstName ??
+        presetOverride.firstName ??
           (typeof staffRecord === 'object' && staffRecord !== null && 'firstNameEncrypted' in staffRecord
             ? (staffRecord as { firstNameEncrypted?: string | null }).firstNameEncrypted
             : null)
       ),
       lastName: normalizeName(
-        preset.lastName ??
+        presetOverride.lastName ??
           (typeof staffRecord === 'object' && staffRecord !== null && 'lastNameEncrypted' in staffRecord
             ? (staffRecord as { lastNameEncrypted?: string | null }).lastNameEncrypted
             : null)
       ),
       startedAt:
-        preset.startedAt ??
+        presetOverride.startedAt ??
         (typeof staffRecord === 'object' && staffRecord !== null && 'createdAt' in staffRecord
           ? (staffRecord as { createdAt?: string | null }).createdAt
           : null) ??

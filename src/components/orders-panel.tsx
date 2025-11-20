@@ -6,6 +6,7 @@ import { usePagination } from '@/hooks/use-pagination';
 import type { Order } from '@/lib/api';
 
 const ITEMS_PER_PAGE = 3;
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const formatCurrency = (value?: number | null) =>
   new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(value ?? 0);
@@ -18,6 +19,9 @@ const statusLabel: Record<Order['status'], string> = {
   completed: 'Completado',
   past: 'Pasado',
 };
+
+const getOrderDisplayCode = (order: Order) =>
+  order.ticketCode ?? order.orderNumber ?? order.id;
 
 const formatOrderCustomer = (order: Order) => {
   const first = (order.user?.firstName ?? order.user?.firstNameEncrypted ?? '').trim();
@@ -58,14 +62,28 @@ const buildOrderSearchTerms = (order: Order) => {
 
 interface OrdersPanelProps {
   onSelect?: (order: Order) => void;
+  hiddenOrderIds?: ReadonlySet<string>;
 }
 
-export function OrdersPanel({ onSelect }: OrdersPanelProps = {}) {
+export function OrdersPanel({ onSelect, hiddenOrderIds }: OrdersPanelProps = {}) {
   const { orders, isLoading, error, refresh } = useOrders();
-  const visibleOrders = useMemo(() => orders.filter((order) => !order.isHidden), [orders]);
+  const visibleOrders = useMemo(
+    () =>
+      orders.filter(
+        (order) =>
+          !order.isHidden &&
+          !(order.status !== 'completed' && hiddenOrderIds?.has(order.id ?? ''))
+      ),
+    [orders, hiddenOrderIds]
+  );
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('');
   const [showPastModal, setShowPastModal] = useState(false);
+  const [showCompletedModal, setShowCompletedModal] = useState(false);
+  const completedAll = useMemo(
+    () => visibleOrders.filter((order) => order.status === 'completed'),
+    [visibleOrders]
+  );
 
   const filtered = useMemo(() => {
     if (!filter.trim()) {
@@ -79,6 +97,17 @@ export function OrdersPanel({ onSelect }: OrdersPanelProps = {}) {
   const pending = filtered.filter((order) => order.status === 'pending');
   const past = filtered.filter((order) => order.status === 'past');
   const completed = filtered.filter((order) => order.status === 'completed');
+  const completedLastWeek = useMemo(() => {
+    const threshold = Date.now() - WEEK_MS;
+    return completedAll.filter((order) => {
+      const dateStr = order.updatedAt ?? order.createdAt ?? null;
+      if (!dateStr) {
+        return false;
+      }
+      const timestamp = Date.parse(dateStr);
+      return Number.isFinite(timestamp) && timestamp >= threshold;
+    });
+  }, [completedAll]);
 
   return (
     <section className="card space-y-6 p-6 text-sm">
@@ -129,13 +158,24 @@ export function OrdersPanel({ onSelect }: OrdersPanelProps = {}) {
                 )}
               </div>
             </form>
-            <button
-              type="button"
-              onClick={() => setShowPastModal(true)}
-              className="brand-button text-xs"
-            >
-              Pasados
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowPastModal(true)}
+                className="brand-button text-xs"
+              >
+                Pasados
+              </button>
+              {completedAll.length > ITEMS_PER_PAGE && (
+                <button
+                  type="button"
+                  onClick={() => setShowCompletedModal(true)}
+                  className="brand-button text-xs"
+                >
+                  Completadas
+                </button>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-3">
             {isLoading && <span>Actualizando…</span>}
@@ -172,11 +212,24 @@ export function OrdersPanel({ onSelect }: OrdersPanelProps = {}) {
       )}
       {showPastModal && (
         <OrdersHistoryModal
+          title="Pedidos pasados"
           orders={past}
           onClose={() => setShowPastModal(false)}
           onSelect={(order) => {
             onSelect?.(order);
             setShowPastModal(false);
+          }}
+          isFiltered={Boolean(filter.trim())}
+        />
+      )}
+      {showCompletedModal && (
+        <OrdersHistoryModal
+          title="Pedidos completados"
+          orders={completedLastWeek}
+          onClose={() => setShowCompletedModal(false)}
+          onSelect={(order) => {
+            onSelect?.(order);
+            setShowCompletedModal(false);
           }}
           isFiltered={Boolean(filter.trim())}
         />
@@ -224,9 +277,9 @@ function OrdersColumn({
               >
                 <header className="flex items-center justify-between">
                   <div>
-        <p className="text-xs uppercase tracking-[0.35em] text-primary-400 font-bold underline">
-          {order.orderNumber ?? order.id.slice(0, 6)}
-        </p>
+                      <p className="text-xs uppercase tracking-[0.35em] text-primary-400 font-bold underline">
+                        {getOrderDisplayCode(order)}
+                    </p>
                     <p className="text-base font-semibold">
                       {order.type ?? 'Pedido web'} · {statusLabel[order.status]}
                     </p>
@@ -242,7 +295,7 @@ function OrdersColumn({
                   Ticket POS: {order.ticketCode ?? 'Sin ticket'}
                 </p>
                 <p className="text-xs text-[var(--brand-muted)]">
-                  Pedido: {order.orderNumber ?? order.id.slice(0, 6)}
+                  Pedido: {getOrderDisplayCode(order)}
                 </p>
                 <p className="mt-1 text-xs text-[var(--brand-muted)]">
                   Artículos: {totalItems}
@@ -267,11 +320,13 @@ function OrdersColumn({
 }
 
 const OrdersHistoryModal = ({
+  title,
   orders,
   onClose,
   onSelect,
   isFiltered,
 }: {
+  title: string;
   orders: Order[];
   onClose: () => void;
   onSelect?: (order: Order) => void;
@@ -294,7 +349,7 @@ const OrdersHistoryModal = ({
     <HistoryModalShell onClose={onClose}>
       <div className="space-y-4 text-[var(--brand-text)] dark:text-white">
         <div className="flex items-center justify-between">
-          <h3 className="text-2xl font-semibold">Pedidos pasados</h3>
+          <h3 className="text-2xl font-semibold">{title}</h3>
           <button
             type="button"
             onClick={onClose}
@@ -334,10 +389,10 @@ const OrdersHistoryModal = ({
         {list.length === 0 ? (
           <p className="text-sm text-[var(--brand-muted)] dark:text-white/80">
             {query
-              ? 'No encontramos pedidos pasados con ese ID o nombre.'
+              ? `No encontramos ${title.toLowerCase()} con ese ID o nombre.`
               : isFiltered
-                ? 'No encontramos pedidos pasados con ese filtro.'
-                : 'No hay pedidos pasados en este momento.'}
+                ? `No encontramos ${title.toLowerCase()} con ese filtro.`
+                : `No hay ${title.toLowerCase()} en este momento.`}
           </p>
         ) : (
           <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-2 text-sm">

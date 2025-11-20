@@ -38,7 +38,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { useAuth, type AuthenticatedStaff, type ShiftType, type StaffRole } from '@/providers/auth-provider';
-import { encryptSensitiveSnapshot } from '@/lib/secure-fields';
+import { encryptSensitiveSnapshot, decryptField } from '@/lib/secure-fields';
 
 declare global {
   interface BarcodeDetectorOptions {
@@ -62,9 +62,81 @@ declare global {
 const formatCurrency = (value?: number | null) =>
   new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(value ?? 0);
 
+const formatPercentValue = (value?: number | null, fractionDigits = 1) =>
+  `${((value ?? 0) * 100).toFixed(fractionDigits)}%`;
+
 const formatDate = (value?: string | null) =>
   value ? new Date(value).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '—';
 
+const getOrderDisplayCode = (order: Order) =>
+  order.ticketCode ?? order.orderNumber ?? order.id;
+
+const getMonthStart = () => {
+  const date = new Date();
+  date.setDate(1);
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const PAYMENT_METHOD_OPTIONS = [
+  { key: 'debito', label: 'Débito' },
+  { key: 'credito', label: 'Crédito' },
+  { key: 'transferencia', label: 'Transferencia' },
+  { key: 'efectivo', label: 'Efectivo' },
+  { key: 'cripto', label: 'Cripto' },
+] as const;
+
+const PAYMENT_METHOD_LABELS = PAYMENT_METHOD_OPTIONS.reduce<Record<string, string>>((acc, method) => {
+  acc[method.key] = method.label;
+  return acc;
+}, {});
+
+const getPaymentMethodLabel = (method: string) => {
+  const normalized = method.toLowerCase();
+  const label = PAYMENT_METHOD_LABELS[normalized];
+  if (label) {
+    return label;
+  }
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const paymentMethodAccount = (method: string) => {
+  const normalized = method.toLowerCase();
+  if (normalized === 'efectivo') {
+    return 'Caja general';
+  }
+  if (normalized === 'cripto') {
+    return 'Activo digital';
+  }
+  if (normalized === 'transferencia' || normalized === 'debito' || normalized === 'credito') {
+    return 'Banco';
+  }
+  return 'Caja/Banco';
+};
+type OrderPaymentMetricsSummary = {
+  sales24h: number;
+  tips24h: number;
+  monthlyTips: number;
+  monthStart: Date;
+  hasData: boolean;
+  methodTotals: { method: string; amount: number }[];
+  entries: Array<{
+    id: string;
+    date: string;
+    reference: string;
+    paymentMethod: string;
+    debitAccount: string;
+    creditAccount: string;
+    amount: number;
+    tipAmount: number;
+  }>;
+  tipShare: {
+    total: number;
+    barista: number;
+    manager: number;
+  };
+};
 const groupOrders = (orders: Order[]) => {
   const pending: Order[] = [];
   const past: Order[] = [];
@@ -451,6 +523,69 @@ const buildOrderFromTicketPayload = (ticket: ScannedTicket): Order => {
 const formatReservationCustomer = (reservation: Reservation) =>
   formatCustomerDisplay(reservation.user, reservation.userId);
 
+const STAFF_ID_DISPLAY_OVERRIDES: Record<string, string> = {
+  'barista-demo': 'Demo Barista',
+  'manager-demo': 'Demo Gerente',
+  'socio-demo': 'Socio socio.demo',
+  'socio-cots': 'Socio cots.21d',
+  'socio-ale': 'Socio aleisgales99',
+  'socio-jhon': 'Socio garcia.aragon.jhon23',
+  'super-criptec': 'Super donovan',
+  'super-demo': 'Super demo',
+  'socio-donovan': 'Socio donovanriano',
+};
+
+const firstToken = (value?: string | null) => {
+  if (!value) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const token = trimmed.split(/\s+/)[0];
+  return token?.trim() || null;
+};
+
+const deriveHandlerNameFromStaffId = (staffId?: string | null) => {
+  if (!staffId) {
+    return null;
+  }
+  const trimmed = staffId.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const normalized = trimmed.toLowerCase();
+  const override = STAFF_ID_DISPLAY_OVERRIDES[normalized];
+  if (override) {
+    return firstToken(override) ?? override;
+  }
+  if (trimmed.includes('@')) {
+    return trimmed.split('@')[0];
+  }
+  return firstToken(trimmed) ?? trimmed;
+};
+
+const getPrepTaskHandlerShortName = (task: PrepTask) => {
+  const handler = task.handler;
+  const resolved =
+    firstToken(task.handlerName) ??
+    firstToken(handler?.firstName) ??
+    firstToken(handler?.firstNameEncrypted) ??
+    firstToken(handler?.lastName) ??
+    firstToken(handler?.lastNameEncrypted);
+  if (resolved) {
+    return resolved;
+  }
+  if (handler?.email) {
+    const userPart = handler.email.split('@')[0]?.trim();
+    if (userPart) {
+      return userPart;
+    }
+  }
+  return deriveHandlerNameFromStaffId(task.handledByStaffId);
+};
+
 const buildReservationSearchTerms = (reservation: Reservation) => {
   const names = [
     reservation.user?.firstName,
@@ -487,7 +622,12 @@ const buildPrepTaskSearchTerms = (task: PrepTask) => {
   ];
   const productValues = [task.product?.name, task.product?.category, task.product?.subcategory];
   const orderValues = [task.order?.orderNumber, task.order?.id, task.id];
-  const handlerValues = [task.handler?.email];
+  const handlerValues = [
+    task.handlerName,
+    task.handler?.email,
+    task.handledByStaffId,
+    getPrepTaskHandlerShortName(task),
+  ];
   return [...customerValues, ...productValues, ...orderValues, ...handlerValues].filter(
     (value): value is string => Boolean(value && value.trim())
   );
@@ -511,6 +651,7 @@ const getCustomerDisplayName = (customer?: LoyaltyCustomer | null) => {
 const THREE_HOURS_MS = 3 * 60 * 60 * 1000;
 const PREP_HIDE_MS = 2 * 24 * 60 * 60 * 1000;
 const PREP_PURGE_MS = 365 * 24 * 60 * 60 * 1000;
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const groupPrepTasks = (tasks: PrepTask[]) => {
   const activeStatuses = new Set(['pending', 'in_progress']);
@@ -669,6 +810,24 @@ const HOURLY_RATE = 38.1;
 
 const MX_HOLIDAYS = new Set(['01-01', '02-05', '03-21', '05-01', '09-16', '11-20', '12-25']);
 
+type FiscalFolioConfig = {
+  series: string;
+  nextNumber: number;
+  issuer: string;
+  rfc: string;
+  lastIssuedAt: string | null;
+  notes: string;
+};
+
+const DEFAULT_FOLIO_CONFIG: FiscalFolioConfig = {
+  series: 'XC',
+  nextNumber: 1284,
+  issuer: 'Xoco Café',
+  rfc: 'XOC0101019A5',
+  lastIssuedAt: null,
+  notes: 'Timbrado manual pendiente de automatizar con SAT sandbox.',
+};
+
 type InventoryCategoryId = 'foods' | 'beverages' | 'cleaning' | 'disposables';
 
 type InventoryItem = {
@@ -680,11 +839,60 @@ type InventoryItem = {
 
 type InventoryState = Record<InventoryCategoryId, InventoryItem[]>;
 
+const FOOD_SUPPLIES = [
+  'Pulpa de maracuyá',
+  'Chorizo artesanal',
+  'Frijoles refritos',
+  'Lechuga fresca',
+  'Pan gourmet',
+  'Lechera condensada',
+  'Queso manchego',
+  'Huevo orgánico',
+  'Espinacas baby',
+  'Tocino ahumado',
+];
+const BEVERAGE_SUPPLIES = [
+  'Café espresso blend',
+  'Café de olla molido',
+  'Concentrado de chai',
+  'Té negro',
+  'Té verde',
+  'Infusión herbal',
+  'Base frappé neutra',
+  'Base frappé de vainilla',
+  'Polvo de matcha',
+  'Polvo de chocolate',
+  'Jarabe de vainilla',
+  'Jarabe de caramelo',
+  'Salsa mocha',
+  'Leche entera',
+  'Leche deslactosada',
+  'Leche de almendra',
+  'Crema batida',
+  'Agua embotellada',
+  'Agua mineral',
+];
 const CLEANING_SUPPLIES = ['Jabón multiusos', 'Detergente', 'Desinfectante', 'Fibra verde', 'Cloro', 'Desengrasante'];
-const DISPOSABLE_SUPPLIES = ['Vasos 12oz', 'Vasos 16oz', 'Tapas compostables', 'Servilletas', 'Removedores', 'Cucharas biodegradables'];
+const DISPOSABLE_SUPPLIES = [
+  'Vasos 12oz',
+  'Vasos 16oz',
+  'Tapas compostables',
+  'Servilletas',
+  'Removedores',
+  'Cucharas biodegradables',
+  'Mangas térmicas para vasos',
+  'Platos desechables',
+  'Bowls compostables',
+  'Cajas para paninis',
+  'Tenedores biodegradables',
+  'Cuchillos biodegradables',
+  'Popotes compostables',
+];
 const MAX_DYNAMIC_SUPPLIES = 8;
-const PRIMARY_SUPER_USERS = new Set(['donovanriano@gmail.com']);
-const SUPER_USER_EMAILS = new Set(['donovanriano@gmail.com', 'donovan@criptec.io', 'super.demo@xoco.local']);
+const FOOD_MENU_PREFIX = 'food-menu';
+const BEVERAGE_MENU_PREFIX = 'bev-menu';
+const PRIMARY_SUPER_USERS = new Set(['donovan@criptec.io']);
+const SUPER_USER_EMAILS = new Set(['donovan@criptec.io', 'super.demo@xoco.local']);
 const GOVERNANCE_REVIEWERS = PRIMARY_SUPER_USERS;
 const SOCIO_REVIEW_DEADLINE_DAYS = 5;
 
@@ -762,6 +970,15 @@ const mapMenuToInventory = (items: MenuItem[], prefix: string): InventoryItem[] 
     unit: 'pzas',
   }));
 
+const hasMenuInventory = (items: InventoryItem[], prefix: string) =>
+  items.some((item) => item.id.startsWith(`${prefix}-`));
+
+const mergeMenuInventory = (items: InventoryItem[], menuItems: InventoryItem[], prefix: string) => {
+  const tag = `${prefix}-`;
+  const staticItems = items.filter((item) => !item.id.startsWith(tag));
+  return [...staticItems, ...menuItems];
+};
+
 type CleaningAssignment = {
   date: string;
   owner: string;
@@ -822,7 +1039,7 @@ export function PosDashboard() {
     refresh: refreshPayments,
   } = usePayments();
   const {
-    staffData,
+    staffData: rawStaffData,
     isLoading: staffLoading,
     error: staffError,
     refresh: refreshStaff,
@@ -856,8 +1073,8 @@ export function PosDashboard() {
   const [isStaffBarOpen, setStaffBarOpen] = useState(false);
   const [activeStaffPanel, setActiveStaffPanel] = useState<StaffPanelView>(null);
   const [managerInventory, setManagerInventory] = useState<InventoryState>({
-    foods: [],
-    beverages: [],
+    foods: createInventoryFromList(FOOD_SUPPLIES, 'food-base'),
+    beverages: createInventoryFromList(BEVERAGE_SUPPLIES, 'bev-base'),
     cleaning: createInventoryFromList(CLEANING_SUPPLIES, 'cleaning'),
     disposables: createInventoryFromList(DISPOSABLE_SUPPLIES, 'disposable'),
   });
@@ -874,6 +1091,69 @@ export function PosDashboard() {
     lastModified: null,
   });
   const [tipsInitialized, setTipsInitialized] = useState(false);
+  const staffData = useMemo(() => {
+    if (!rawStaffData || !user?.email || !user?.id) {
+      return rawStaffData;
+    }
+    const normalizedEmail = user.email.toLowerCase();
+    if (!SUPER_USER_EMAILS.has(normalizedEmail)) {
+      return rawStaffData;
+    }
+    const staffList = rawStaffData.staff ?? [];
+    let resolvedMember =
+      staffList.find((member) => member.email?.toLowerCase() === normalizedEmail) ?? null;
+    let staffWithSuper = staffList;
+    if (!resolvedMember) {
+      resolvedMember = {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        branchId: user.branchId ?? null,
+        isActive: true,
+        firstNameEncrypted: user.firstName ?? null,
+        lastNameEncrypted: user.lastName ?? null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastLoginAt: new Date().toISOString(),
+      };
+      staffWithSuper = [resolvedMember, ...staffList];
+    }
+    const hasSession = (rawStaffData.sessions ?? []).some(
+      (session) =>
+        session.staffId === user.id || session.staff?.email?.toLowerCase() === normalizedEmail
+    );
+    const startTimestamp = new Date(Date.now() - Math.max(sessionSeconds, 1) * 1000).toISOString();
+    const syntheticSession: StaffSessionRecord = {
+      id: `virtual-${user.id}`,
+      staffId: user.id,
+      sessionStart: startTimestamp,
+      sessionEnd: null,
+      durationSeconds: sessionSeconds,
+      ipAddress: 'pos-local',
+      deviceType: 'Panel',
+      createdAt: startTimestamp,
+      updatedAt: startTimestamp,
+      staff: resolvedMember,
+      isActive: true,
+    };
+    const sessionsWithSuper = hasSession
+      ? rawStaffData.sessions
+      : [syntheticSession, ...(rawStaffData.sessions ?? [])];
+    const metrics = rawStaffData.metrics
+      ? {
+          ...rawStaffData.metrics,
+          totalStaff: staffWithSuper.length,
+          activeStaff: staffWithSuper.filter((member) => member.isActive !== false).length,
+        }
+      : rawStaffData.metrics;
+    return {
+      ...rawStaffData,
+      staff: staffWithSuper,
+      sessions: sessionsWithSuper,
+      metrics,
+    };
+  }, [rawStaffData, sessionSeconds, user?.branchId, user?.email, user?.firstName, user?.id, user?.lastName, user?.role]);
+
   const isSuperUser = Boolean(
     user?.role === 'superuser' || (user?.email && SUPER_USER_EMAILS.has(user.email.toLowerCase()))
   );
@@ -931,7 +1211,25 @@ export function PosDashboard() {
     { id: 'sup-001', email: 'nuevo.socio@xoco.local', role: 'socio', status: 'pending' },
   ]);
   const [secureSnapshot, setSecureSnapshot] = useState<Record<string, string>>({});
-  const visibleOrders = useMemo(() => orders.filter((order) => !order.isHidden), [orders]);
+  const hiddenQueueOrderIds = useMemo(() => {
+    const ids = new Set<string>();
+    prepTasks
+      .filter((task) => task.status === 'pending' || task.status === 'in_progress')
+      .forEach((task) => {
+        if (task.order?.id) {
+          ids.add(task.order.id);
+        }
+      });
+    return ids;
+  }, [prepTasks]);
+  const visibleOrders = useMemo(
+    () =>
+      orders.filter(
+        (order) =>
+          !order.isHidden && !(order.status !== 'completed' && hiddenQueueOrderIds.has(order.id))
+      ),
+    [orders, hiddenQueueOrderIds]
+  );
   const visibleReservations = useMemo(
     () => reservations.filter((reservation) => !reservation.isHidden),
     [reservations]
@@ -949,6 +1247,77 @@ export function PosDashboard() {
     () => groupOrders(visibleOrders),
     [visibleOrders]
   );
+  const monthStart = useMemo(() => getMonthStart(), []);
+  const orderPaymentMetrics = useMemo(() => {
+    const dayThreshold = Date.now() - DAY_MS;
+    const monthStartMs = monthStart.getTime();
+    let sales24h = 0;
+    let tips24h = 0;
+    let monthlyTips = 0;
+    const methodTotals = new Map<string, number>();
+    const entries: OrderPaymentMetricsSummary['entries'] = [];
+    completed.forEach((order) => {
+      const timestamp = Date.parse(order.updatedAt ?? order.createdAt ?? '');
+      if (!Number.isFinite(timestamp)) {
+        return;
+      }
+      const total = Number(order.total ?? 0);
+      const tip = Number(order.tipAmount ?? 0);
+      const paymentMethod = (order.queuedPaymentMethod ?? 'otro').toLowerCase();
+      const reference = getOrderDisplayCode(order);
+      const entryDate = new Date(timestamp).toISOString();
+      entries.push({
+        id: order.id,
+        date: entryDate,
+        reference,
+        paymentMethod,
+        debitAccount: paymentMethodAccount(paymentMethod),
+        creditAccount: 'Ventas cafetería',
+        amount: total,
+        tipAmount: tip,
+      });
+      if (tip > 0) {
+        entries.push({
+          id: `${order.id}-tip`,
+          date: entryDate,
+          reference,
+          paymentMethod,
+          debitAccount: paymentMethodAccount(paymentMethod),
+          creditAccount: 'Propinas por distribuir',
+          amount: tip,
+          tipAmount: tip,
+        });
+      }
+      methodTotals.set(paymentMethod, (methodTotals.get(paymentMethod) ?? 0) + total + tip);
+      if (timestamp >= dayThreshold) {
+        sales24h += total;
+        tips24h += tip;
+      }
+      if (timestamp >= monthStartMs) {
+        monthlyTips += tip;
+      }
+    });
+    const tipShare = {
+      total: monthlyTips,
+      barista: monthlyTips * 0.4,
+      manager: monthlyTips * 0.6,
+    };
+    return {
+      sales24h,
+      tips24h,
+      monthlyTips,
+      monthStart,
+      hasData: completed.length > 0,
+      methodTotals: Array.from(methodTotals.entries()).map(([method, amount]) => ({
+        method,
+        amount,
+      })),
+      entries: entries
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+        .slice(0, 15),
+      tipShare,
+    };
+  }, [completed, monthStart]);
   const {
     pending: basePendingReservations,
     past: basePastReservations,
@@ -976,6 +1345,17 @@ export function PosDashboard() {
   const pendingReservations = filteredReservations.pending;
   const pastReservations = filteredReservations.past;
   const completedReservations = filteredReservations.completed;
+  const completedReservationsLastWeek = useMemo(() => {
+    const threshold = Date.now() - WEEK_MS;
+    return baseCompletedReservations.filter((reservation) => {
+      const timestamp =
+        (reservation.updatedAt && Date.parse(reservation.updatedAt)) ||
+        (reservation.reservationDate && parseReservationDate(reservation)?.getTime()) ||
+        (reservation.createdAt && Date.parse(reservation.createdAt)) ||
+        NaN;
+      return Number.isFinite(timestamp) && timestamp >= threshold;
+    });
+  }, [baseCompletedReservations]);
   const reservationCounts = {
     pending: basePendingReservations.length,
     past: basePastReservations.length,
@@ -1013,6 +1393,7 @@ export function PosDashboard() {
   const reservationsSectionId = 'reservations-panel';
   const [detail, setDetail] = useState<DetailState>(null);
   const [showReservationHistory, setShowReservationHistory] = useState(false);
+  const [showReservationCompletedHistory, setShowReservationCompletedHistory] = useState(false);
   const [actionState, setActionState] = useState<DetailActionState>({
     isLoading: false,
     message: null,
@@ -1071,12 +1452,16 @@ export function PosDashboard() {
     setManagerInventory((prev) => {
       const next: InventoryState = { ...prev };
       let changed = false;
-      if (prev.foods.length === 0 && foodOptions.length > 0) {
-        next.foods = mapMenuToInventory(foodOptions, 'food');
+      if (foodOptions.length > 0 && !hasMenuInventory(prev.foods, FOOD_MENU_PREFIX)) {
+        next.foods = mergeMenuInventory(prev.foods, mapMenuToInventory(foodOptions, FOOD_MENU_PREFIX), FOOD_MENU_PREFIX);
         changed = true;
       }
-      if (prev.beverages.length === 0 && beverageOptions.length > 0) {
-        next.beverages = mapMenuToInventory(beverageOptions, 'bev');
+      if (beverageOptions.length > 0 && !hasMenuInventory(prev.beverages, BEVERAGE_MENU_PREFIX)) {
+        next.beverages = mergeMenuInventory(
+          prev.beverages,
+          mapMenuToInventory(beverageOptions, BEVERAGE_MENU_PREFIX),
+          BEVERAGE_MENU_PREFIX
+        );
         changed = true;
       }
       return changed ? next : prev;
@@ -1126,8 +1511,18 @@ export function PosDashboard() {
   const handleInventorySyncFromMenu = useCallback(() => {
     setManagerInventory((prev) => ({
       ...prev,
-      foods: foodOptions.length ? mapMenuToInventory(foodOptions, 'food') : prev.foods,
-      beverages: beverageOptions.length ? mapMenuToInventory(beverageOptions, 'bev') : prev.beverages,
+      foods:
+        foodOptions.length > 0
+          ? mergeMenuInventory(prev.foods, mapMenuToInventory(foodOptions, FOOD_MENU_PREFIX), FOOD_MENU_PREFIX)
+          : prev.foods,
+      beverages:
+        beverageOptions.length > 0
+          ? mergeMenuInventory(
+              prev.beverages,
+              mapMenuToInventory(beverageOptions, BEVERAGE_MENU_PREFIX),
+              BEVERAGE_MENU_PREFIX
+            )
+          : prev.beverages,
     }));
     void refreshMenu();
   }, [beverageOptions, foodOptions, refreshMenu]);
@@ -1429,14 +1824,34 @@ export function PosDashboard() {
     setScannerFeedback(null);
   }, []);
 
+  const getCurrentStaffName = useCallback(
+    () => {
+      if (!user) {
+        return null;
+      }
+      const direct = user.firstName?.trim();
+      if (direct) {
+        return direct.split(/\s+/)[0] ?? direct;
+      }
+      const display = buildStaffDisplayName(user);
+      const [first] = display.split(/\s+/);
+      return first ?? display;
+    },
+    [user]
+  );
+
   const handleMoveOrderToQueue = useCallback(
-    async (order: Order) => {
+    async (order: Order, options?: { paymentMethod?: string | null }) => {
       if (!user) {
         return;
       }
       setActionState({ isLoading: true, message: null, error: null });
       try {
-        await enqueueOrder(order.id, user.id);
+        await enqueueOrder(order.id, {
+          staffId: user.id,
+          staffName: getCurrentStaffName(),
+          paymentMethod: options?.paymentMethod ?? null,
+        });
         await Promise.all([refresh(), refreshPrep()]);
         setActionState({
           isLoading: false,
@@ -1455,17 +1870,21 @@ export function PosDashboard() {
         });
       }
     },
-    [refresh, refreshPrep, user]
+    [getCurrentStaffName, refresh, refreshPrep, user]
   );
 
   const handleReturnOrderToQueue = useCallback(
-    async (order: Order) => {
+    async (order: Order, options?: { paymentMethod?: string | null }) => {
       if (!user) {
         return;
       }
       setActionState({ isLoading: true, message: null, error: null });
       try {
-        await enqueueOrder(order.id, user.id);
+        await enqueueOrder(order.id, {
+          staffId: user.id,
+          staffName: getCurrentStaffName(),
+          paymentMethod: options?.paymentMethod ?? null,
+        });
         await Promise.all([refresh(), refreshPrep()]);
         setActionState({
           isLoading: false,
@@ -1485,7 +1904,7 @@ export function PosDashboard() {
         });
       }
     },
-    [refresh, refreshPrep, user]
+    [getCurrentStaffName, refresh, refreshPrep, user]
   );
 
   const handleMarkPrepCompleted = useCallback(
@@ -1565,12 +1984,27 @@ export function PosDashboard() {
     [staffData?.sessions, user?.id]
   );
 
+  const staffSessionDailyTotals = useMemo(() => {
+    const map = new Map<string, number>();
+    (staffData?.sessions ?? []).forEach((session) => {
+      const staffId = session.staffId ?? session.staff?.id;
+      const start = session.sessionStart;
+      if (!staffId || !start) {
+        return;
+      }
+      const day = start.substring(0, 10);
+      if (!day) {
+        return;
+      }
+      const key = `${staffId}-${day}`;
+      const duration = resolveSessionDurationSeconds(session);
+      map.set(key, (map.get(key) ?? 0) + duration);
+    });
+    return map;
+  }, [staffData?.sessions]);
+
   const aggregatedSessionSeconds = useMemo(
-    () =>
-      staffSessions.reduce(
-        (total, session) => total + (typeof session.durationSeconds === 'number' ? session.durationSeconds : 0),
-        0
-      ),
+    () => staffSessions.reduce((total, session) => total + resolveSessionDurationSeconds(session), 0),
     [staffSessions]
   );
 
@@ -1881,7 +2315,9 @@ export function PosDashboard() {
         payments={payments}
         paymentsLoading={paymentsLoading}
         onRefreshPayments={refreshPayments}
+        canViewAccounting={isSocio}
         branchName={branchLabel}
+        orderPaymentMetrics={orderPaymentMetrics}
         governanceRequests={governanceRequests}
         onGovernanceDecision={handleGovernanceDecision}
         approvalTickets={approvalTickets}
@@ -1956,7 +2392,10 @@ export function PosDashboard() {
               </section>
             )}
 
-            <OrdersPanel onSelect={(order) => setDetail({ type: 'order', data: order })} />
+            <OrdersPanel
+              hiddenOrderIds={hiddenQueueOrderIds}
+              onSelect={(order) => setDetail({ type: 'order', data: order })}
+            />
 
             <section className="card space-y-6 p-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2049,6 +2488,12 @@ export function PosDashboard() {
                   isLoading={reservationsLoading}
                   onRefresh={refreshReservations}
                   onShowPast={() => setShowReservationHistory(true)}
+                  onShowCompleted={
+                    baseCompletedReservations.length > 3
+                      ? () => setShowReservationCompletedHistory(true)
+                      : undefined
+                  }
+                  showCompletedButton={baseCompletedReservations.length > 3}
                 />
               </div>
 
@@ -2196,8 +2641,20 @@ export function PosDashboard() {
             {showReservationHistory && (
               <DetailModal onClose={() => setShowReservationHistory(false)}>
                 <ReservationHistoryContent
+                  title="Reservas pasadas"
                   reservations={pastReservations}
                   onClose={() => setShowReservationHistory(false)}
+                  hasFilter={Boolean(reservationFilter.trim())}
+                  onSelect={(reservation) => setDetail({ type: 'reservation', data: reservation })}
+                />
+              </DetailModal>
+            )}
+            {showReservationCompletedHistory && (
+              <DetailModal onClose={() => setShowReservationCompletedHistory(false)}>
+                <ReservationHistoryContent
+                  title="Reservas completadas"
+                  reservations={completedReservationsLastWeek}
+                  onClose={() => setShowReservationCompletedHistory(false)}
                   hasFilter={Boolean(reservationFilter.trim())}
                   onSelect={(reservation) => setDetail({ type: 'reservation', data: reservation })}
                 />
@@ -2359,17 +2816,37 @@ export function PosDashboard() {
                     <p className="mt-3 text-sm text-[var(--brand-muted)]">Sin sesiones registradas.</p>
                   ) : (
                     <div className="mt-3 space-y-2">
-                      {(staffData?.sessions ?? []).slice(0, 6).map((session) => (
-                        <div key={session.id} className="flex items-center justify-between rounded-xl border border-primary-50/80 px-3 py-2 text-sm dark:border-white/10">
-                          <div>
-                            <p className="font-semibold">{session.staff?.email ?? session.staffId ?? session.id.slice(0, 6)}</p>
-                            <p className="text-xs text-[var(--brand-muted)]">Inicio: {session.sessionStart ? formatDate(session.sessionStart) : '—'}</p>
+                      {(staffData?.sessions ?? []).slice(0, 6).map((session) => {
+                        const sessionDayKey = session.sessionStart?.substring(0, 10);
+                        const sessionKey =
+                          session.staffId && sessionDayKey ? `${session.staffId}-${sessionDayKey}` : null;
+                        const aggregatedSeconds = sessionKey
+                          ? staffSessionDailyTotals.get(sessionKey) ?? 0
+                          : 0;
+                        return (
+                          <div
+                            key={session.id}
+                            className="flex items-center justify-between rounded-xl border border-primary-50/80 px-3 py-2 text-sm dark:border-white/10"
+                          >
+                            <div>
+                              <p className="font-semibold">
+                                {session.staff?.email ?? session.staffId ?? session.id.slice(0, 6)}
+                              </p>
+                              <p className="text-xs text-[var(--brand-muted)]">
+                                Inicio: {session.sessionStart ? formatDate(session.sessionStart) : '—'}
+                              </p>
+                              {sessionKey && (
+                                <p className="text-xs text-[var(--brand-muted)]">
+                                  Duración hoy: {formatSessionDuration(aggregatedSeconds)}
+                                </p>
+                              )}
+                            </div>
+                            <span className="text-xs uppercase tracking-[0.3em] text-primary-500">
+                              {session.isActive ? 'En turno' : 'Cerrada'}
+                            </span>
                           </div>
-                          <span className="text-xs uppercase tracking-[0.3em] text-primary-500">
-                            {session.isActive ? 'En turno' : 'Cerrada'}
-                          </span>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -2849,6 +3326,7 @@ const PrepTaskCard = ({ task, onSelect }: { task: PrepTask; onSelect?: (task: Pr
     task.order?.clientId ||
     task.order?.userId ||
     'Cliente sin registro';
+  const handlerDisplayName = getPrepTaskHandlerShortName(task);
 
   return (
     <article
@@ -2886,8 +3364,8 @@ const PrepTaskCard = ({ task, onSelect }: { task: PrepTask; onSelect?: (task: Pr
       </div>
       <div className="mt-2 flex items-center justify-between text-xs text-[var(--brand-muted)]">
         <p>
-          {task.handler?.email
-            ? `Asignado a ${task.handler.email}`
+          {handlerDisplayName
+            ? `Asignado a ${handlerDisplayName}`
             : task.status === 'completed'
               ? 'Entregado'
               : 'Sin asignar'}
@@ -3200,7 +3678,10 @@ const safeQuantity = (quantity?: number | null) => {
 };
 
 const BEVERAGE_KEYWORDS = [
+  'beverage',
   'bebida',
+  'agua',
+  'cafe',
   'drink',
   'drinks',
   'coffee',
@@ -3212,6 +3693,7 @@ const BEVERAGE_KEYWORDS = [
   'juice',
   'frapp',
   'café',
+  'matcha',
 ];
 
 const FOOD_KEYWORDS = [
@@ -3229,10 +3711,18 @@ const FOOD_KEYWORDS = [
   'toast',
 ];
 
-const classifyOrderItem = (item: OrderItemEntry) => {
-  const haystack = `${item.category ?? ''} ${item.subcategory ?? ''} ${item.name ?? ''}`
+const normalizeText = (value?: string | null) =>
+  (value ?? '')
     .toLowerCase()
     .normalize('NFD');
+
+const classifyOrderItem = (item: OrderItemEntry) => {
+  const haystack = [
+    normalizeText(item.category),
+    normalizeText(item.subcategory),
+    normalizeText(item.name),
+    normalizeText(item.productId),
+  ].join(' ');
 
   if (BEVERAGE_KEYWORDS.some((keyword) => haystack.includes(keyword))) {
     return 'beverage';
@@ -3382,8 +3872,8 @@ const OrderDetailContent = ({
   actionState,
 }: {
   order: Order;
-  onMoveToQueue?: (order: Order) => void;
-  onReturnToQueue?: (order: Order) => void;
+  onMoveToQueue?: (order: Order, options?: { paymentMethod?: string | null }) => void;
+  onReturnToQueue?: (order: Order, options?: { paymentMethod?: string | null }) => void;
   actionState?: DetailActionState;
 }) => {
   const [items, setItems] = useState<OrderItemEntry[]>(
@@ -3391,10 +3881,17 @@ const OrderDetailContent = ({
   );
   const [itemsLoading, setItemsLoading] = useState(false);
   const [itemsError, setItemsError] = useState<string | null>(null);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string | null>(null);
+  const [showPaymentSelector, setShowPaymentSelector] = useState<boolean>(!order.queuedPaymentMethod);
+  const paymentMethodLabel = selectedPaymentMethod
+    ? PAYMENT_METHOD_LABELS[selectedPaymentMethod] ?? selectedPaymentMethod
+    : null;
 
   useEffect(() => {
     setItems(Array.isArray(order.items) ? (order.items as OrderItemEntry[]) : []);
     setItemsError(null);
+    setSelectedPaymentMethod(order.queuedPaymentMethod ?? null);
+    setShowPaymentSelector(!order.queuedPaymentMethod);
   }, [order]);
 
   useEffect(() => {
@@ -3453,7 +3950,7 @@ const OrderDetailContent = ({
     <div className="space-y-5 text-base">
       <header>
         <p className="text-xs uppercase tracking-[0.35em] text-primary-400 font-bold underline">
-          {order.orderNumber ?? order.id}
+          {getOrderDisplayCode(order)}
         </p>
         <h3 className="text-2xl font-semibold text-primary-700 dark:text-primary-100">Pedido</h3>
         <p className="text-sm font-semibold text-primary-900 dark:text-white">
@@ -3482,6 +3979,14 @@ const OrderDetailContent = ({
           label="Artículos"
           value={`${totalItems} ${totalItems === 1 ? 'artículo' : 'artículos'}`}
         />
+        <DetailRow
+          label="Método de pago"
+          value={
+            <span className="text-sm font-normal text-[var(--brand-text)] dark:text-white">
+              {paymentMethodLabel ?? 'Pendiente por definir'}
+            </span>
+          }
+        />
       </div>
       <ConsumptionSummary items={items} />
       {itemsLoading && (
@@ -3496,12 +4001,55 @@ const OrderDetailContent = ({
       )}
       <OrderItemsSection items={items} />
       {order.status !== 'completed' && onMoveToQueue && (
-        <DetailActionFooter
-          label="Mover a la cola"
-          onClick={() => onMoveToQueue(order)}
-          disabled={actionState?.isLoading}
-          actionState={actionState}
-        />
+        <div className="space-y-3">
+          {selectedPaymentMethod && !showPaymentSelector ? (
+            <div className="rounded-2xl border border-primary-100/70 bg-white/70 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+              <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Método de pago</p>
+              <p className="mt-2 text-sm">{paymentMethodLabel ?? selectedPaymentMethod}</p>
+              <button
+                type="button"
+                className="mt-3 text-xs font-semibold text-primary-600 underline-offset-2 hover:underline dark:text-primary-200"
+                onClick={() => setShowPaymentSelector(true)}
+              >
+                Cambiar método
+              </button>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-primary-100/70 bg-white/70 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+              <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+                Selecciona método de pago
+              </p>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                {PAYMENT_METHOD_OPTIONS.map((method) => {
+                  const isActive = selectedPaymentMethod === method.key;
+                  return (
+                    <button
+                      type="button"
+                      key={method.key}
+                      onClick={() => {
+                        setSelectedPaymentMethod(method.key);
+                        setShowPaymentSelector(false);
+                      }}
+                      className={`rounded-2xl border px-3 py-2 text-xs font-semibold transition ${
+                        isActive
+                          ? 'border-primary-500 bg-primary-100 text-primary-800 dark:border-primary-300 dark:bg-primary-500/20 dark:text-primary-100'
+                          : 'border-primary-100 text-[var(--brand-text)] dark:border-white/20 dark:text-white'
+                      }`}
+                    >
+                      {method.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <DetailActionFooter
+            label="Mover a la cola"
+            onClick={() => onMoveToQueue(order, { paymentMethod: selectedPaymentMethod })}
+            disabled={!selectedPaymentMethod || actionState?.isLoading}
+            actionState={actionState}
+          />
+        </div>
       )}
       {order.status === 'completed' && onReturnToQueue && (
         <DetailActionFooter
@@ -3614,6 +4162,42 @@ const PrepTaskDetailContent = ({
   onMarkCompleted?: (task: PrepTask) => void;
   actionState?: DetailActionState;
 }) => {
+  const orderItems = Array.isArray(task.order?.items)
+    ? (task.order?.items as OrderItemEntry[])
+    : [];
+  const matchingOrderItem =
+    (task.orderItem?.productId &&
+      orderItems.find((item) => item.productId === task.orderItem?.productId)) ??
+    null;
+  const displayProductName =
+    task.product?.name ??
+    (matchingOrderItem ? matchingOrderItem.name : null) ??
+    task.orderItem?.productId ??
+    'Sin producto';
+  const rawQuantity = task.orderItem?.quantity;
+  const normalizedQuantity =
+    typeof rawQuantity === 'number' && Number.isFinite(rawQuantity)
+      ? rawQuantity
+      : matchingOrderItem
+        ? matchingOrderItem.quantity ?? null
+        : null;
+  const displayQuantity = safeQuantity(normalizedQuantity);
+  const detailItems: OrderItemEntry[] =
+    orderItems.length > 0
+      ? orderItems
+      : displayProductName !== 'Sin producto'
+        ? [
+            {
+              productId: task.orderItem?.productId ?? task.product?.id ?? null,
+              name: displayProductName,
+              quantity: displayQuantity,
+              price: task.orderItem?.price ?? null,
+              category: task.product?.category ?? null,
+              subcategory: task.product?.subcategory ?? null,
+            },
+          ]
+        : [];
+  const handlerDisplayName = getPrepTaskHandlerShortName(task);
   const customerLabel =
     task.customer?.name?.trim() ||
     task.customer?.email?.trim() ||
@@ -3647,7 +4231,7 @@ const PrepTaskDetailContent = ({
           label="Producto"
           value={
             <span className="font-bold text-primary-900 dark:text-white">
-              {task.product?.name ?? 'Sin producto'}
+              {displayProductName}
             </span>
           }
         />
@@ -3655,7 +4239,7 @@ const PrepTaskDetailContent = ({
           label="Cantidad"
           value={
             <span className="font-bold text-primary-900 dark:text-white">
-              {String(task.orderItem?.quantity ?? 1)}
+              {String(displayQuantity)}
             </span>
           }
         />
@@ -3667,15 +4251,21 @@ const PrepTaskDetailContent = ({
             </span>
           }
         />
-        <DetailRow
-          label="Asignado a"
-          value={
-            <span className="font-bold text-primary-900 dark:text-white">
-              {task.handler?.email ?? 'Sin asignar'}
-            </span>
-          }
-        />
+          <DetailRow
+            label="Asignado a"
+            value={
+              <span className="font-bold text-primary-900 dark:text-white">
+                {handlerDisplayName ?? 'Sin asignar'}
+              </span>
+            }
+          />
       </div>
+      {detailItems.length > 0 && (
+        <div className="space-y-4">
+          <ConsumptionSummary items={detailItems} />
+          <OrderItemsSection items={detailItems} />
+        </div>
+      )}
       {onMarkCompleted && (
         <DetailActionFooter
           label="Marcar como completado"
@@ -3813,156 +4403,450 @@ const PartnerMetricsContent = ({
   partnerError: string | null;
   partnerMetrics: PartnerMetrics | null;
   refreshPartnerMetrics: () => Promise<void>;
-}) => (
-  <div className="space-y-6 text-sm">
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <p className="badge">Panel de socios</p>
-        <p className="text-sm text-[var(--brand-muted)]">
-          Métricas avanzadas de ventas y clientes para dirección ({partnerDays} días).
-        </p>
-      </div>
-      <div className="flex flex-wrap items-center gap-4 text-sm text-[var(--brand-muted)]">
-        <label className="flex items-center gap-2 text-xs font-semibold">
-          Periodo:
-          <select
-            value={partnerDays}
-            onChange={(event) => setPartnerDays(Number(event.target.value))}
+}) => {
+  const [fiscalFolio, setFiscalFolio] = useState<FiscalFolioConfig>(DEFAULT_FOLIO_CONFIG);
+
+  const handleFolioUpdate = useCallback((patch: Partial<FiscalFolioConfig>) => {
+    setFiscalFolio((prev) => ({ ...prev, ...patch }));
+  }, []);
+
+  const handleIssueFolio = useCallback(() => {
+    setFiscalFolio((prev) => ({
+      ...prev,
+      lastIssuedAt: new Date().toISOString(),
+      nextNumber: prev.nextNumber + 1,
+    }));
+  }, []);
+
+  return (
+    <div className="space-y-6 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="badge">Panel de socios</p>
+          <p className="text-sm text-[var(--brand-muted)]">
+            Métricas avanzadas de ventas y clientes para dirección ({partnerDays} días).
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-4 text-sm text-[var(--brand-muted)]">
+          <label className="flex items-center gap-2 text-xs font-semibold">
+            Periodo:
+            <select
+              value={partnerDays}
+              onChange={(event) => setPartnerDays(Number(event.target.value))}
             className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] dark:border-white/10"
           >
-            {[7, 30, 90].map((daysOption) => (
-              <option key={daysOption} value={daysOption}>
-                {daysOption} días
-              </option>
-            ))}
-          </select>
-        </label>
-        {partnerLoading && <p>Actualizando...</p>}
-        <button
-          type="button"
-          onClick={() => void refreshPartnerMetrics()}
-          className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline dark:text-primary-200"
-        >
-          Actualizar métricas
-        </button>
-      </div>
-    </div>
-
-    {partnerError ? (
-      <div className="rounded-2xl border border-dashed border-danger-300/70 bg-danger-50/60 px-4 py-3 text-sm text-danger-700 dark:border-danger-700/40 dark:bg-danger-900/30 dark:text-danger-100">
-        {partnerError}
-      </div>
-    ) : (
-      <div className="grid gap-6 lg:grid-cols-2">
-        <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/10">
-          <h3 className="text-lg font-semibold text-primary-600 dark:text-primary-200">
-            Ventas {partnerDays} días
-          </h3>
-          {partnerMetrics?.metrics ? (
-            <>
-              <div className="mt-4 grid gap-4 md:grid-cols-2">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
-                    Ingresos
-                  </p>
-                  <p className="text-2xl font-semibold">
-                    {formatCurrency(partnerMetrics.metrics.salesTotal)}
-                  </p>
-                  <p className="text-xs text-[var(--brand-muted)]">
-                    Órdenes completadas: {partnerMetrics.metrics.completedOrders}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
-                    Pagos
-                  </p>
-                  <p className="text-2xl font-semibold">
-                    {formatCurrency(partnerMetrics.metrics.paymentsTotal)}
-                  </p>
-                  <p className="text-xs text-[var(--brand-muted)]">
-                    Ticket promedio: {formatCurrency(partnerMetrics.metrics.avgTicket)}
-                  </p>
-                </div>
-              </div>
-              <div className="mt-4 rounded-2xl bg-primary-50/80 px-3 py-2 text-sm dark:bg-white/5">
-                Propinas capturadas:{' '}
-                <span className="font-semibold">
-                  {formatCurrency(partnerMetrics.metrics.tipsTotal)}
-                </span>
-              </div>
-            </>
-          ) : (
-            <p className="text-sm text-[var(--brand-muted)]">Sin datos de ventas en este periodo.</p>
-          )}
+            {[30, 60, 90, 180, 360].map((daysOption) => (
+                <option key={daysOption} value={daysOption}>
+                  {daysOption} días
+                </option>
+              ))}
+            </select>
+          </label>
+          {partnerLoading && <p>Actualizando...</p>}
+          <button
+            type="button"
+            onClick={() => void refreshPartnerMetrics()}
+            className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline dark:text-primary-200"
+          >
+            Actualizar métricas
+          </button>
         </div>
+      </div>
 
-        <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/10">
-          <h3 className="text-lg font-semibold text-primary-600 dark:text-primary-200">
-            Clientes estratégicos
-          </h3>
-          {partnerMetrics?.loyalty ? (
-            <>
-              <p className="mt-1 text-xs text-[var(--brand-muted)]">
-                {partnerMetrics.loyalty.customersTracked} clientes · {partnerMetrics.loyalty.totalOrders}{' '}
-                órdenes · {formatCurrency(partnerMetrics.loyalty.totalSpent)} en {partnerDays} días
-              </p>
-              <div className="mt-3 space-y-2">
-                {partnerMetrics.loyalty.topCustomers.length === 0 ? (
-                  <p className="text-sm text-[var(--brand-muted)]">Sin clientes destacados.</p>
-                ) : (
-                  partnerMetrics.loyalty.topCustomers.map((customer, index) => (
-                    <div
-                      key={customer.clientId ?? String(index)}
-                      className="flex items-center justify-between rounded-xl border border-primary-50/80 px-3 py-2 text-sm dark:border-white/10"
-                    >
-                      <div>
-                        <p className="font-semibold">{customer.clientId ?? 'Cliente'}</p>
-                        <p className="text-xs text-[var(--brand-muted)]">
-                          {customer.orders} órdenes · {customer.items ?? 0} artículos
+      {partnerError ? (
+        <div className="rounded-2xl border border-dashed border-danger-300/70 bg-danger-50/60 px-4 py-3 text-sm text-danger-700 dark:border-danger-700/40 dark:bg-danger-900/30 dark:text-danger-100">
+          {partnerError}
+        </div>
+      ) : (
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/10">
+            <h3 className="text-lg font-semibold text-primary-600 dark:text-primary-200">
+              Ventas {partnerDays} días
+            </h3>
+            {partnerMetrics?.metrics ? (
+              <>
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
+                      Ingresos
+                    </p>
+                    <p className="text-2xl font-semibold">
+                      {formatCurrency(partnerMetrics.metrics.salesTotal)}
+                    </p>
+                    <p className="text-xs text-[var(--brand-muted)]">
+                      Órdenes completadas: {partnerMetrics.metrics.completedOrders}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
+                      Pagos
+                    </p>
+                    <p className="text-2xl font-semibold">
+                      {formatCurrency(partnerMetrics.metrics.paymentsTotal)}
+                    </p>
+                    <p className="text-xs text-[var(--brand-muted)]">
+                      Ticket promedio: {formatCurrency(partnerMetrics.metrics.avgTicket)}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-4 rounded-2xl bg-primary-50/80 px-3 py-2 text-sm dark:bg-white/5">
+                  Propinas capturadas:{' '}
+                  <span className="font-semibold">
+                    {formatCurrency(partnerMetrics.metrics.tipsTotal)}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-[var(--brand-muted)]">Sin datos de ventas en este periodo.</p>
+            )}
+          </div>
+
+          <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/10">
+            <h3 className="text-lg font-semibold text-primary-600 dark:text-primary-200">
+              Clientes estratégicos
+            </h3>
+            {partnerMetrics?.loyalty ? (
+              <>
+                <p className="mt-1 text-xs text-[var(--brand-muted)]">
+                  {partnerMetrics.loyalty.customersTracked} clientes · {partnerMetrics.loyalty.totalOrders}{' '}
+                  órdenes · {formatCurrency(partnerMetrics.loyalty.totalSpent)} en {partnerDays} días
+                </p>
+                <div className="mt-3 space-y-2">
+                  {partnerMetrics.loyalty.topCustomers.length === 0 ? (
+                    <p className="text-sm text-[var(--brand-muted)]">Sin clientes destacados.</p>
+                  ) : (
+                    partnerMetrics.loyalty.topCustomers.map((customer, index) => (
+                      <div
+                        key={customer.clientId ?? String(index)}
+                        className="flex items-center justify-between rounded-xl border border-primary-50/80 px-3 py-2 text-sm dark:border-white/10"
+                      >
+                        <div>
+                          <p className="font-semibold">{customer.clientId ?? 'Cliente'}</p>
+                          <p className="text-xs text-[var(--brand-muted)]">
+                            {customer.orders} órdenes · {customer.items ?? 0} artículos
+                          </p>
+                        </div>
+                        <p className="font-semibold text-primary-600 dark:text-primary-200">
+                          {formatCurrency(customer.spent ?? 0)}
                         </p>
                       </div>
-                      <p className="font-semibold text-primary-600 dark:text-primary-200">
-                        {formatCurrency(customer.spent ?? 0)}
-                      </p>
-                    </div>
-                  ))
-                )}
-              </div>
-            </>
-          ) : (
-            <p className="text-sm text-[var(--brand-muted)]">Sin datos de clientes.</p>
-          )}
+                    ))
+                  )}
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-[var(--brand-muted)]">Sin datos de clientes.</p>
+            )}
+            <div className="mt-4 rounded-2xl border border-primary-50/80 px-3 py-2 text-xs text-[var(--brand-muted)] dark:border-white/10">
+              <p className="uppercase tracking-[0.35em]">Reportes generados</p>
+              {partnerMetrics?.reports?.length ? (
+                <ul className="mt-2 space-y-1 text-sm">
+                  {partnerMetrics.reports.map((report) => (
+                    <li key={report.id} className="flex items-center justify-between">
+                      <span>
+                        {report.scope} · {report.status}
+                      </span>
+                      {report.resultUrl && (
+                        <a
+                          href={report.resultUrl}
+                          className="text-xs font-semibold text-primary-500 hover:underline"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Ver
+                        </a>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm">No hay reportes recientes.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {partnerMetrics?.advanced && (
+        <PartnerAdvancedReporting advanced={partnerMetrics.advanced} partnerDays={partnerDays} />
+      )}
+
+      <PartnerFiscalControls folio={fiscalFolio} onUpdate={handleFolioUpdate} onIssue={handleIssueFolio} />
+    </div>
+  );
+};
+
+const AdvancedStat = ({ label, value, hint }: { label: string; value: string; hint?: string }) => (
+  <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+    <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">{label}</p>
+    <p className="mt-1 text-2xl font-semibold text-primary-700 dark:text-primary-100">{value}</p>
+    {hint && <p className="text-xs text-[var(--brand-muted)]">{hint}</p>}
+  </div>
+);
+
+const PartnerAdvancedReporting = ({
+  advanced,
+  partnerDays,
+}: {
+  advanced: PartnerMetrics['advanced'];
+  partnerDays: number;
+}) => {
+  const totalSales = advanced.dailySales.reduce((sum, entry) => sum + entry.sales, 0);
+  const totalOrders = advanced.dailySales.reduce((sum, entry) => sum + entry.orders, 0);
+  const averageDailySales = advanced.dailySales.length ? totalSales / advanced.dailySales.length : 0;
+  const averageOrders = advanced.dailySales.length ? totalOrders / advanced.dailySales.length : 0;
+  const recentDaily = advanced.dailySales.slice(-Math.min(advanced.dailySales.length, 7)).reverse();
+  const customerTotal =
+    advanced.customerSegments.newCustomers + advanced.customerSegments.returningCustomers || 0;
+  const vipShare =
+    customerTotal > 0 ? advanced.customerSegments.vipCustomers / customerTotal : 0;
+  const orderStatusTotal = advanced.orderStatus.reduce((sum, entry) => sum + entry.count, 0);
+
+  const formatTrendLabel = (date: string) => {
+    const parsed = new Date(`${date}T00:00:00Z`);
+    if (Number.isNaN(parsed.getTime())) {
+      return date;
+    }
+    return parsed.toLocaleDateString('es-MX', {
+      weekday: 'short',
+      day: '2-digit',
+      month: 'short',
+    });
+  };
+
+  return (
+    <div className="rounded-3xl border border-primary-100/70 bg-gradient-to-br from-white/90 via-white/70 to-primary-50/60 p-5 text-sm shadow-sm dark:border-white/10 dark:from-slate-900/40 dark:via-slate-900/30 dark:to-primary-900/20">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="badge">Reporting avanzado</p>
+          <p className="text-sm text-[var(--brand-muted)]">
+            Herramienta inspirada en Frappe Books, adaptada a las métricas del POS para dirección.
+          </p>
+        </div>
+        <p className="text-xs text-[var(--brand-muted)]">Ventana analizada: {partnerDays} días</p>
+      </div>
+      <div className="mt-4 grid gap-4 md:grid-cols-3">
+        <AdvancedStat
+          label="Venta promedio diaria"
+          value={formatCurrency(Number(averageDailySales.toFixed(2)))}
+          hint="Basado en ventas registradas"
+        />
+        <AdvancedStat
+          label="Órdenes promedio"
+          value={`${averageOrders.toFixed(1)}`}
+          hint="Órdenes/día"
+        />
+        <AdvancedStat
+          label="Tasa de propina"
+          value={formatPercentValue(advanced.tipPerformance.tipRate)}
+          hint={`Promedio ${formatCurrency(advanced.tipPerformance.avgTip)}`}
+        />
+      </div>
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
+          <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
+            Tendencia diaria
+          </p>
+          <ul className="mt-3 space-y-2">
+            {recentDaily.length === 0 ? (
+              <p className="text-xs text-[var(--brand-muted)]">Sin movimientos registrados.</p>
+            ) : (
+              recentDaily.map((entry) => (
+                <li
+                  key={entry.date}
+                  className="flex items-center justify-between rounded-2xl border border-primary-50/70 bg-white/60 px-3 py-2 dark:border-white/10 dark:bg-white/5"
+                >
+                  <div>
+                    <p className="font-semibold">{formatTrendLabel(entry.date)}</p>
+                    <p className="text-xs text-[var(--brand-muted)]">
+                      {entry.orders} órdenes · Propinas {formatCurrency(entry.tips)}
+                    </p>
+                  </div>
+                  <p className="font-semibold text-primary-600 dark:text-primary-200">
+                    {formatCurrency(entry.sales)}
+                  </p>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
+        <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
+          <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
+            Métodos de pago
+          </p>
+          <ul className="mt-3 space-y-2">
+            {advanced.paymentMethods.length === 0 ? (
+              <p className="text-xs text-[var(--brand-muted)]">Sin registros de pago.</p>
+            ) : (
+              advanced.paymentMethods.slice(0, 5).map((entry) => (
+                <li key={entry.method} className="flex items-center justify-between text-sm">
+                  <span>{getPaymentMethodLabel(entry.method)}</span>
+                  <span className="text-xs text-[var(--brand-muted)]">
+                    {formatCurrency(entry.amount)} · {formatPercentValue(entry.percent)}
+                  </span>
+                </li>
+              ))
+            )}
+          </ul>
           <div className="mt-4 rounded-2xl border border-primary-50/80 px-3 py-2 text-xs text-[var(--brand-muted)] dark:border-white/10">
-            <p className="uppercase tracking-[0.35em]">Reportes generados</p>
-            {partnerMetrics?.reports?.length ? (
-              <ul className="mt-2 space-y-1 text-sm">
-                {partnerMetrics.reports.map((report) => (
-                  <li key={report.id} className="flex items-center justify-between">
-                    <span>
-                      {report.scope} · {report.status}
+            <p className="uppercase tracking-[0.35em]">Estado de órdenes</p>
+            {advanced.orderStatus.length === 0 ? (
+              <p className="mt-1 text-sm">Sin datos.</p>
+            ) : (
+              <ul className="mt-1 space-y-1 text-sm">
+                {advanced.orderStatus.slice(0, 5).map((entry) => (
+                  <li key={entry.status} className="flex items-center justify-between">
+                    <span>{entry.status}</span>
+                    <span className="text-xs text-[var(--brand-muted)]">
+                      {entry.count}{' '}
+                      {orderStatusTotal
+                        ? `· ${formatPercentValue(entry.count / orderStatusTotal, 0)}`
+                        : ''}
                     </span>
-                    {report.resultUrl && (
-                      <a
-                        href={report.resultUrl}
-                        className="text-xs font-semibold text-primary-500 hover:underline"
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Ver
-                      </a>
-                    )}
                   </li>
                 ))}
               </ul>
-            ) : (
-              <p className="text-sm">No hay reportes recientes.</p>
             )}
           </div>
         </div>
       </div>
-    )}
-  </div>
-);
+      <div className="mt-4 grid gap-4 md:grid-cols-3">
+        {[
+          {
+            label: 'Clientes nuevos',
+            value: advanced.customerSegments.newCustomers,
+            percent:
+              customerTotal > 0
+                ? formatPercentValue(advanced.customerSegments.newCustomers / customerTotal)
+                : '0.0%',
+          },
+          {
+            label: 'Clientes recurrentes',
+            value: advanced.customerSegments.returningCustomers,
+            percent:
+              customerTotal > 0
+                ? formatPercentValue(advanced.customerSegments.returningCustomers / customerTotal)
+                : '0.0%',
+          },
+          {
+            label: 'Clientes VIP',
+            value: advanced.customerSegments.vipCustomers,
+            percent: formatPercentValue(vipShare),
+          },
+        ].map((segment) => (
+          <div
+            key={segment.label}
+            className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5"
+          >
+            <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
+              {segment.label}
+            </p>
+            <p className="mt-1 text-2xl font-semibold text-primary-700 dark:text-primary-100">
+              {segment.value}
+            </p>
+            <p className="text-xs text-[var(--brand-muted)]">{segment.percent} del total</p>
+          </div>
+        ))}
+      </div>
+      <div className="mt-4 rounded-2xl border border-primary-100/70 bg-primary-50/60 px-4 py-3 text-sm text-primary-900 dark:border-white/10 dark:bg-primary-900/40 dark:text-primary-100">
+        <p className="text-xs uppercase tracking-[0.35em]">Propinas acumuladas</p>
+        <p className="text-2xl font-semibold">{formatCurrency(advanced.tipPerformance.totalTips)}</p>
+        <p className="text-xs text-[var(--brand-muted)]">
+          Tasa efectiva {formatPercentValue(advanced.tipPerformance.tipRate)} · Promedio{' '}
+          {formatCurrency(advanced.tipPerformance.avgTip)} por pago
+        </p>
+      </div>
+    </div>
+  );
+};
+
+const PartnerFiscalControls = ({
+  folio,
+  onUpdate,
+  onIssue,
+}: {
+  folio: FiscalFolioConfig;
+  onUpdate: (patch: Partial<FiscalFolioConfig>) => void;
+  onIssue: () => void;
+}) => {
+  const currentFolio = `${folio.series}-${String(folio.nextNumber).padStart(4, '0')}`;
+  return (
+    <div className="rounded-3xl border border-primary-100/70 bg-gradient-to-br from-white/90 to-amber-50/60 p-5 text-sm shadow-sm dark:border-white/10 dark:from-slate-900/40 dark:to-amber-900/20">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="badge">Foliado y comprobantes fiscales</p>
+          <p className="text-xs text-[var(--brand-muted)]">
+            Replica ligera de la herramienta contable de Frappe: controla series, RFC y bitácora de timbrado.
+          </p>
+        </div>
+        <p className="text-xs text-[var(--brand-muted)]">
+          Último folio:{' '}
+          {folio.lastIssuedAt
+            ? new Date(folio.lastIssuedAt).toLocaleString('es-MX')
+            : 'sin emisión'}
+        </p>
+      </div>
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <label className="space-y-1">
+          <span className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">Serie</span>
+          <input
+            type="text"
+            value={folio.series}
+            maxLength={4}
+            onChange={(event) => onUpdate({ series: event.target.value.toUpperCase() })}
+            className="w-full rounded-2xl border border-primary-100/70 bg-white px-3 py-2 focus:border-primary-400 focus:outline-none dark:border-white/10 dark:bg-white/5"
+          />
+        </label>
+        <label className="space-y-1">
+          <span className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">Próximo folio</span>
+          <input
+            type="number"
+            value={folio.nextNumber}
+            min={1}
+            onChange={(event) => onUpdate({ nextNumber: Number(event.target.value) || folio.nextNumber })}
+            className="w-full rounded-2xl border border-primary-100/70 bg-white px-3 py-2 focus:border-primary-400 focus:outline-none dark:border-white/10 dark:bg-white/5"
+          />
+        </label>
+        <label className="space-y-1">
+          <span className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">RFC</span>
+          <input
+            type="text"
+            value={folio.rfc}
+            onChange={(event) => onUpdate({ rfc: event.target.value.toUpperCase() })}
+            className="w-full rounded-2xl border border-primary-100/70 bg-white px-3 py-2 focus:border-primary-400 focus:outline-none dark:border-white/10 dark:bg-white/5"
+          />
+        </label>
+        <label className="space-y-1">
+          <span className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">Razón social</span>
+          <input
+            type="text"
+            value={folio.issuer}
+            onChange={(event) => onUpdate({ issuer: event.target.value })}
+            className="w-full rounded-2xl border border-primary-100/70 bg-white px-3 py-2 focus:border-primary-400 focus:outline-none dark:border-white/10 dark:bg-white/5"
+          />
+        </label>
+      </div>
+      <label className="mt-4 block space-y-1">
+        <span className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">Notas</span>
+        <textarea
+          rows={3}
+          value={folio.notes}
+          onChange={(event) => onUpdate({ notes: event.target.value })}
+          className="w-full rounded-2xl border border-primary-100/70 bg-white px-3 py-2 focus:border-primary-400 focus:outline-none dark:border-white/10 dark:bg-white/5"
+        />
+      </label>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-[var(--brand-muted)]">
+          Folio listo para timbrar:{' '}
+          <span className="font-semibold text-primary-700 dark:text-primary-200">{currentFolio}</span>
+        </p>
+        <button type="button" className="brand-button text-xs" onClick={onIssue}>
+          Generar folio
+        </button>
+      </div>
+    </div>
+  );
+};
 
 const ScannedReservationContent = ({
   reservation,
@@ -4492,11 +5376,15 @@ const ReservationsSearchBar = ({
   isLoading,
   onRefresh,
   onShowPast,
+  onShowCompleted,
+  showCompletedButton,
 }: {
   onSearch: (value: string) => void;
   isLoading: boolean;
   onRefresh: () => Promise<void>;
   onShowPast: () => void;
+  onShowCompleted?: () => void;
+  showCompletedButton?: boolean;
 }) => {
   const [value, setValue] = useState('');
 
@@ -4542,19 +5430,28 @@ const ReservationsSearchBar = ({
           </button>
         </div>
       </form>
-      <button type="button" onClick={onShowPast} className="brand-button text-xs">
-        Pasadas
-      </button>
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={onShowPast} className="brand-button text-xs">
+          Pasadas
+        </button>
+        {showCompletedButton && onShowCompleted && (
+          <button type="button" onClick={onShowCompleted} className="brand-button text-xs">
+            Completadas
+          </button>
+        )}
+      </div>
     </div>
   );
 };
 
 const ReservationHistoryContent = ({
+  title,
   reservations,
   onClose,
   hasFilter,
   onSelect,
 }: {
+  title: string;
   reservations: Reservation[];
   onClose: () => void;
   hasFilter: boolean;
@@ -4576,7 +5473,7 @@ const ReservationHistoryContent = ({
   return (
     <div className="space-y-4 text-[var(--brand-text)] dark:text-white">
       <div className="flex items-center justify-between">
-        <h3 className="text-2xl font-semibold">Reservas pasadas</h3>
+        <h3 className="text-2xl font-semibold">{title}</h3>
         <button
           type="button"
           onClick={onClose}
@@ -4612,10 +5509,10 @@ const ReservationHistoryContent = ({
       {filtered.length === 0 ? (
         <p className="text-sm text-[var(--brand-muted)] dark:text-white/80">
           {query
-            ? 'No encontramos reservas pasadas con ese ID o nombre.'
+            ? `No encontramos ${title.toLowerCase()} con ese ID o nombre.`
             : hasFilter
-              ? 'No encontramos reservas pasadas con ese filtro.'
-              : 'No hay reservas pasadas disponibles.'}
+              ? `No encontramos ${title.toLowerCase()} con ese filtro.`
+              : `No hay ${title.toLowerCase()} disponibles.`}
         </p>
       ) : (
         <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-2">
@@ -4634,6 +5531,187 @@ const ReservationHistoryContent = ({
     </div>
   );
 };
+
+const LedgerEntriesModal = ({
+  entries,
+  onClose,
+}: {
+  entries: OrderPaymentMetricsSummary['entries'];
+  onClose: () => void;
+}) => {
+  const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) {
+      return entries;
+    }
+    const term = query.trim().toLowerCase();
+    const matches = (value?: string | null) => value?.toLowerCase().includes(term) ?? false;
+    return entries.filter((entry) =>
+      [entry.reference, entry.paymentMethod, entry.debitAccount, entry.creditAccount].some(matches)
+    );
+  }, [entries, query]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const visible = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+  return (
+    <div className="space-y-4 text-sm text-[var(--brand-text)] dark:text-white">
+      <div className="flex items-center justify-between">
+        <h3 className="text-2xl font-semibold">Libro mayor completo</h3>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-xs font-bold uppercase tracking-[0.3em] text-[var(--brand-text)] underline dark:text-white"
+        >
+          Cerrar
+        </button>
+      </div>
+      <form
+        className="flex flex-wrap items-center gap-2 text-xs text-[var(--brand-muted)] dark:text-white/80"
+        onSubmit={(event) => event.preventDefault()}
+      >
+        <label className="flex flex-col text-[var(--brand-muted)] dark:text-white/70">
+          <span className="font-semibold uppercase tracking-[0.25em]">Buscar</span>
+          <input
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setPage(1);
+            }}
+            placeholder="Ticket, cuenta o método"
+            className="mt-1 rounded-xl border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:text-white"
+          />
+        </label>
+        {query && (
+          <button
+            type="button"
+            onClick={() => {
+              setQuery('');
+              setPage(1);
+            }}
+            className="brand-button--ghost text-xs"
+          >
+            Limpiar
+          </button>
+        )}
+      </form>
+      {visible.length === 0 ? (
+        <p className="text-xs text-[var(--brand-muted)] dark:text-white/80">
+          {filtered.length === 0 ? 'Sin resultados con ese criterio.' : 'Esta página no tiene registros.'}
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full table-auto text-xs">
+            <thead>
+              <tr className="text-left text-[var(--brand-muted)]">
+                <th className="px-3 py-2">#</th>
+                <th className="px-3 py-2">Ticket</th>
+                <th className="px-3 py-2">Monto</th>
+                <th className="px-3 py-2">Fecha</th>
+                <th className="px-3 py-2">Hora</th>
+                <th className="px-3 py-2">Debe</th>
+                <th className="px-3 py-2">Propina</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((entry, index) => {
+                const date = new Date(entry.date);
+                return (
+                  <tr
+                    key={entry.id}
+                    className="border-t border-primary-50/70 text-[var(--brand-text)] dark:border-white/10 dark:text-white"
+                  >
+                    <td className="px-3 py-2 text-[var(--brand-muted)]">
+                      {(currentPage - 1) * pageSize + index + 1}
+                    </td>
+                    <td className="px-3 py-2 font-semibold">{entry.reference}</td>
+                    <td className="px-3 py-2">{formatCurrency(entry.amount)}</td>
+                    <td className="px-3 py-2">{date.toLocaleDateString('es-MX')}</td>
+                    <td className="px-3 py-2">
+                      {date.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
+                    </td>
+                    <td className="px-3 py-2">{entry.debitAccount}</td>
+                    <td className="px-3 py-2">
+                      {entry.tipAmount > 0 ? formatCurrency(entry.tipAmount) : '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {filtered.length > pageSize && (
+        <PaginationControls
+          page={currentPage}
+          totalPages={totalPages}
+          totalItems={filtered.length}
+          onPrev={() => setPage((prev) => Math.max(1, prev - 1))}
+          onNext={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+        />
+      )}
+    </div>
+  );
+};
+
+const HistoryModalShell = ({
+  children,
+  onClose,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+}) => (
+  <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
+    <div
+      className="absolute inset-0 bg-black/60 backdrop-blur"
+      role="presentation"
+      onClick={onClose}
+    />
+    <div className="relative z-10 max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-[#1f1613] p-6 text-white shadow-2xl">
+      {children}
+    </div>
+  </div>
+);
+
+const PaginationControls = ({
+  page,
+  totalPages,
+  totalItems,
+  onPrev,
+  onNext,
+}: {
+  page: number;
+  totalPages: number;
+  totalItems: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) => (
+  <div className="mt-3 flex items-center justify-between text-xs text-[var(--brand-muted)]">
+    <button
+      type="button"
+      onClick={onPrev}
+      className="rounded-full border border-primary-100/70 px-2 py-1 transition hover:border-primary-300 hover:text-primary-600 dark:border-white/10 disabled:opacity-40"
+      disabled={page <= 1}
+    >
+      ‹
+    </button>
+    <span className="font-semibold">
+      Página {page} de {totalPages} · {totalItems} registros
+    </span>
+    <button
+      type="button"
+      onClick={onNext}
+      className="rounded-full border border-primary-100/70 px-2 py-1 transition hover:border-primary-300 hover:text-primary-600 dark:border-white/10 disabled:opacity-40"
+      disabled={page >= totalPages}
+    >
+      ›
+    </button>
+  </div>
+);
 
 // --- Staff utility drawer & panels ---------------------------------------------------------------
 
@@ -4861,7 +5939,9 @@ interface StaffSidePanelProps {
   payments: PaymentsDashboard | null;
   paymentsLoading: boolean;
   onRefreshPayments: () => Promise<void>;
+  canViewAccounting: boolean;
   branchName: string;
+  orderPaymentMetrics: OrderPaymentMetricsSummary | null;
   governanceRequests: GovernanceRequest[];
   onGovernanceDecision: (
     requestId: string,
@@ -4906,6 +5986,8 @@ const StaffSidePanel = ({
   payments,
   paymentsLoading,
   onRefreshPayments,
+  canViewAccounting,
+  orderPaymentMetrics,
   branchName,
   governanceRequests,
   onGovernanceDecision,
@@ -4989,6 +6071,8 @@ const StaffSidePanel = ({
               payments={payments}
               encryptedSnapshot={secureSnapshot}
               viewerEmail={viewerEmail}
+              orderMetrics={orderPaymentMetrics}
+              showTipShare={isSocio}
             />
           )}
           {view === 'managerEmployees' && (
@@ -4997,6 +6081,8 @@ const StaffSidePanel = ({
               staffLoading={staffLoading}
               staffError={staffError}
               onRefreshStaff={onRefreshStaff}
+              showHierarchy={isSocio}
+              salaryReference={managerSalaryDraft}
             />
           )}
           {view === 'managerPayments' && (
@@ -5004,6 +6090,8 @@ const StaffSidePanel = ({
               payments={payments}
               paymentsLoading={paymentsLoading}
               onRefreshPayments={onRefreshPayments}
+              orderMetrics={orderPaymentMetrics}
+              canViewAccounting={isSocio}
             />
           )}
           {view === 'governance' && (
@@ -5189,40 +6277,44 @@ const StaffMetricsPanel = ({
       </div>
       <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
         <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Últimas sesiones</p>
-        <div className="mt-3 space-y-2">
-          {sessionList.length === 0 ? (
-            <p className="text-xs text-[var(--brand-muted)]">Aún no hay registros.</p>
-          ) : (
-            sessionList.map((session) => (
-              <div key={session.id} className="flex justify-between rounded-2xl bg-white/70 px-3 py-2 dark:bg-white/10">
-                <div>
-                  <p className="font-semibold">
-                    {session.sessionStart
-                      ? new Date(session.sessionStart).toLocaleDateString('es-MX', {
-                          weekday: 'short',
-                          day: '2-digit',
-                          month: 'short',
+                    <div className="mt-3 space-y-2">
+                      {sessionList.length === 0 ? (
+                        <p className="text-xs text-[var(--brand-muted)]">Aún no hay registros.</p>
+                      ) : (
+                        sessionList.map((session) => {
+                          const durationSeconds = resolveSessionDurationSeconds(session);
+                          return (
+                            <div
+                              key={session.id}
+                              className="flex justify-between rounded-2xl bg-white/70 px-3 py-2 dark:bg-white/10"
+                            >
+                              <div>
+                                <p className="font-semibold">
+                                  {session.sessionStart
+                                    ? new Date(session.sessionStart).toLocaleDateString('es-MX', {
+                                        weekday: 'short',
+                                        day: '2-digit',
+                                        month: 'short',
+                                      })
+                                    : 'Sin fecha'}
+                                </p>
+                                <p className="text-xs text-[var(--brand-muted)]">
+                                  {durationSeconds > 0 ? formatSessionDuration(durationSeconds) : 'En progreso'}
+                                </p>
+                              </div>
+                              <span className="text-xs text-[var(--brand-muted)]">
+                                {session.sessionStart
+                                  ? new Date(session.sessionStart).toLocaleTimeString('es-MX', {
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    })
+                                  : '—'}
+                              </span>
+                            </div>
+                          );
                         })
-                      : 'Sin fecha'}
-                  </p>
-                  <p className="text-xs text-[var(--brand-muted)]">
-                    {session.durationSeconds
-                      ? formatSessionDuration(session.durationSeconds)
-                      : 'En progreso'}
-                  </p>
-                </div>
-                <span className="text-xs text-[var(--brand-muted)]">
-                  {session.sessionStart
-                    ? new Date(session.sessionStart).toLocaleTimeString('es-MX', {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })
-                    : '—'}
-                </span>
-              </div>
-            ))
-          )}
-        </div>
+                      )}
+                    </div>
       </div>
       <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
         <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
@@ -5607,17 +6699,69 @@ interface ManagerTipsPanelProps {
   payments: PaymentsDashboard | null;
   encryptedSnapshot: Record<string, string>;
   viewerEmail: string;
+  orderMetrics?: OrderPaymentMetricsSummary | null;
+  showTipShare?: boolean;
 }
 
-const ManagerTipsPanel = ({ draft, onChange, payments, encryptedSnapshot, viewerEmail }: ManagerTipsPanelProps) => (
-  <div className="space-y-4 text-sm">
+const ManagerTipsPanel = ({
+  draft,
+  onChange,
+  payments,
+  encryptedSnapshot,
+  viewerEmail,
+  orderMetrics,
+  showTipShare = false,
+}: ManagerTipsPanelProps) => {
+  const [decryptedSnapshot, setDecryptedSnapshot] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!viewerEmail || Object.keys(encryptedSnapshot).length === 0) {
+        setDecryptedSnapshot({});
+        return;
+      }
+      try {
+        const entries = await Promise.all(
+          Object.entries(encryptedSnapshot).map(async ([key, value]) => [
+            key,
+            await decryptField(value, viewerEmail),
+          ])
+        );
+        if (!cancelled) {
+          setDecryptedSnapshot(Object.fromEntries(entries));
+        }
+      } catch {
+        if (!cancelled) {
+          setDecryptedSnapshot({});
+        }
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [encryptedSnapshot, viewerEmail]);
+
+  const hasSnapshot = Object.keys(encryptedSnapshot).length > 0;
+  const detectedTips = orderMetrics?.tips24h ?? payments?.totalTips ?? 0;
+  const monthlyTips =
+    orderMetrics?.monthlyTips ?? payments?.monthlyTipsTotal ?? payments?.totalTips ?? 0;
+  const monthlyTipShare = orderMetrics?.tipShare ?? {
+    total: monthlyTips,
+    barista: monthlyTips * 0.4,
+    manager: monthlyTips * 0.6,
+  };
+
+  return (
+    <div className="space-y-4 text-sm">
     <p className="text-[var(--brand-muted)]">
       Ajusta el fondo de propinas manualmente y deja constancia para tu corte. Usa el reporte automático como referencia.
     </p>
     <div className="grid gap-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5 sm:grid-cols-2">
       <div>
         <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Propinas detectadas</p>
-        <p className="text-2xl font-semibold">{formatCurrency(payments?.totalTips ?? 0)}</p>
+        <p className="text-2xl font-semibold">{formatCurrency(detectedTips)}</p>
         <p className="text-xs text-[var(--brand-muted)]">Últimas 24h</p>
       </div>
       <div>
@@ -5630,6 +6774,34 @@ const ManagerTipsPanel = ({ draft, onChange, payments, encryptedSnapshot, viewer
         </p>
       </div>
     </div>
+    {showTipShare && (
+      <div className="grid gap-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5 sm:grid-cols-2">
+        <div>
+          <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Baristas (40%)</p>
+          <p className="text-2xl font-semibold text-primary-700">{formatCurrency(monthlyTipShare.barista)}</p>
+          <p className="text-xs text-[var(--brand-muted)]">Mes actual</p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Gerentes (60%)</p>
+          <p className="text-2xl font-semibold text-primary-700">{formatCurrency(monthlyTipShare.manager)}</p>
+          <p className="text-xs text-[var(--brand-muted)]">Mes actual</p>
+        </div>
+      </div>
+    )}
+    {showTipShare && (
+      <div className="grid gap-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5 sm:grid-cols-2">
+        <div>
+          <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Baristas (40%)</p>
+          <p className="text-2xl font-semibold text-primary-700">{formatCurrency(monthlyTipShare.barista)}</p>
+          <p className="text-xs text-[var(--brand-muted)]">Mes actual</p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Gerentes (60%)</p>
+          <p className="text-2xl font-semibold text-primary-700">{formatCurrency(monthlyTipShare.manager)}</p>
+          <p className="text-xs text-[var(--brand-muted)]">Mes actual</p>
+        </div>
+      </div>
+    )}
     <label className="space-y-1">
       <span className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Fondo base</span>
       <input
@@ -5658,39 +6830,113 @@ const ManagerTipsPanel = ({ draft, onChange, payments, encryptedSnapshot, viewer
         className="w-full rounded-2xl border border-primary-100/70 bg-white px-3 py-2 focus:border-primary-400 focus:outline-none dark:border-white/10 dark:bg-white/5"
       />
     </label>
-    <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-xs dark:border-white/10 dark:bg-white/5">
-      <p className="uppercase tracking-[0.3em] text-[var(--brand-muted)]">Campos cifrados AES-GCM</p>
-      {Object.keys(encryptedSnapshot).length === 0 ? (
-        <p className="mt-2 text-[var(--brand-muted)]">
-          Inicia sesión como socio o super usuario para generar el snapshot cifrado con la llave {viewerEmail}.
-        </p>
-      ) : (
-        <ul className="mt-2 space-y-1 font-mono text-[10px] text-primary-600 dark:text-primary-200">
-          {Object.entries(encryptedSnapshot).map(([key, value]) => (
-            <li key={key}>
-              {key}: {value}
-            </li>
-          ))}
-        </ul>
-      )}
+      <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-xs dark:border-white/10 dark:bg-white/5">
+        <p className="uppercase tracking-[0.3em] text-[var(--brand-muted)]">Campos cifrados AES-GCM</p>
+        {!hasSnapshot ? (
+          <p className="mt-2 text-[var(--brand-muted)]">
+            Inicia sesión como socio o super usuario para generar/leer el snapshot con la llave {viewerEmail}.
+          </p>
+        ) : (
+          <>
+            <p className="mt-2 text-[var(--brand-muted)]">Valores descifrados</p>
+            <ul className="mt-1 space-y-1 font-mono text-[11px] text-primary-700 dark:text-primary-200">
+              {Object.entries(decryptedSnapshot).map(([key, value]) => (
+                <li key={key}>
+                  {key}: {value}
+                </li>
+              ))}
+            </ul>
+            <details className="mt-3">
+              <summary className="cursor-pointer text-[var(--brand-muted)]">Ver cadenas cifradas</summary>
+              <ul className="mt-1 space-y-1 font-mono text-[10px] text-primary-600 dark:text-primary-200">
+                {Object.entries(encryptedSnapshot).map(([key, value]) => (
+                  <li key={`enc-${key}`}>
+                    {key}: {value}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          </>
+        )}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 interface ManagerEmployeesPanelProps {
   staffData: StaffDashboard | null;
   staffLoading: boolean;
   staffError: string | null;
   onRefreshStaff: () => Promise<void>;
+  showHierarchy?: boolean;
+  salaryReference?: ManagerSalaryDraft;
 }
+
+const StaffHierarchyTree = ({
+  staff,
+  salaryReference,
+}: {
+  staff: StaffMember[];
+  salaryReference?: ManagerSalaryDraft;
+}) => {
+  const formatLabel = (member: StaffMember) => {
+    const name =
+      member.firstNameEncrypted?.trim() ||
+      member.lastNameEncrypted?.trim() ||
+      member.email?.split('@')[0] ||
+      member.email ||
+      member.id;
+    const branch = member.branchId ?? 'Sin sucursal';
+    const salary = (() => {
+      if (member.role === 'gerente') {
+        return salaryReference?.baseMonthly ?? 15000;
+      }
+      if (member.role === 'socio' || member.role === 'superuser') {
+        return (salaryReference?.baseMonthly ?? 15000) * 1.5;
+      }
+      return HOURLY_RATE * 160;
+    })();
+    return `${name} · ${branch} · ${formatCurrency(salary)}`;
+  };
+
+  const buildSection = (title: string, members: StaffMember[]) => {
+    if (!members.length) {
+      return `${title}\n└─ Sin registros`;
+    }
+    return [
+      title,
+      ...members.map((member, index) => {
+        const connector = index === members.length - 1 ? '└─' : '├─';
+        return `${connector} ${formatLabel(member)}`;
+      }),
+    ].join('\n');
+  };
+
+  const socios = staff.filter((member) => member.role === 'socio' || member.role === 'superuser');
+  const gerentes = staff.filter((member) => member.role === 'gerente');
+  const baristas = staff.filter((member) => member.role === 'barista');
+
+  return (
+    <pre className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 font-mono text-xs text-[var(--brand-text)] dark:border-white/10 dark:bg-white/5 dark:text-white">
+{buildSection('Socios', socios)}
+\n{buildSection('Gerentes', gerentes)}
+\n{buildSection('Baristas', baristas)}
+    </pre>
+  );
+};
 
 const ManagerEmployeesPanel = ({
   staffData,
   staffLoading,
   staffError,
   onRefreshStaff,
+  showHierarchy,
+  salaryReference,
 }: ManagerEmployeesPanelProps) => (
   <div className="space-y-4 text-sm">
+    {showHierarchy && (staffData?.staff?.length ?? 0) > 0 && (
+      <StaffHierarchyTree staff={staffData!.staff} salaryReference={salaryReference} />
+    )}
     <div className="flex flex-wrap items-center justify-between gap-2">
       <p className="text-[var(--brand-muted)]">Consulta roles, personas activas y sesiones en curso.</p>
       <button
@@ -5728,22 +6974,27 @@ const ManagerEmployeesPanel = ({
         <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
           <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Sesiones abiertas</p>
           <div className="mt-3 space-y-2">
-            {(staffData?.sessions ?? []).slice(0, 6).map((session) => (
-              <div
-                key={session.id}
-                className="flex items-center justify-between rounded-2xl border border-primary-50/80 px-3 py-2 text-xs dark:border-white/10"
-              >
-                <div>
-                  <p className="font-semibold">{session.staff?.email ?? session.staffId ?? session.id.slice(0, 6)}</p>
-                  <p className="text-[var(--brand-muted)]">
-                    Inicio: {session.sessionStart ? new Date(session.sessionStart).toLocaleString('es-MX') : '—'}
-                  </p>
+            {(staffData?.sessions ?? []).slice(0, 6).map((session) => {
+              const durationSeconds = resolveSessionDurationSeconds(session);
+              return (
+                <div
+                  key={session.id}
+                  className="flex items-center justify-between rounded-2xl border border-primary-50/80 px-3 py-2 text-xs dark:border-white/10"
+                >
+                  <div>
+                    <p className="font-semibold">
+                      {session.staff?.email ?? session.staffId ?? session.id.slice(0, 6)}
+                    </p>
+                    <p className="text-[var(--brand-muted)]">
+                      Inicio: {session.sessionStart ? new Date(session.sessionStart).toLocaleString('es-MX') : '—'}
+                    </p>
+                  </div>
+                  <span className="text-[var(--brand-muted)]">
+                    {durationSeconds > 0 ? formatSessionDuration(durationSeconds) : 'En curso'}
+                  </span>
                 </div>
-                <span className="text-[var(--brand-muted)]">
-                  {session.durationSeconds ? formatSessionDuration(session.durationSeconds) : 'En curso'}
-                </span>
-              </div>
-            ))}
+              );
+            })}
             {(staffData?.sessions?.length ?? 0) === 0 && (
               <p className="text-xs text-[var(--brand-muted)]">Sin sesiones activas.</p>
             )}
@@ -5758,14 +7009,43 @@ interface ManagerPaymentsPanelProps {
   payments: PaymentsDashboard | null;
   paymentsLoading: boolean;
   onRefreshPayments: () => Promise<void>;
+  orderMetrics?: OrderPaymentMetricsSummary | null;
+  canViewAccounting?: boolean;
 }
 
 const ManagerPaymentsPanel = ({
   payments,
   paymentsLoading,
   onRefreshPayments,
-}: ManagerPaymentsPanelProps) => (
-  <div className="space-y-4 text-sm">
+  orderMetrics,
+  canViewAccounting,
+}: ManagerPaymentsPanelProps) => {
+  const preferOrders = Boolean(canViewAccounting && orderMetrics?.hasData);
+  const [showLedgerModal, setShowLedgerModal] = useState(false);
+  const sales24h = preferOrders ? orderMetrics!.sales24h : payments?.totalAmount ?? 0;
+  const tips24h = preferOrders ? orderMetrics!.tips24h : payments?.totalTips ?? 0;
+  const monthlyTips = preferOrders
+    ? orderMetrics!.monthlyTips
+    : payments?.monthlyTipsTotal ?? payments?.totalTips ?? 0;
+  const monthStartLabel = preferOrders
+    ? orderMetrics!.monthStart.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })
+    : payments?.monthlyTipPeriodStart
+      ? new Date(payments.monthlyTipPeriodStart).toLocaleDateString('es-MX', {
+          day: '2-digit',
+          month: 'short',
+        })
+      : 'inicio de mes';
+  const salesDescription = preferOrders ? 'Pedidos completados hoy.' : 'Pagos capturados';
+  const tipsDescription = preferOrders
+    ? 'Propinas registradas en pedidos completados hoy.'
+    : 'Incluye todas las propinas capturadas hoy.';
+  const methodBreakdown = preferOrders
+    ? orderMetrics?.methodTotals ?? []
+    : payments?.methodBreakdown ?? [];
+  const ledgerEntries = preferOrders ? orderMetrics?.entries ?? [] : [];
+
+  return (
+    <div className="space-y-4 text-sm">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <p className="text-[var(--brand-muted)]">Resumen rápido de pagos y propinas para cortes diarios.</p>
       <button
@@ -5777,32 +7057,84 @@ const ManagerPaymentsPanel = ({
       </button>
     </div>
     {paymentsLoading && <p className="text-xs text-[var(--brand-muted)]">Sincronizando datos…</p>}
-    <div className="grid gap-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5 sm:grid-cols-2">
+    <div className="grid gap-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5 sm:grid-cols-2 lg:grid-cols-3">
       <div>
         <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Ventas (24h)</p>
-        <p className="text-2xl font-semibold">{formatCurrency(payments?.totalAmount ?? 0)}</p>
-        <p className="text-xs text-[var(--brand-muted)]">Pagos capturados</p>
+        <p className="text-2xl font-semibold">{formatCurrency(sales24h)}</p>
+        <p className="text-xs text-[var(--brand-muted)]">{salesDescription}</p>
       </div>
       <div>
-        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Propinas</p>
-        <p className="text-2xl font-semibold">{formatCurrency(payments?.totalTips ?? 0)}</p>
-        <p className="text-xs text-[var(--brand-muted)]">Aplica cortes manuales.</p>
+        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Propinas (24h)</p>
+        <p className="text-2xl font-semibold">{formatCurrency(tips24h)}</p>
+        <p className="text-xs text-[var(--brand-muted)]">{tipsDescription}</p>
+      </div>
+      <div>
+        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Propinas del mes</p>
+        <p className="text-2xl font-semibold">{formatCurrency(monthlyTips)}</p>
+        <p className="text-xs text-[var(--brand-muted)]">Desde {monthStartLabel} · reinicia cada mes</p>
       </div>
     </div>
     <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
       <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Métodos</p>
       <div className="mt-3 space-y-2">
-        {(payments?.methodBreakdown ?? []).map((entry) => (
-          <div key={entry.method} className="flex items-center justify-between rounded-2xl border border-primary-50/80 px-3 py-2 text-xs dark:border-white/10">
-            <span className="capitalize">{entry.method}</span>
-            <span className="font-semibold">{formatCurrency(entry.amount)}</span>
-          </div>
-        ))}
-        {(payments?.methodBreakdown?.length ?? 0) === 0 && (
+        {methodBreakdown.length > 0 ? (
+          methodBreakdown.map((entry) => (
+            <div
+              key={entry.method}
+              className="flex items-center justify-between rounded-2xl border border-primary-50/80 px-3 py-2 text-xs dark:border-white/10"
+            >
+              <span className="capitalize">{entry.method}</span>
+              <span className="font-semibold">{formatCurrency(entry.amount)}</span>
+            </div>
+          ))
+        ) : (
           <p className="text-xs text-[var(--brand-muted)]">Sin pagos registrados.</p>
         )}
       </div>
     </div>
+    {canViewAccounting && ledgerEntries.length > 0 && (
+      <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-xs dark:border-white/10 dark:bg-white/5">
+        <div className="flex items-center justify-between">
+          <p className="uppercase tracking-[0.3em] text-[var(--brand-muted)]">Libro mayor</p>
+          <button
+            type="button"
+            className="text-[var(--brand-muted)] underline-offset-4 hover:underline"
+            onClick={() => setShowLedgerModal(true)}
+          >
+            Ver todo
+          </button>
+        </div>
+        <div className="mt-3 space-y-2">
+          {ledgerEntries.slice(0, 3).map((entry) => (
+            <div key={entry.id} className="rounded-2xl border border-primary-50/80 px-3 py-2 dark:border-white/10">
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-semibold">{formatCurrency(entry.amount)}</span>
+                <span className="text-[var(--brand-muted)]">
+                  {new Date(entry.date).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })}
+                </span>
+              </div>
+              <p className="text-[var(--brand-muted)]">Ticket {entry.reference}</p>
+              <p className="text-[var(--brand-muted)]">
+                Debe: {entry.debitAccount} · Haber: {entry.creditAccount}
+              </p>
+              {entry.tipAmount > 0 && (
+                <p className="text-[var(--brand-muted)]">Propina ligada: {formatCurrency(entry.tipAmount)}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
+    {canViewAccounting && showLedgerModal && (
+      <HistoryModalShell onClose={() => setShowLedgerModal(false)}>
+        <LedgerEntriesModal entries={ledgerEntries} onClose={() => setShowLedgerModal(false)} />
+      </HistoryModalShell>
+    )}
+    {canViewAccounting && showLedgerModal && (
+      <HistoryModalShell onClose={() => setShowLedgerModal(false)}>
+        <LedgerEntriesModal entries={ledgerEntries} onClose={() => setShowLedgerModal(false)} />
+      </HistoryModalShell>
+    )}
     <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
       <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Últimos pagos</p>
       <div className="mt-3 space-y-2">
@@ -5823,8 +7155,9 @@ const ManagerPaymentsPanel = ({
         )}
       </div>
     </div>
-  </div>
-);
+    </div>
+  );
+};
 
 const GovernancePanel = ({
   requests,
@@ -6126,6 +7459,20 @@ const formatSessionDuration = (seconds: number) => {
     .toString()
     .padStart(2, '0');
   return `${hrs}:${mins}:${secs}`;
+};
+
+const resolveSessionDurationSeconds = (session: StaffSessionRecord, referenceTimestamp = Date.now()) => {
+  if (typeof session.durationSeconds === 'number' && Number.isFinite(session.durationSeconds)) {
+    return Math.max(0, Math.floor(session.durationSeconds));
+  }
+  const startTs = session.sessionStart ? Date.parse(session.sessionStart) : NaN;
+  if (!Number.isFinite(startTs)) {
+    return 0;
+  }
+  const endTs = session.sessionEnd ? Date.parse(session.sessionEnd) : NaN;
+  const upperTs = Number.isFinite(endTs) ? endTs : referenceTimestamp;
+  const durationMs = Math.max(0, upperTs - startTs);
+  return Math.floor(durationMs / 1000);
 };
 
 const computeTenure = (startedAt?: string | null): TenureBreakdown => {
