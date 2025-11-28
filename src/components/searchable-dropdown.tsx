@@ -45,7 +45,16 @@ export function SearchableDropdown({
   const normalizedQuery = query.trim() ? normalize(query.trim()) : '';
 
   const sortedOptions = useMemo(
-    () => [...options].sort((a, b) => a.label.localeCompare(b.label, 'es-MX')),
+    () =>
+      [...options].sort((a, b) => {
+        const byLabel = a.label.localeCompare(b.label, 'es-MX');
+        if (byLabel !== 0) {
+          return byLabel;
+        }
+        const sizeA = a.sizeLabel ?? '';
+        const sizeB = b.sizeLabel ?? '';
+        return sizeA.localeCompare(sizeB, 'es-MX');
+      }),
     [options]
   );
 
@@ -54,7 +63,7 @@ export function SearchableDropdown({
       return sortedOptions;
     }
     return sortedOptions.filter((option) => {
-      const haystack = [option.label, option.category, option.subcategory]
+      const haystack = [option.label, option.category, option.subcategory, option.sizeLabel]
         .filter(Boolean)
         .join(' ');
       return normalize(haystack).includes(normalizedQuery);
@@ -202,11 +211,14 @@ export function SearchableDropdown({
         aria-controls={`${id}-listbox`}
       >
         <span className="flex flex-col">
-          <span className="truncate">
+          <span className="truncate font-semibold">
             {selectedOption ? selectedOption.label : placeholder}
           </span>
-          {selectedOption?.price !== undefined && selectedOption?.price !== null && (
-            <span className="text-xs text-[var(--brand-muted)]">{formatCurrency(selectedOption.price)}</span>
+          {selectedOption && (
+            <span className="text-xs text-[var(--brand-muted)]">
+              {selectedOption.sizeLabel ? `${selectedOption.sizeLabel} · ` : ''}
+              {formatCurrency(selectedOption.price)}
+            </span>
           )}
         </span>
         <svg
@@ -265,7 +277,7 @@ export function SearchableDropdown({
                       data-index={index}
                       aria-selected={isSelected}
                       key={option.id}
-                      onClick={() => handleOptionClick(option.id)}
+                        onClick={() => handleOptionClick(option.id)}
                       className={`flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left transition focus:outline-none ${
                         isActive
                           ? 'border-primary-400 bg-primary-50 text-primary-700'
@@ -275,15 +287,23 @@ export function SearchableDropdown({
                       <div>
                         <p className="font-semibold text-primary-700 dark:text-primary-100">{option.label}</p>
                         <p className="text-xs text-[var(--brand-muted)]">
+                          {option.sizeLabel ? `${option.sizeLabel} · ` : ''}
                           {typeof option.price === 'number'
                             ? formatCurrency(option.price)
                             : 'Precio no registrado'}
                           {typeof option.calories === 'number' ? ` · ${option.calories} kcal` : ''}
                         </p>
                       </div>
-                      <span className="text-xs text-primary-500 capitalize">
-                        {option.category ?? 'Sin categoría'}
-                      </span>
+                      <div className="text-right">
+                        <span className="text-xs text-primary-500 capitalize">
+                          {option.category ?? 'Sin categoría'}
+                        </span>
+                        {option.subcategory && (
+                          <p className="text-[10px] uppercase tracking-wider text-[var(--brand-muted)]">
+                            {option.subcategory}
+                          </p>
+                        )}
+                      </div>
                     </button>
                   );
                 })

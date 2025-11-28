@@ -11,6 +11,7 @@ const REPORTS_TABLE = process.env.SUPABASE_REPORTS_TABLE ?? 'report_requests';
 
 const DEFAULT_DAYS = Number(process.env.PARTNER_METRICS_DAYS ?? 30);
 const VIP_SPENT_THRESHOLD = Number(process.env.PARTNER_VIP_THRESHOLD ?? 1200);
+const MAX_MONTH_HISTORY = 18;
 
 const toNumber = (value: unknown) => {
   const parsed = Number(value);
@@ -31,13 +32,92 @@ const ensureBucket = (collection: Map<string, DailyTotals>, key: string) => {
   return collection.get(key)!;
 };
 
+const buildMonthLabel = (monthKey: string) => {
+  const base = new Date(`${monthKey}-01T00:00:00Z`);
+  return base.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
+};
+
+const resolveMonthRange = (monthKey: string) => {
+  const [year, month] = monthKey.split('-').map(Number);
+  if (!year || !month) {
+    throw new Error('Mes inválido');
+  }
+  const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + 1);
+  return { start, end };
+};
+
+const collectAvailableMonths = async () => {
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const earliest = new Date(now);
+  earliest.setMonth(earliest.getMonth() - (MAX_MONTH_HISTORY - 1));
+  earliest.setDate(1);
+  const { data, error } = await supabaseAdmin
+    .from(ORDERS_TABLE)
+    .select('"createdAt"')
+    .gte('createdAt', earliest.toISOString());
+  if (error) {
+    console.warn('Partner metrics months query failed:', error.message);
+    return [];
+  }
+  const months = new Set<string>();
+  (data ?? []).forEach((row) => {
+    const createdAt = row?.createdAt;
+    if (typeof createdAt === 'string' && createdAt.length >= 7) {
+      months.add(createdAt.substring(0, 7));
+    }
+  });
+  const currentMonth = new Date().toISOString().substring(0, 7);
+  months.add(currentMonth);
+  return Array.from(months)
+    .sort((a, b) => b.localeCompare(a))
+    .slice(0, MAX_MONTH_HISTORY)
+    .map((month) => ({ month, label: buildMonthLabel(month) }));
+};
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const requestedDays = Number(searchParams.get('days'));
+    const requestedMonth = searchParams.get('month')?.substring(0, 7) ?? null;
+    const availableMonths = await collectAvailableMonths();
+    const validMonth =
+      requestedMonth && availableMonths.some((entry) => entry.month === requestedMonth)
+        ? requestedMonth
+        : null;
+    const useMonthMode = Boolean(validMonth);
+
     const daysWindow =
       Number.isFinite(requestedDays) && requestedDays > 0 ? Math.min(requestedDays, 360) : DEFAULT_DAYS;
-    const since = new Date(Date.now() - daysWindow * 24 * 60 * 60 * 1000).toISOString();
+
+    let sinceIso: string;
+    let untilIso: string | null = null;
+    if (useMonthMode && validMonth) {
+      const { start, end } = resolveMonthRange(validMonth);
+      sinceIso = start.toISOString();
+      untilIso = end.toISOString();
+    } else {
+      sinceIso = new Date(Date.now() - daysWindow * 24 * 60 * 60 * 1000).toISOString();
+      untilIso = null;
+    }
+
+    let ordersQuery = supabaseAdmin
+      .from(ORDERS_TABLE)
+      .select('id,total,status,"createdAt"')
+      .gte('createdAt', sinceIso);
+    if (untilIso) {
+      ordersQuery = ordersQuery.lt('createdAt', untilIso);
+    }
+
+    let paymentsQuery = supabaseAdmin
+      .from(PAYMENTS_TABLE)
+      .select('id,amount,"tipAmount",status,"createdAt",method')
+      .gte('createdAt', sinceIso);
+    if (untilIso) {
+      paymentsQuery = paymentsQuery.lt('createdAt', untilIso);
+    }
 
     const [
       { data: orders, error: ordersError },
@@ -45,14 +125,8 @@ export async function GET(request: Request) {
       { data: customerView, error: viewError },
       { data: reports, error: reportsError },
     ] = await Promise.all([
-      supabaseAdmin
-        .from(ORDERS_TABLE)
-        .select('id,total,status,"createdAt"')
-        .gte('createdAt', since),
-      supabaseAdmin
-        .from(PAYMENTS_TABLE)
-        .select('id,amount,"tipAmount",status,"createdAt",method')
-        .gte('createdAt', since),
+      ordersQuery,
+      paymentsQuery,
       supabaseAdmin.from(CUSTOMER_METRICS_VIEW).select('clientId,orders,spent,items'),
       supabaseAdmin
         .from(REPORTS_TABLE)
@@ -175,6 +249,8 @@ export async function GET(request: Request) {
         loyalty,
         reports: reports ?? [],
         advanced,
+        availableMonths,
+        selectedMonth: validMonth,
       },
     });
   } catch (error) {

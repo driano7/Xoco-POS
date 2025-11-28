@@ -2,6 +2,19 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-server';
 import { withDecryptedUserNames, type RawUserRecord } from '@/lib/customer-decrypt';
 
+const sanitizeEnv = (value?: string | null) => value?.trim() || null;
+
+const PUBLIC_SALE_CLIENT_ID =
+  sanitizeEnv(process.env.SUPABASE_PUBLIC_SALE_CLIENT_ID) ??
+  sanitizeEnv(process.env.NEXT_PUBLIC_PUBLIC_SALE_CLIENT_ID) ??
+  'AAA-1111';
+const PUBLIC_SALE_USER_ID =
+  sanitizeEnv(process.env.SUPABASE_PUBLIC_SALE_USER_ID) ??
+  sanitizeEnv(process.env.NEXT_PUBLIC_PUBLIC_SALE_USER_ID) ??
+  PUBLIC_SALE_CLIENT_ID;
+const PUBLIC_SALE_CLIENT_ID_LOWER = PUBLIC_SALE_CLIENT_ID?.toLowerCase() ?? '';
+const PUBLIC_SALE_USER_ID_LOWER = PUBLIC_SALE_USER_ID?.toLowerCase() ?? '';
+
 const ORDERS_TABLE = process.env.SUPABASE_ORDERS_TABLE ?? 'orders';
 const ORDER_ITEMS_TABLE = process.env.SUPABASE_ORDER_ITEMS_TABLE ?? 'order_items';
 const PAYMENTS_TABLE = process.env.SUPABASE_PAYMENTS_TABLE ?? 'payments';
@@ -31,6 +44,58 @@ const CLEANING_COMPLETION_COUNTS: Record<string, number> = {
   'garcia.aragon.jhon23@gmail.com': 2,
   'donovanriano@gmail.com': 1,
 };
+const MAX_MONTH_HISTORY = 18;
+
+const buildMonthLabel = (monthKey: string) => {
+  const [year, month] = monthKey.split('-').map(Number);
+  const baseDate = new Date(year, (month ?? 1) - 1, 1);
+  return baseDate.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
+};
+
+const resolveMonthRange = (monthKey: string) => {
+  const [year, month] = monthKey.split('-').map(Number);
+  if (!year || !month) {
+    throw new Error('Mes inválido');
+  }
+  const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + 1);
+  return { start, end };
+};
+
+const collectAvailableMonths = async () => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const earliest = new Date(today);
+  earliest.setMonth(earliest.getMonth() - (MAX_MONTH_HISTORY - 1));
+  earliest.setDate(1);
+
+  const { data, error } = await supabaseAdmin
+    .from(ORDERS_TABLE)
+    .select('"createdAt"')
+    .gte('createdAt', earliest.toISOString());
+
+  if (error) {
+    console.warn('No pudimos obtener los meses disponibles:', error.message);
+    return [];
+  }
+
+  const monthSet = new Set<string>();
+  (data ?? []).forEach((row) => {
+    const createdAt = row?.createdAt;
+    if (typeof createdAt === 'string' && createdAt.length >= 7) {
+      monthSet.add(createdAt.substring(0, 7));
+    }
+  });
+
+  const currentMonth = new Date().toISOString().substring(0, 7);
+  monthSet.add(currentMonth);
+
+  return Array.from(monthSet)
+    .sort((a, b) => b.localeCompare(a))
+    .slice(0, MAX_MONTH_HISTORY)
+    .map((month) => ({ month, label: buildMonthLabel(month) }));
+};
 
 type RangeKey =
   | '1d'
@@ -46,6 +111,8 @@ type RangeKey =
   | '3y'
   | '5y'
   | '10y';
+
+type RangeWithMonth = RangeKey | 'month';
 
 const RANGE_DEFS: Record<RangeKey, { amount: number; unit: 'day' | 'year'; label: string }> = {
   '1d': { amount: 1, unit: 'day', label: '1 día' },
@@ -78,6 +145,29 @@ type SectionPayload = {
   table?: SectionTable;
   extraTables?: Array<{ title: string; table: SectionTable }>;
   message?: string;
+};
+
+const normalizeIdentifier = (value?: string | null) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : '';
+
+const isPublicSaleOrder = (order: { clientId?: string | null; userId?: string | null } & Record<string, unknown>) => {
+  const clientId =
+    normalizeIdentifier(order.clientId) ||
+    normalizeIdentifier(typeof order.client_id === 'string' ? order.client_id : null);
+  const userId =
+    normalizeIdentifier(order.userId) ||
+    normalizeIdentifier(typeof order.user_id === 'string' ? order.user_id : null);
+
+  if (!clientId && !userId) {
+    return true;
+  }
+  if (PUBLIC_SALE_CLIENT_ID_LOWER && clientId === PUBLIC_SALE_CLIENT_ID_LOWER) {
+    return true;
+  }
+  if (PUBLIC_SALE_USER_ID_LOWER && userId === PUBLIC_SALE_USER_ID_LOWER) {
+    return true;
+  }
+  return false;
 };
 
 type ForecastRestock = {
@@ -142,12 +232,14 @@ type ForecastPayload = {
 };
 
 type AdvancedMetricsPayload = {
-  range: RangeKey;
+  range: RangeWithMonth;
   rangeLabel: string;
   since: string;
   until: string;
   hasData: boolean;
   rangeAvailability: Record<RangeKey, boolean>;
+  availableMonths: Array<{ month: string; label: string }>;
+  selectedMonth: string | null;
   sections: Record<SectionId, SectionPayload>;
   forecasts: ForecastPayload;
   marketing: MarketingInsights;
@@ -1463,14 +1555,20 @@ const buildMarketingInsights = (data: Awaited<ReturnType<typeof fetchRangeData>>
     .sort((a, b) => b.count - a.count)
     .slice(0, 5);
 
-  const pickupCount = orders.length;
+  const posOrdersCount = orders.filter((order) => isPublicSaleOrder(order)).length;
+  const customerOrdersCount = orders.length - posOrdersCount;
   const reservationCount = reservations.length;
   const deliveryCount = orders.filter((order) => (order.sourceType ?? '').toLowerCase() === 'delivery').length;
   const orderInference: MarketingOrderInference[] = [
     {
-      type: 'Pick-up / POS',
-      probability: Number(((pickupCount / totalTransactions) * 100).toFixed(1)),
-      drivers: 'Histórico de pedidos cerrados en barra (base para inferencia).',
+      type: 'POS · Venta pública',
+      probability: Number(((posOrdersCount / totalTransactions) * 100).toFixed(1)),
+      drivers: 'Tickets sin cliente identificado; flujo de mostrador.',
+    },
+    {
+      type: 'POS · Cliente identificado',
+      probability: Number(((customerOrdersCount / totalTransactions) * 100).toFixed(1)),
+      drivers: 'Pedidos con cliente o ID lealtad asignado.',
     },
     {
       type: 'Reservaciones',
@@ -1606,7 +1704,30 @@ export async function GET(request: Request) {
   const marketingRangeParam = url.searchParams.get('marketing_range') ?? undefined;
   const sectionParam = url.searchParams.get('section') as SectionId | null;
   const exportParam = url.searchParams.get('export') as 'csv' | 'xlsx' | null;
-  const { key: rangeKey, since, until } = resolveRange(rangeParam);
+  const monthParamRaw = url.searchParams.get('month');
+  const monthParam = monthParamRaw ? monthParamRaw.substring(0, 7) : null;
+  const availableMonths = await collectAvailableMonths();
+  const selectedMonthInfo =
+    monthParam && monthParam.length === 7
+      ? availableMonths.find((entry) => entry.month === monthParam) ?? null
+      : null;
+  const monthMode = Boolean(selectedMonthInfo);
+  const resolvedRange = resolveRange(rangeParam);
+  let rangeKey: RangeWithMonth = resolvedRange.key;
+  let since: Date = resolvedRange.since;
+  let until: Date = resolvedRange.until;
+  let rangeLabel = RANGE_DEFS[resolvedRange.key].label;
+  let selectedMonth: string | null = null;
+
+  if (monthMode && selectedMonthInfo) {
+    const { start, end } = resolveMonthRange(selectedMonthInfo.month);
+    since = start;
+    until = end;
+    rangeKey = 'month';
+    rangeLabel = selectedMonthInfo.label;
+    selectedMonth = selectedMonthInfo.month;
+  }
+
   const sinceIso = toISO(since);
   const untilIso = toISO(until);
 
@@ -1618,14 +1739,22 @@ export async function GET(request: Request) {
       return acc;
     }, {} as Record<RangeKey, boolean>);
 
-    const marketingRangeInfo = marketingRangeParam
-      ? resolveRange(marketingRangeParam)
-      : { key: rangeKey, since: new Date(since), until: new Date(until) };
+    const rangeHasData = monthMode
+      ? Boolean(selectedMonthInfo)
+      : rangeAvailability[resolvedRange.key];
+
+    const marketingRangeInfo: { key: RangeWithMonth; since: Date; until: Date } = monthMode
+      ? { key: 'month', since: new Date(since), until: new Date(until) }
+      : marketingRangeParam
+        ? resolveRange(marketingRangeParam)
+        : { key: rangeKey, since: new Date(since), until: new Date(until) };
     const marketingSinceIso = toISO(marketingRangeInfo.since);
     const marketingUntilIso = toISO(marketingRangeInfo.until);
 
-    const rangeHasData = rangeAvailability[rangeKey];
-    const marketingRangeHasData = rangeAvailability[marketingRangeInfo.key];
+    const marketingRangeHasData =
+      monthMode || marketingRangeInfo.key === 'month'
+        ? Boolean(selectedMonthInfo)
+        : rangeAvailability[marketingRangeInfo.key];
     let sections: Record<SectionId, SectionPayload> = SECTION_IDS.reduce((acc, id) => {
       acc[id] = buildEmptySection(sectionTitles[id], 'Rango sin datos disponibles.');
       return acc;
@@ -1653,11 +1782,13 @@ export async function GET(request: Request) {
 
     const payload: AdvancedMetricsPayload = {
       range: rangeKey,
-      rangeLabel: RANGE_DEFS[rangeKey].label,
+      rangeLabel,
       since: sinceIso,
       until: untilIso,
       hasData: rangeHasData,
       rangeAvailability,
+      availableMonths,
+      selectedMonth,
       sections,
       forecasts,
       marketing,
@@ -1666,7 +1797,8 @@ export async function GET(request: Request) {
     if (exportParam && sectionParam) {
       const section = payload.sections[sectionParam];
       const csvContent = buildCsv(section.table);
-      const filename = `metricas-${sectionParam}-${rangeKey}.${exportParam === 'csv' ? 'csv' : 'xlsx'}`;
+      const rangeSuffix = selectedMonth ?? rangeKey;
+      const filename = `metricas-${sectionParam}-${rangeSuffix}.${exportParam === 'csv' ? 'csv' : 'xlsx'}`;
       return new NextResponse(csvContent, {
         headers: {
           'Content-Type': exportParam === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.ms-excel',

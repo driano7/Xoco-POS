@@ -124,3 +124,82 @@ select
 from staff_governance_requests r
 left join staff_governance_votes v on v.request_id = r.id
 group by r.id;
+
+-- --------------------------------------------------------------------
+--  Marketing analytics (idempotent setup to avoid 42P07 errors)
+-- --------------------------------------------------------------------
+do $$
+begin
+  if to_regclass('public.marketing_cluster_snapshots') is null then
+    create table public.marketing_cluster_snapshots (
+      id uuid primary key default gen_random_uuid(),
+      snapshot_date timestamptz not null,
+      range_key text not null,
+      cluster_id text not null,
+      centroid jsonb not null,
+      customer_count integer not null,
+      avg_ticket numeric(10,2) not null
+    );
+  end if;
+end$$;
+
+create index if not exists marketing_cluster_snapshots_snapshot_range_idx
+  on marketing_cluster_snapshots (snapshot_date, range_key);
+
+do $$
+begin
+  if to_regclass('public.marketing_product_suggestions') is null then
+    create table public.marketing_product_suggestions (
+      id uuid primary key default gen_random_uuid(),
+      snapshot_date timestamptz not null,
+      range_key text not null,
+      product_id text not null,
+      reason text,
+      support_count integer not null
+    );
+  end if;
+end$$;
+
+do $$
+begin
+  if to_regclass('public.marketing_markov_edges') is null then
+    create table public.marketing_markov_edges (
+      id uuid primary key default gen_random_uuid(),
+      snapshot_date timestamptz not null,
+      range_key text not null,
+      from_page text not null,
+      to_page text not null,
+      probability numeric(6,3) not null
+    );
+  end if;
+end$$;
+
+create index if not exists marketing_markov_edges_snapshot_range_idx
+  on marketing_markov_edges (snapshot_date, range_key);
+
+do $$
+begin
+  if to_regclass('public.marketing_inventory_insights') is null then
+    create table public.marketing_inventory_insights (
+      id uuid primary key default gen_random_uuid(),
+      snapshot_date timestamptz not null,
+      item_id text not null,
+      risk text not null,
+      recommendation text not null,
+      posterior jsonb
+    );
+  end if;
+end$$;
+
+do $$
+begin
+  if to_regclass('public.marketing_anomalies') is null then
+    create table public.marketing_anomalies (
+      id uuid primary key default gen_random_uuid(),
+      snapshot_date timestamptz not null,
+      label text not null,
+      description text not null,
+      severity text default 'medium'
+    );
+  end if;
+end$$;

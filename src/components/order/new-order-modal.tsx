@@ -115,12 +115,15 @@ export function NewOrderModal({ onClose, onSuccess, prefillClientId }: NewOrderM
       return;
     }
     addItem({
-      productId: menuItem.id,
+      productId: menuItem.productId,
+      variantId: menuItem.id,
       name: menuItem.label,
       price: menuItem.price ?? 0,
       quantity: 1,
       category: menuItem.category,
       subcategory: menuItem.subcategory,
+      sizeId: menuItem.sizeId,
+      sizeLabel: menuItem.sizeLabel,
     });
     setFormError(null);
   };
@@ -256,14 +259,20 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
       ticketCode,
       status: 'pending',
       currency: 'MXN',
-        items: items.map((item) => ({
+        items: items.map((item) => {
+          const metadata = item.variantId ? { variantId: item.variantId } : undefined;
+          return {
           productId: item.productId,
           name: item.name,
           category: item.category,
           subcategory: item.subcategory,
           quantity: item.quantity,
           price: item.price,
-        })),
+          sizeId: item.sizeId,
+          sizeLabel: item.sizeLabel,
+          metadata,
+        };
+        }),
         totals: {
           subtotal,
           tax: 0,
@@ -400,21 +409,24 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
           </p>
         ) : (
           <ul className="mt-3 space-y-3">
-            {items.map((item) => (
+            {items.map((item) => {
+              const itemKey = item.variantId ?? item.productId;
+              return (
               <li
-                key={item.productId}
+                key={itemKey}
                 className="flex items-center justify-between rounded-xl border border-primary-100/70 bg-white/70 px-3 py-2 dark:border-white/10 dark:bg-transparent"
               >
                 <div>
                   <p className="font-semibold text-primary-700 dark:text-primary-50">{item.name}</p>
                   <p className="text-xs text-[var(--brand-muted)]">
-                    {item.category ?? 'Especialidad'} · {formatCurrency(item.price)}
+                    {item.category ?? 'Especialidad'}
+                    {item.sizeLabel ? ` · ${item.sizeLabel}` : ''} · {formatCurrency(item.price)}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => decrement(item.productId)}
+                    onClick={() => decrement(itemKey)}
                     className="rounded-full border border-primary-200 px-2 py-1 text-xs font-semibold text-primary-600 transition hover:border-primary-400"
                   >
                     −
@@ -422,24 +434,117 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
                   <span className="w-6 text-center font-semibold">{item.quantity}</span>
                   <button
                     type="button"
-                    onClick={() => increment(item.productId)}
+                    onClick={() => increment(itemKey)}
                     className="rounded-full border border-primary-200 px-2 py-1 text-xs font-semibold text-primary-600 transition hover:border-primary-400"
                   >
                     +
                   </button>
                   <button
                     type="button"
-                    onClick={() => removeItem(item.productId)}
+                    onClick={() => removeItem(itemKey)}
                     className="text-xs font-semibold text-danger-500"
                   >
                     Quitar
                   </button>
                 </div>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
-        <div className="mt-4 space-y-1 text-sm">
+        <div className="mt-4 border-t border-primary-100/60 pt-4 dark:border-white/10">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold text-primary-700 dark:text-primary-100">Propinas sugeridas</p>
+            <span className="text-xs text-[var(--brand-muted)]">
+              Propina aplicada: <span className="font-semibold">{formatCurrency(tipAmount)}</span>
+              {typeof appliedPercent === 'number' && ` (${appliedPercent.toFixed(1)}%)`}
+            </span>
+          </div>
+          <div className="mt-3 grid grid-cols-5 gap-2 text-xs">
+            {TIP_PRESETS.map((percent) => {
+              const isActive = tipSelection === 'preset' && selectedTipPercent === percent;
+              return (
+                <button
+                  type="button"
+                  key={percent}
+                  onClick={() => {
+                    setTipSelection('preset');
+                    setSelectedTipPercent(percent);
+                    setCustomTipPercent('');
+                    setCustomTipAmount('');
+                  }}
+                  className={`rounded-2xl border px-2 py-1 font-semibold transition ${
+                    isActive
+                      ? 'border-primary-500 bg-primary-100 text-primary-700'
+                      : 'border-primary-100 hover:border-primary-200'
+                  }`}
+                >
+                  {percent}%
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => {
+                setTipSelection('custom');
+                setSelectedTipPercent(null);
+              }}
+              className={`rounded-2xl border px-2 py-1 font-semibold transition ${
+                tipSelection === 'custom'
+                  ? 'border-primary-500 bg-primary-100 text-primary-700'
+                  : 'border-primary-100 hover:border-primary-200'
+              }`}
+            >
+              Otro
+            </button>
+          </div>
+          {tipSelection === 'custom' && (
+            <>
+              <label className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-[var(--brand-muted)]">
+                <input
+                  type="checkbox"
+                  checked={useCustomTipAmount}
+                  onChange={(event) => {
+                    setUseCustomTipAmount(event.target.checked);
+                    setCustomTipPercent('');
+                    setCustomTipAmount('');
+                  }}
+                  className="h-4 w-4 rounded border-primary-300 text-primary-600 focus:ring-primary-500"
+                />
+                Capturar propina como monto en MXN
+              </label>
+              <div className="mt-2 grid gap-3 md:grid-cols-2">
+                <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+                  Porcentaje
+                  <input
+                    value={customTipPercent}
+                    onChange={(event) => setCustomTipPercent(event.target.value)}
+                    placeholder="0%"
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    disabled={useCustomTipAmount}
+                    className="rounded-xl border border-primary-100/70 px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none disabled:opacity-40 dark:border-white/20 dark:bg-white/5 dark:text-white"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+                  Monto MXN
+                  <input
+                    value={customTipAmount}
+                    onChange={(event) => setCustomTipAmount(event.target.value)}
+                    placeholder="$0.00"
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    disabled={!useCustomTipAmount}
+                    className="rounded-xl border border-primary-100/70 px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none disabled:opacity-40 dark:border-white/20 dark:bg-white/5 dark:text-white"
+                  />
+                </label>
+              </div>
+            </>
+          )}
+        </div>
+        <div className="mt-4 space-y-1 rounded-2xl bg-white/60 p-3 text-sm shadow-sm dark:bg-white/5">
           <div className="flex items-center justify-between">
             <span>Subtotal</span>
             <span className="font-semibold">{formatCurrency(subtotal)}</span>
@@ -448,7 +553,7 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
             <span>Propina</span>
             <span className="font-semibold text-primary-600">{formatCurrency(tipAmount)}</span>
           </div>
-          <div className="flex items-center justify-between text-base font-semibold text-primary-700">
+          <div className="flex items-center justify-between text-base font-semibold text-primary-700 dark:text-primary-100">
             <span>Total con propina</span>
             <span>{formatCurrency(totalWithTip)}</span>
           </div>
@@ -528,101 +633,6 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
             {clientLookupError}
           </div>
         )}
-      </div>
-
-      <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
-        <div className="flex items-center justify-between">
-          <p className="text-sm font-semibold text-primary-700 dark:text-primary-100">
-            Propinas sugeridas
-          </p>
-        </div>
-        <div className="mt-3 grid grid-cols-5 gap-2 text-xs">
-          {TIP_PRESETS.map((percent) => {
-            const isActive = tipSelection === 'preset' && selectedTipPercent === percent;
-            return (
-              <button
-                type="button"
-                key={percent}
-                onClick={() => {
-                  setTipSelection('preset');
-                  setSelectedTipPercent(percent);
-                  setCustomTipPercent('');
-                  setCustomTipAmount('');
-                }}
-                className={`rounded-2xl border px-2 py-1 font-semibold transition ${
-                  isActive
-                    ? 'border-primary-500 bg-primary-100 text-primary-700'
-                    : 'border-primary-100 hover:border-primary-200'
-                }`}
-              >
-                {percent}%
-              </button>
-            );
-          })}
-          <button
-            type="button"
-            onClick={() => {
-              setTipSelection('custom');
-              setSelectedTipPercent(null);
-            }}
-            className={`rounded-2xl border px-2 py-1 font-semibold transition ${
-              tipSelection === 'custom'
-                ? 'border-primary-500 bg-primary-100 text-primary-700'
-                : 'border-primary-100 hover:border-primary-200'
-            }`}
-          >
-            Otro
-          </button>
-        </div>
-        {tipSelection === 'custom' && (
-          <>
-            <label className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-[var(--brand-muted)]">
-              <input
-                type="checkbox"
-                checked={useCustomTipAmount}
-                onChange={(event) => {
-                  setUseCustomTipAmount(event.target.checked);
-                  setCustomTipPercent('');
-                  setCustomTipAmount('');
-                }}
-                className="h-4 w-4 rounded border-primary-300 text-primary-600 focus:ring-primary-500"
-              />
-              Capturar propina como monto en MXN
-            </label>
-            <div className="mt-2 grid gap-3 md:grid-cols-2">
-              <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
-                Porcentaje
-                <input
-                  value={customTipPercent}
-                  onChange={(event) => setCustomTipPercent(event.target.value)}
-                  placeholder="0%"
-                  type="number"
-                  min="0"
-                  step="0.5"
-                  disabled={useCustomTipAmount}
-                  className="rounded-xl border border-primary-100/70 px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none disabled:opacity-40 dark:border-white/20 dark:bg-white/5 dark:text-white"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
-                Monto MXN
-                <input
-                  value={customTipAmount}
-                  onChange={(event) => setCustomTipAmount(event.target.value)}
-                  placeholder="$0.00"
-                  type="number"
-                  min="0"
-                  step="0.5"
-                  disabled={!useCustomTipAmount}
-                  className="rounded-xl border border-primary-100/70 px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none disabled:opacity-40 dark:border-white/20 dark:bg-white/5 dark:text-white"
-                />
-              </label>
-            </div>
-          </>
-        )}
-        <p className="mt-3 text-xs text-[var(--brand-muted)]">
-          Propina aplicada: <span className="font-semibold">{formatCurrency(tipAmount)}</span>
-          {typeof appliedPercent === 'number' && ` (${appliedPercent.toFixed(1)}%)`}
-        </p>
       </div>
 
       <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">

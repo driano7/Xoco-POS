@@ -84,6 +84,13 @@ const getMonthStart = () => {
   return date;
 };
 
+const buildMonthLabel = (monthKey: string) => {
+  const baseDate = new Date(`${monthKey}-01T00:00:00Z`);
+  return Number.isNaN(baseDate.getTime())
+    ? monthKey
+    : baseDate.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
+};
+
 const PAYMENT_METHOD_OPTIONS = [
   { key: 'debito', label: 'Débito' },
   { key: 'credito', label: 'Crédito' },
@@ -261,12 +268,63 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === 'object' && !Array.isArray(value));
 
 const parseScannedPayload = (payload: string): ScanResult | null => {
+  const parsePriceValue = (value: unknown) => {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const parsed = Number.parseFloat(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  };
+
   try {
     const parsed = JSON.parse(payload) as unknown;
     if (!isPlainObject(parsed)) {
       return null;
     }
     if (typeof parsed.ticketId === 'string') {
+      const rawLineItems = Array.isArray(parsed.items)
+        ? parsed.items
+        : Array.isArray(parsed.lineItems)
+          ? parsed.lineItems
+          : [];
+      const lineItems = rawLineItems
+        .filter(isPlainObject)
+        .map((entry, index) => {
+          const item = entry as Record<string, unknown>;
+          const sizeValue =
+            (typeof item.size === 'string' && item.size) ||
+            (typeof item.sizeLabel === 'string' && item.sizeLabel) ||
+            null;
+          const packageName =
+            (typeof item.packageName === 'string' && item.packageName) ||
+            (typeof item.name === 'string' && item.category === 'paquete' ? item.name : null);
+          const packageItems = Array.isArray(item.packageItems)
+            ? item.packageItems.filter((value): value is string => typeof value === 'string')
+            : null;
+          return {
+            id:
+              (typeof item.id === 'string' && item.id) ||
+              (typeof item.productId === 'string' && `${item.productId}-${index}`) ||
+              `${index}`,
+            productId: typeof item.productId === 'string' ? item.productId : null,
+            name: typeof item.name === 'string' ? item.name : 'Producto',
+            category: typeof item.category === 'string' ? item.category : null,
+            quantity: safeQuantity(item.quantity as number | null | undefined) ?? 1,
+            price: parsePriceValue(item.price ?? item.unitPrice) ?? null,
+            sizeId:
+              (typeof item.sizeId === 'string' && item.sizeId) ||
+              (typeof item.sizeIdentifier === 'string' && item.sizeIdentifier) ||
+              sizeValue,
+            sizeLabel: sizeValue,
+            packageId: typeof item.packageId === 'string' ? item.packageId : null,
+            packageName,
+            metadata: packageItems ? { packageItems } : undefined,
+          };
+        });
+
       const ordersPayload =
         isPlainObject(parsed.orders) ? (parsed.orders as { beverages?: unknown; foods?: unknown }) : {};
       const beverages = Array.isArray(ordersPayload.beverages) ? ordersPayload.beverages : [];
@@ -321,6 +379,23 @@ const parseScannedPayload = (payload: string): ScanResult | null => {
                   : null,
           }
         : undefined;
+      const totalsPayload = isPlainObject(parsed.totals) ? (parsed.totals as Record<string, unknown>) : null;
+      const tipPayload = isPlainObject(parsed.tip) ? (parsed.tip as Record<string, unknown>) : null;
+      const tipAmount = parsePriceValue(
+        parsed.tipAmount ??
+          (typeof tipPayload?.amount === 'number' || typeof tipPayload?.amount === 'string'
+            ? tipPayload.amount
+            : null) ??
+          totalsPayload?.tipAmount
+      );
+      const tipPercentValue =
+        typeof parsed.tipPercent === 'number'
+          ? parsed.tipPercent
+          : typeof tipPayload?.percent === 'number'
+            ? (tipPayload.percent as number)
+            : typeof totalsPayload?.tipPercent === 'number'
+              ? (totalsPayload.tipPercent as number)
+              : null;
       return {
         type: 'ticket',
         data: {
@@ -328,16 +403,21 @@ const parseScannedPayload = (payload: string): ScanResult | null => {
           clientEmail: typeof parsed.clientEmail === 'string' ? parsed.clientEmail : null,
           issuedAt: typeof parsed.issuedAt === 'string' ? parsed.issuedAt : null,
           orders: entries,
-          totals: isPlainObject(parsed.totals)
+          lineItems: lineItems.length ? lineItems : undefined,
+          totals: totalsPayload
             ? {
                 itemsCount:
-                  typeof parsed.totals.itemsCount === 'number' ? parsed.totals.itemsCount : null,
+                  typeof totalsPayload.itemsCount === 'number' ? totalsPayload.itemsCount : null,
                 totalAmount:
-                  typeof parsed.totals.totalAmount === 'number'
-                    ? parsed.totals.totalAmount
+                  typeof totalsPayload.totalAmount === 'number'
+                    ? (totalsPayload.totalAmount as number)
                     : null,
+                tipAmount: tipAmount ?? null,
               }
             : undefined,
+          tipAmount: tipAmount ?? null,
+          tipPercent: tipPercentValue ?? null,
+          paymentMethod: typeof parsed.paymentMethod === 'string' ? parsed.paymentMethod : null,
           customer: ticketCustomer ?? null,
         },
       };
@@ -442,6 +522,11 @@ const buildOrderFromTicketDetail = (detail: TicketDetail, fallback?: ScannedTick
     category: item.product?.category ?? null,
     quantity: item.quantity ?? 0,
     price: item.price ?? null,
+    sizeId: item.sizeId ?? null,
+    sizeLabel: item.sizeLabel ?? null,
+    packageId: item.packageId ?? null,
+    packageName: item.packageName ?? null,
+    metadata: item.metadata ?? null,
   }));
 
   const fallbackItems = fallback?.orders ?? [];
@@ -454,6 +539,11 @@ const buildOrderFromTicketDetail = (detail: TicketDetail, fallback?: ScannedTick
         category: null,
         quantity: entry.quantity ?? 0,
         price: entry.unitPrice ?? null,
+        sizeId: null,
+        sizeLabel: null,
+        packageId: null,
+        packageName: null,
+        metadata: null,
       }));
 
   const firstName = detail.customer?.firstName ?? null;
@@ -475,6 +565,9 @@ const buildOrderFromTicketDetail = (detail: TicketDetail, fallback?: ScannedTick
     currency: detail.order.currency ?? detail.ticket.currency ?? 'MXN',
     items: combinedItems,
     itemsCount,
+    tipAmount: detail.ticket.tipAmount ?? fallback?.tipAmount ?? null,
+    tipPercent: detail.ticket.tipPercent ?? fallback?.tipPercent ?? null,
+    queuedPaymentMethod: detail.ticket.paymentMethod ?? fallback?.paymentMethod ?? null,
     user: {
       firstName: fallbackFirst,
       lastName: fallbackLast,
@@ -488,14 +581,28 @@ const buildOrderFromTicketDetail = (detail: TicketDetail, fallback?: ScannedTick
 };
 
 const buildOrderFromTicketPayload = (ticket: ScannedTicket): Order => {
-  const items = (ticket.orders ?? []).map((item, index) => ({
-    id: `${ticket.ticketId}-${index}`,
-    productId: null,
-    name: item.name ?? 'Producto',
-    category: null,
-    quantity: item.quantity ?? 0,
-    price: item.unitPrice ?? null,
-  }));
+  const hasLineItems = Array.isArray(ticket.lineItems) && ticket.lineItems.length > 0;
+  const items = (hasLineItems ? ticket.lineItems ?? [] : ticket.orders ?? []).map((item, index) => {
+    const record = item as Record<string, unknown>;
+    return {
+      id: `${ticket.ticketId}-${index}`,
+      productId: typeof record.productId === 'string' ? record.productId : null,
+      name: typeof record.name === 'string' ? record.name : 'Producto',
+      category: typeof record.category === 'string' ? record.category : null,
+      quantity: typeof record.quantity === 'number' ? record.quantity : 0,
+      price:
+        typeof record.price === 'number'
+          ? record.price
+          : typeof record.unitPrice === 'number'
+            ? record.unitPrice
+            : null,
+      sizeId: typeof record.sizeId === 'string' ? record.sizeId : null,
+      sizeLabel: typeof record.sizeLabel === 'string' ? record.sizeLabel : null,
+      packageId: null,
+      packageName: null,
+      metadata: null,
+    };
+  });
 
   const itemsCount = items.reduce((sum, item) => sum + (item.quantity ?? 0), 0);
 
@@ -514,6 +621,9 @@ const buildOrderFromTicketPayload = (ticket: ScannedTicket): Order => {
     currency: 'MXN',
     items,
     itemsCount,
+    tipAmount: ticket.tipAmount ?? ticket.totals?.tipAmount ?? null,
+    tipPercent: ticket.tipPercent ?? null,
+    queuedPaymentMethod: ticket.paymentMethod ?? null,
   user: {
     firstName,
     lastName,
@@ -727,7 +837,10 @@ type ScannedTicket = {
   clientEmail?: string | null;
   issuedAt?: string | null;
   orders: { name: string; quantity: number; unitPrice?: number | null }[];
-  totals?: { itemsCount?: number | null; totalAmount?: number | null };
+  totals?: { itemsCount?: number | null; totalAmount?: number | null; tipAmount?: number | null };
+  tipAmount?: number | null;
+  tipPercent?: number | null;
+  paymentMethod?: string | null;
   customer?: {
     id?: string | null;
     clientId?: string | null;
@@ -749,6 +862,11 @@ type ScannedTicket = {
     category?: string | null;
     quantity: number;
     price?: number | null;
+    sizeId?: string | null;
+    sizeLabel?: string | null;
+    packageId?: string | null;
+    packageName?: string | null;
+    metadata?: Record<string, unknown> | null;
   }>;
 };
 
@@ -855,7 +973,9 @@ type InventoryItem = {
   unit?: string;
 };
 
-type InventoryState = Record<InventoryCategoryId, InventoryItem[]>;
+type InventoryEntry = InventoryItem & { accidents?: number };
+type InventoryState = Record<InventoryCategoryId, InventoryEntry[]>;
+type InventoryTopEntry = { category: InventoryCategoryId; item: InventoryEntry };
 
 const FOOD_SUPPLIES = [
   'Pulpa de maracuyá',
@@ -973,25 +1093,27 @@ type CampaignNotification = {
   relatedView: StaffPanelView;
 };
 
-const createInventoryFromList = (names: string[], prefix: string): InventoryItem[] =>
+const createInventoryFromList = (names: string[], prefix: string): InventoryEntry[] =>
   names.map((name, index) => ({
     id: `${prefix}-${index}`,
     name,
     quantity: 12,
+    accidents: 0,
   }));
 
-const mapMenuToInventory = (items: MenuItem[], prefix: string): InventoryItem[] =>
+const mapMenuToInventory = (items: MenuItem[], prefix: string): InventoryEntry[] =>
   items.slice(0, MAX_DYNAMIC_SUPPLIES).map((item, index) => ({
     id: `${prefix}-${item.id ?? index}`,
     name: item.label,
     quantity: 16,
     unit: 'pzas',
+    accidents: 0,
   }));
 
-const hasMenuInventory = (items: InventoryItem[], prefix: string) =>
+const hasMenuInventory = (items: InventoryEntry[], prefix: string) =>
   items.some((item) => item.id.startsWith(`${prefix}-`));
 
-const mergeMenuInventory = (items: InventoryItem[], menuItems: InventoryItem[], prefix: string) => {
+const mergeMenuInventory = (items: InventoryEntry[], menuItems: InventoryEntry[], prefix: string) => {
   const tag = `${prefix}-`;
   const staticItems = items.filter((item) => !item.id.startsWith(tag));
   return [...staticItems, ...menuItems];
@@ -1028,6 +1150,23 @@ type BenefitsPackage = {
   paidLeaveDays: number;
   bonusEligible: boolean;
   tipSharePercent: number;
+};
+
+type SalesHistoryEntry = {
+  month: string;
+  label: string;
+  totalSales: number;
+  totalTips: number;
+  orderCount: number;
+  recentOrders: Array<{
+    id: string;
+    ticketCode: string | null;
+    orderNumber: string | null;
+    total: number;
+    tipAmount: number;
+    createdAt: string;
+    paymentMethod: string | null;
+  }>;
 };
 
 export function PosDashboard() {
@@ -1069,6 +1208,11 @@ export function PosDashboard() {
     refresh: refreshPartnerMetrics,
     selectedDays: partnerDays,
     setDays: setPartnerDays,
+    availableMonths: partnerAvailableMonths,
+    selectedMonth: partnerSelectedMonth,
+    setMonth: setPartnerMonth,
+    useRange: partnerUseRange,
+    setUseRange: setPartnerUseRange,
   } = usePartnerMetrics();
   const {
     metrics: advancedMetrics,
@@ -1080,6 +1224,14 @@ export function PosDashboard() {
     setExtraParams: setAdvancedMetricsQuery,
   } = useAdvancedMetrics('14d');
   const [marketingRange, setMarketingRange] = useState('14d');
+  const [advancedMetricsMonth, setAdvancedMetricsMonth] = useState<string | null>(null);
+  const [advancedUseRange, setAdvancedUseRange] = useState(true);
+  const [publicSalesHistory, setPublicSalesHistory] = useState<SalesHistoryEntry[] | null>(null);
+  const [overallSalesHistory, setOverallSalesHistory] = useState<SalesHistoryEntry[] | null>(null);
+  const [publicSalesLoading, setPublicSalesLoading] = useState(false);
+  const [publicSalesError, setPublicSalesError] = useState<string | null>(null);
+  const [selectedPublicSalesMonth, setSelectedPublicSalesMonth] = useState<string | null>(null);
+  const [selectedOverallSalesMonth, setSelectedOverallSalesMonth] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<NavSection>('home');
   const [reservationOverrides, setReservationOverrides] = useState<
     Record<string, 'completed' | 'cancelled'>
@@ -1119,6 +1271,49 @@ export function PosDashboard() {
     lastModified: null,
   });
   const [tipsInitialized, setTipsInitialized] = useState(false);
+
+  const refreshPublicSales = useCallback(async () => {
+    setPublicSalesLoading(true);
+    setPublicSalesError(null);
+    try {
+      const response = await fetch('/api/public-sales-summary', { cache: 'no-store' });
+      const result = (await response.json()) as {
+        success: boolean;
+        error?: string;
+        data?: { publicHistory: SalesHistoryEntry[]; overallHistory: SalesHistoryEntry[] };
+      };
+      if (!response.ok || !result.success || !result.data) {
+        throw new Error(result.error || 'No pudimos cargar el resumen del público general.');
+      }
+      const payload = result.data;
+      setPublicSalesHistory(payload.publicHistory);
+      setOverallSalesHistory(payload.overallHistory);
+      setSelectedPublicSalesMonth((prev) => {
+        if (prev && payload.publicHistory.some((entry) => entry.month === prev)) {
+          return prev;
+        }
+        return payload.publicHistory[0]?.month ?? null;
+      });
+      setSelectedOverallSalesMonth((prev) => {
+        if (prev && payload.overallHistory.some((entry) => entry.month === prev)) {
+          return prev;
+        }
+        return payload.overallHistory[0]?.month ?? null;
+      });
+    } catch (error) {
+      setPublicSalesError(
+        error instanceof Error
+          ? error.message
+          : 'No pudimos cargar el resumen del público general.'
+      );
+    } finally {
+      setPublicSalesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshPublicSales();
+  }, [refreshPublicSales]);
   const staffData = useMemo(() => {
     if (!rawStaffData || !user?.email || !user?.id) {
       return rawStaffData;
@@ -1482,8 +1677,52 @@ export function PosDashboard() {
   }, [user?.role, isSocio]);
 
   useEffect(() => {
-    setAdvancedMetricsQuery({ marketing_range: marketingRange });
-  }, [marketingRange, setAdvancedMetricsQuery]);
+    const params: Record<string, string> = { marketing_range: marketingRange };
+    if (!advancedUseRange && advancedMetricsMonth) {
+      params.month = advancedMetricsMonth;
+    }
+    setAdvancedMetricsQuery(params);
+  }, [advancedUseRange, advancedMetricsMonth, marketingRange, setAdvancedMetricsQuery]);
+
+  useEffect(() => {
+    if (advancedMetrics?.selectedMonth) {
+      setAdvancedMetricsMonth(advancedMetrics.selectedMonth);
+      setAdvancedUseRange(false);
+    } else if (advancedMetricsMonth && !advancedMetrics?.availableMonths?.length) {
+      setAdvancedMetricsMonth(null);
+    }
+  }, [advancedMetrics?.selectedMonth, advancedMetrics?.availableMonths, advancedMetricsMonth]);
+
+  useEffect(() => {
+    if (!advancedUseRange && !advancedMetricsMonth) {
+      const fallback = advancedMetrics?.availableMonths?.[0]?.month ?? null;
+      if (fallback) {
+        setAdvancedMetricsMonth(fallback);
+      }
+    }
+    if (advancedUseRange && advancedMetricsMonth) {
+      setAdvancedMetricsMonth(null);
+    }
+  }, [advancedUseRange, advancedMetrics?.availableMonths, advancedMetricsMonth]);
+
+  const toggleAdvancedRangeMode = useCallback(
+    (useRange: boolean) => {
+      setAdvancedUseRange(useRange);
+      if (!useRange && !advancedMetricsMonth) {
+        const fallback = advancedMetrics?.availableMonths?.[0]?.month ?? null;
+        if (fallback) {
+          setAdvancedMetricsMonth(fallback);
+        }
+      }
+    },
+    [advancedMetrics?.availableMonths, advancedMetricsMonth]
+  );
+
+  useEffect(() => {
+    if (!prepSearchInput.trim()) {
+      setPrepFilter('');
+    }
+  }, [prepSearchInput]);
 
   useEffect(() => {
     setManagerInventory((prev) => {
@@ -1544,6 +1783,48 @@ export function PosDashboard() {
     },
     []
   );
+
+  const handleInventoryAccidentChange = useCallback(
+    (category: InventoryCategoryId, itemId: string, accidents: number) => {
+      setManagerInventory((prev) => ({
+        ...prev,
+        [category]: prev[category].map((item) =>
+          item.id === itemId ? { ...item, accidents: Math.max(0, accidents) } : item
+        ),
+      }));
+    },
+    []
+  );
+
+  const inventoryAccidentStats = useMemo(() => {
+    const allItems: InventoryTopEntry[] = [];
+    (Object.entries(managerInventory) as Array<[InventoryCategoryId, InventoryEntry[]]>).forEach(
+      ([category, items]) => {
+        items.forEach((item) => allItems.push({ category, item }));
+      }
+    );
+    let totalAccidents = 0;
+    let totalInventoryUnits = 0;
+    let topEntry: InventoryTopEntry | null = null;
+    allItems.forEach((entry) => {
+      totalAccidents += entry.item.accidents ?? 0;
+      totalInventoryUnits += entry.item.quantity ?? 0;
+      if (!topEntry || (entry.item.accidents ?? 0) > (topEntry.item.accidents ?? 0)) {
+        topEntry = entry;
+      }
+    });
+    let topPercent = 0;
+    if (topEntry !== null && totalInventoryUnits > 0) {
+      const entryWithItem = topEntry as InventoryTopEntry;
+      topPercent = ((entryWithItem.item.accidents ?? 0) / totalInventoryUnits) * 100;
+    }
+    return {
+      totalAccidents,
+      totalInventoryUnits,
+      topEntry,
+      topPercent,
+    };
+  }, [managerInventory]);
 
   const handleInventorySyncFromMenu = useCallback(() => {
     setManagerInventory((prev) => ({
@@ -1892,7 +2173,7 @@ export function PosDashboard() {
         await Promise.all([refresh(), refreshPrep()]);
         setActionState({
           isLoading: false,
-          message: 'Pedido enviado a la cola de producción',
+          message: 'Pedido marcado como en preparación',
           error: null,
         });
         setDetail(null);
@@ -1903,7 +2184,7 @@ export function PosDashboard() {
           error:
             error instanceof Error
               ? error.message
-              : 'No pudimos mover el pedido a la cola. Intenta más tarde.',
+              : 'No pudimos mover el pedido a En preparación. Intenta más tarde.',
         });
       }
     },
@@ -1925,11 +2206,11 @@ export function PosDashboard() {
         await Promise.all([refresh(), refreshPrep()]);
         setActionState({
           isLoading: false,
-          message: 'Pedido regresado a la cola de producción',
+          message: 'Pedido regresado a En preparación',
           error: null,
         });
         setDetail(null);
-        setSnackbar('El ticket regresó a la cola.');
+        setSnackbar('El ticket regresó a En preparación.');
       } catch (error) {
         setActionState({
           isLoading: false,
@@ -1937,7 +2218,7 @@ export function PosDashboard() {
           error:
             error instanceof Error
               ? error.message
-              : 'No pudimos regresar el pedido a la cola. Intenta más tarde.',
+              : 'No pudimos regresar el pedido a En preparación. Intenta más tarde.',
         });
       }
     },
@@ -1966,6 +2247,7 @@ export function PosDashboard() {
           error: null,
         });
         setDetail(null);
+        setSnackbar('Pedido marcado como completado en barra.');
       } catch (error) {
         setActionState({
           isLoading: false,
@@ -2021,6 +2303,28 @@ export function PosDashboard() {
     [staffData?.sessions, user?.id]
   );
 
+  const sessionsIncludingActive = useMemo(() => {
+    if (sessionSeconds <= 0) {
+      return staffSessions;
+    }
+    const activeStart = new Date(Date.now() - sessionSeconds * 1000).toISOString();
+    return [
+      ...staffSessions,
+      {
+        id: 'active-session',
+        staffId: user?.id ?? 'anonymous',
+        sessionStart: activeStart,
+        sessionEnd: null,
+        durationSeconds: sessionSeconds,
+      },
+    ];
+  }, [sessionSeconds, staffSessions, user?.id]);
+
+  const currentMonthKey = useMemo(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }, []);
+
   const staffSessionDailyTotals = useMemo(() => {
     const map = new Map<string, number>();
     (staffData?.sessions ?? []).forEach((session) => {
@@ -2040,24 +2344,60 @@ export function PosDashboard() {
     return map;
   }, [staffData?.sessions]);
 
-  const aggregatedSessionSeconds = useMemo(
-    () => staffSessions.reduce((total, session) => total + resolveSessionDurationSeconds(session), 0),
-    [staffSessions]
-  );
+const totalSessionSeconds = useMemo(
+  () => sessionsIncludingActive.reduce((total, session) => total + resolveSessionDurationSeconds(session), 0),
+  [sessionsIncludingActive]
+);
+const hoursWorked = totalSessionSeconds / 3600;
+const roundedHours = Math.floor(hoursWorked);
 
-  const sessionDaysSet = useMemo(() => {
-    const set = new Set<string>();
-    staffSessions.forEach((session) => {
-      if (session.sessionStart) {
-        set.add(session.sessionStart.substring(0, 10));
-      }
-    });
-    return set;
-  }, [staffSessions]);
+const sessionDaysSet = useMemo(() => {
+  const set = new Set<string>();
+  sessionsIncludingActive.forEach((session) => {
+    if (session.sessionStart) {
+      set.add(session.sessionStart.substring(0, 10));
+    }
+  });
+  return set;
+}, [sessionsIncludingActive]);
 
-  const totalSessionSeconds = aggregatedSessionSeconds + sessionSeconds;
-  const hoursWorked = totalSessionSeconds / 3600;
-  const roundedHours = Math.floor(hoursWorked);
+const monthlySessionHistory = useMemo(() => {
+  const map = new Map<
+    string,
+    {
+      seconds: number;
+      days: Set<string>;
+    }
+  >();
+
+  sessionsIncludingActive.forEach((session) => {
+    if (!session.sessionStart) {
+      return;
+    }
+    const month = session.sessionStart.substring(0, 7);
+    const entry = map.get(month) ?? { seconds: 0, days: new Set<string>() };
+    entry.seconds += resolveSessionDurationSeconds(session);
+    entry.days.add(session.sessionStart.substring(0, 10));
+    map.set(month, entry);
+  });
+
+  return Array.from(map.entries())
+    .map(([month, entry]) => {
+      const labelDate = new Date(`${month}-01T00:00:00Z`);
+      return {
+        month,
+        label: labelDate.toLocaleDateString('es-MX', { month: 'short', year: 'numeric' }),
+        hours: Number((entry.seconds / 3600).toFixed(1)),
+        days: entry.days.size,
+      };
+    })
+    .sort((a, b) => b.month.localeCompare(a.month));
+}, [sessionsIncludingActive]);
+
+const currentMonthMetrics = useMemo(() => {
+  const target = monthlySessionHistory.find((entry) => entry.month === currentMonthKey);
+  return target ?? { month: currentMonthKey, label: '', hours: 0, days: 0 };
+}, [monthlySessionHistory, currentMonthKey]);
 
   const emptyUser: AuthenticatedStaff = {
     id: 'anon',
@@ -2145,9 +2485,9 @@ export function PosDashboard() {
   };
 
   const metricsPanelData = {
-    hoursWorked,
+    hoursWorked: currentMonthMetrics.hours,
     roundedHours,
-    daysWorked: sessionDaysSet.size,
+    daysWorked: currentMonthMetrics.days,
     ordersHandled,
     tipShare,
     salaryEstimate,
@@ -2156,6 +2496,7 @@ export function PosDashboard() {
     benefits,
     sessions: staffSessions,
     prepTasks: userPrepTasks,
+    history: monthlySessionHistory,
   };
 
   const salaryPanelData = {
@@ -2275,9 +2616,6 @@ export function PosDashboard() {
               <h1 className="mt-2 text-3xl font-semibold text-[var(--brand-text)] dark:text-primary-50">
                 Hola, {staffDisplayName}
               </h1>
-              <p className="text-sm text-[var(--brand-muted)]">
-                Sesión activa: <span className="font-semibold text-primary-600 dark:text-primary-200">{sessionDurationLabel}</span>
-              </p>
             </div>
           </div>
           <div className="flex flex-col items-end gap-3 text-sm text-[var(--brand-muted)]">
@@ -2321,7 +2659,6 @@ export function PosDashboard() {
         }}
         onLogout={logout}
         user={user}
-        sessionDuration={sessionDurationLabel}
         hasCampaignNotifications={campaignFeed.length > 0}
       />
       <StaffSidePanel
@@ -2340,6 +2677,7 @@ export function PosDashboard() {
         isSuperUser={isSuperUser}
         managerInventory={managerInventory}
         onInventoryChange={handleInventoryQuantityChange}
+        onInventoryAccidentChange={handleInventoryAccidentChange}
         onInventorySync={handleInventorySyncFromMenu}
         managerSalaryDraft={managerSalaryDraft}
         onManagerSalaryDraftChange={updateManagerSalaryDraft}
@@ -2437,8 +2775,10 @@ export function PosDashboard() {
             <section className="card space-y-6 p-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="badge">Cola de producción</p>
-                  <p className="text-sm text-[var(--brand-muted)]">Ordena y asigna preparaciones de bebidas y alimentos.</p>
+                  <p className="badge">En producción</p>
+                  <p className="text-sm text-[var(--brand-muted)]">
+                    Los pedidos visibles siguen el corte 23:59; purgamos los registros pasados después de 48h.
+                  </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--brand-muted)]">
                   {prepLoading && <p>Actualizando...</p>}
@@ -2455,7 +2795,7 @@ export function PosDashboard() {
                     onClick={() => void refreshPrep()}
                     className="rounded-full border border-primary-200 px-3 py-1 font-semibold text-primary-600 transition hover:bg-primary-50 dark:border-white/20 dark:text-primary-200 disabled:opacity-50"
                   >
-                    Actualizar cola
+                    Actualizar en preparación
                   </button>
                 </div>
               </div>
@@ -2467,11 +2807,11 @@ export function PosDashboard() {
                 }}
               >
                 <label className="flex flex-col text-[var(--brand-muted)]">
-                  <span className="font-semibold uppercase tracking-[0.25em]">Buscar cliente</span>
+                  <span className="font-semibold uppercase tracking-[0.25em]">Buscar ticket/cliente</span>
                   <input
                     value={prepSearchInput}
                     onChange={(event) => setPrepSearchInput(event.target.value)}
-                    placeholder="Nombre, email o ID del cliente"
+                    placeholder="ID, ticket, producto o handler"
                     className="mt-1 rounded-xl border border-primary-100/70 px-3 py-1 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/5 dark:text-white"
                   />
                 </label>
@@ -2496,6 +2836,8 @@ export function PosDashboard() {
                 <div className="rounded-2xl border border-dashed border-danger-300/70 bg-danger-50/60 px-4 py-3 text-sm text-danger-700 dark:border-danger-700/40 dark:bg-danger-900/30 dark:text-danger-100">
                   {prepError}
                 </div>
+              ) : prepLoading ? (
+                <PrepQueueSkeleton />
               ) : (
                 <div className="grid gap-6 lg:grid-cols-2">
                   <PrepQueueColumn
@@ -2729,11 +3071,37 @@ export function PosDashboard() {
                 <SummaryCard label="Pasados" value={pastOrders.length} subtitle="Se ocultan a 3 días" />
                 <SummaryCard label="Completados" value={completed.length} subtitle="Histórico cercano" />
                 <SummaryCard label="Reservas activas" value={reservationCounts.pending} subtitle="Próximas 24h" />
-                <SummaryCard label="En barra" value={baseActivePrep.length} subtitle="Cola de producción" />
+                <SummaryCard label="En barra" value={baseActivePrep.length} subtitle="En producción" />
                 <SummaryCard label="Staff en turno" value={`${staffActive}/${staffTotal}`} subtitle="Activos / total" />
                 <SummaryCard label="Cliente top" value={topCustomer?.totalInteractions ?? 0} subtitle={getCustomerDisplayName(topCustomer)} />
                 <SummaryCard label="Propinas" value={formatCurrency(totalTips)} subtitle="Monto acumulado" isCurrency />
               </div>
+            </section>
+            <section className="card p-6">
+              <SalesPanel
+                history={publicSalesHistory}
+                selectedMonth={selectedPublicSalesMonth}
+                onSelectMonth={(month) => setSelectedPublicSalesMonth(month)}
+                isLoading={publicSalesLoading}
+                error={publicSalesError}
+                onRefresh={refreshPublicSales}
+                title="Ventas · público general"
+                description="Resumen mensual del POS sin cliente identificado."
+                downloadLabel="Descargar"
+              />
+            </section>
+            <section className="card p-6">
+              <SalesPanel
+                history={overallSalesHistory}
+                selectedMonth={selectedOverallSalesMonth}
+                onSelectMonth={(month) => setSelectedOverallSalesMonth(month)}
+                isLoading={publicSalesLoading}
+                error={publicSalesError}
+                onRefresh={refreshPublicSales}
+                title="Ventas · todos los clientes"
+                description="Incluye clientes identificados y ventas al público general."
+                downloadLabel="Descargar"
+              />
             </section>
             {user.role === 'socio' && (
               <section className="card p-6">
@@ -2744,11 +3112,19 @@ export function PosDashboard() {
                   partnerError={partnerError}
                   partnerMetrics={partnerMetrics}
                   refreshPartnerMetrics={refreshPartnerMetrics}
+                  useRange={partnerUseRange}
+                  onToggleRange={setPartnerUseRange}
+                  availableMonths={partnerAvailableMonths}
+                  selectedMonth={partnerSelectedMonth}
+                  onSelectMonth={setPartnerMonth}
                 />
               </section>
             )}
-      </>
-    )}
+            <section className="card p-6">
+              <InventoryAccidentMetrics stats={inventoryAccidentStats} />
+            </section>
+          </>
+        )}
 
         {activeSection === 'advancedMetrics' && isSocio && (
           <section className="card p-6">
@@ -2764,6 +3140,11 @@ export function PosDashboard() {
               error={advancedMetricsError}
               selectedRange={advancedMetricsRange}
               onRangeChange={setAdvancedMetricsRange}
+              availableMonths={advancedMetrics?.availableMonths ?? []}
+              selectedMonth={advancedMetrics?.selectedMonth ?? null}
+              onMonthChange={(month) => setAdvancedMetricsMonth(month)}
+              useRange={advancedUseRange}
+              onToggleRange={toggleAdvancedRangeMode}
               onRefresh={() => void refreshAdvancedMetrics()}
             />
           </section>
@@ -2798,6 +3179,11 @@ export function PosDashboard() {
               insights={advancedMetrics?.marketing ?? null}
               selectedRange={marketingRange}
               onRangeChange={(value) => setMarketingRange(value)}
+              availableMonths={advancedMetrics?.availableMonths ?? []}
+              selectedMonth={advancedMetricsMonth}
+              onMonthChange={(month) => setAdvancedMetricsMonth(month)}
+              useRange={advancedUseRange}
+              onToggleRange={toggleAdvancedRangeMode}
               onRefresh={() => void refreshAdvancedMetrics()}
             />
           </section>
@@ -2853,6 +3239,21 @@ export function PosDashboard() {
                 </button>
               </div>
             </div>
+
+            <StaffAdvancedMetricsPanel
+              section={advancedMetrics?.sections?.employees ?? null}
+              isLoading={advancedMetricsLoading}
+              error={advancedMetricsError}
+              availableMonths={advancedMetrics?.availableMonths ?? []}
+              availability={advancedMetrics?.rangeAvailability ?? null}
+              selectedRange={advancedMetricsRange}
+              onRangeChange={setAdvancedMetricsRange}
+              selectedMonth={advancedMetricsMonth}
+              onMonthChange={(month) => setAdvancedMetricsMonth(month)}
+              useRange={advancedUseRange}
+              onToggleRange={toggleAdvancedRangeMode}
+              onRefresh={() => void refreshAdvancedMetrics()}
+            />
 
             {staffError ? (
               <div className="rounded-2xl border border-dashed border-danger-300/70 bg-danger-50/60 px-4 py-3 text-sm text-danger-700 dark:border-danger-700/40 dark:bg-danger-900/30 dark:text-danger-100">
@@ -2975,7 +3376,7 @@ export function PosDashboard() {
                 <h3 className="text-lg font-semibold text-primary-600 dark:text-primary-200">Permisos críticos</h3>
                 <ul className="mt-3 space-y-2 text-xs text-[var(--brand-muted)]">
                   <li className="rounded-xl border border-primary-50/80 px-3 py-2">Crear y cerrar tickets</li>
-                  <li className="rounded-xl border border-primary-50/80 px-3 py-2">Mover pedidos a la cola</li>
+                  <li className="rounded-xl border border-primary-50/80 px-3 py-2">Mover pedidos a En preparación</li>
                   <li className="rounded-xl border border-primary-50/80 px-3 py-2">Ver métricas financieras</li>
                 </ul>
               </div>
@@ -3327,11 +3728,18 @@ function ReservationCard({
   const peopleCount = reservation.peopleCount ?? 1;
   const statusKey = (reservation.status ?? 'pending').toLowerCase();
   const statusClass = statusStyles[statusKey] ?? statusStyles.pending;
+  const customerLabel = formatReservationCustomer(reservation);
+  const venueLabel = reservation.branchNumber ?? reservation.branchId ?? 'Matriz';
+  const reservationLabel = reservation.reservationCode ?? reservation.id.slice(0, 6);
+  const ariaLabel = `Reserva ${reservationLabel} para ${customerLabel} · ${peopleCount} ${
+    peopleCount === 1 ? 'persona' : 'personas'
+  } · Sucursal ${venueLabel}`;
 
   return (
     <article
       role={onSelect ? 'button' : undefined}
       tabIndex={onSelect ? 0 : undefined}
+      aria-label={ariaLabel}
       onClick={onSelect ? () => onSelect(reservation) : undefined}
       onKeyDown={
         onSelect
@@ -3348,14 +3756,13 @@ function ReservationCard({
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.3em] text-primary-400 font-bold underline">
-            {reservation.reservationCode ?? reservation.id.slice(0, 6)}
+            {reservationLabel}
           </p>
           <p className="text-base font-semibold">{formatReservationDate(reservation)}</p>
           <p className="text-xs text-[var(--brand-muted)]">
-            {peopleCount} {peopleCount === 1 ? 'persona' : 'personas'} · Sucursal{' '}
-            {reservation.branchNumber ?? reservation.branchId ?? 'Matriz'}
+            {peopleCount} {peopleCount === 1 ? 'persona' : 'personas'} · Sucursal {venueLabel}
           </p>
-          <p className="text-xs text-[var(--brand-muted)]">{formatReservationCustomer(reservation)}</p>
+          <p className="text-xs text-[var(--brand-muted)]">{customerLabel}</p>
         </div>
         <span className={`rounded-full px-3 py-1 text-xs font-semibold capitalize ${statusClass}`}>
           {statusKey}
@@ -3398,6 +3805,29 @@ const PrepQueueColumn = ({
   </div>
 );
 
+const PrepQueueSkeleton = () => (
+  <div className="grid gap-6 lg:grid-cols-2">
+    {Array.from({ length: 2 }).map((_, columnIndex) => (
+      <div key={`prep-skeleton-${columnIndex}`}>
+        <div className="flex items-center justify-between">
+          <div className="h-4 w-24 rounded-full bg-primary-100/60 dark:bg-white/10" />
+          <div className="h-3 w-16 rounded-full bg-primary-50/80 dark:bg-white/5" />
+        </div>
+        <div className="mt-4 space-y-3">
+          {Array.from({ length: 3 }).map((__, cardIndex) => (
+            <div
+              key={`prep-skeleton-card-${columnIndex}-${cardIndex}`}
+              className="h-28 rounded-2xl border border-primary-100/70 bg-white/40 dark:border-white/10 dark:bg-white/5"
+            >
+              <div className="h-full w-full animate-pulse rounded-2xl bg-primary-50/70 dark:bg-white/10" />
+            </div>
+          ))}
+        </div>
+      </div>
+    ))}
+  </div>
+);
+
 const PrepTaskCard = ({ task, onSelect }: { task: PrepTask; onSelect?: (task: PrepTask) => void }) => {
   const quantity = task.orderItem?.quantity ?? 1;
   const productName = task.product?.name ?? 'Producto';
@@ -3409,6 +3839,12 @@ const PrepTaskCard = ({ task, onSelect }: { task: PrepTask; onSelect?: (task: Pr
       : task.status === 'completed'
         ? 'Listo'
         : 'Pendiente';
+  const statusBadge =
+    task.status === 'completed'
+      ? 'bg-emerald-100 text-emerald-700'
+      : task.status === 'in_progress'
+        ? 'bg-amber-100 text-amber-800'
+        : 'bg-primary-100 text-primary-700';
   const customerLabel =
     task.customer?.name?.trim() ||
     task.customer?.email?.trim() ||
@@ -3462,8 +3898,9 @@ const PrepTaskCard = ({ task, onSelect }: { task: PrepTask; onSelect?: (task: Pr
         </p>
         <p className="font-semibold text-primary-400">{formatCurrency(amount)}</p>
       </div>
-      <div className="mt-2 text-xs font-semibold text-primary-600 dark:text-primary-200">
-        {statusLabel}
+      <div className="mt-3 flex items-center justify-between text-xs text-[var(--brand-muted)]">
+        <span className={`rounded-full px-3 py-1 font-semibold ${statusBadge}`}>{statusLabel}</span>
+        <span className="font-semibold text-primary-500">Ver detalle ↗</span>
       </div>
     </article>
   );
@@ -3502,8 +3939,8 @@ const PrepQueuePastContent = ({
         </button>
       </div>
       <p className="text-sm text-[var(--brand-muted)]">
-        Listado de pedidos que superaron las 3 horas sin marcarse como entregados. Los ocultamos
-        después de 2 días y los depuramos automáticamente al cumplirse un año.
+        Pedidos que salieron de barra según el corte 23:59 y permanecieron más de 3 horas abiertos.
+        Se mantienen visibles por 48h y se depuran automáticamente al cumplirse un año.
       </p>
       <form
         className="flex flex-wrap items-center gap-2 text-xs text-[var(--brand-muted)] dark:text-white/80"
@@ -3527,6 +3964,9 @@ const PrepQueuePastContent = ({
           </button>
         )}
       </form>
+      <p className="text-xs text-[var(--brand-muted)] dark:text-white/70">
+        Selecciona una tarjeta para abrir el detalle y marcarla como completada si aplica.
+      </p>
       {filtered.length === 0 ? (
         <p className="text-sm text-[var(--brand-muted)] dark:text-white/80">
           {query ? 'No encontramos pedidos pasados con ese dato.' : 'Sin pedidos pendientes de seguimiento.'}
@@ -3556,6 +3996,11 @@ type OrderItemEntry = {
   name?: string | null;
   category?: string | null;
   subcategory?: string | null;
+  sizeId?: string | null;
+  sizeLabel?: string | null;
+  packageId?: string | null;
+  packageName?: string | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 const coerceQuantity = (value: unknown) => {
@@ -3801,6 +4246,8 @@ const FOOD_KEYWORDS = [
   'toast',
 ];
 
+const PACKAGE_KEYWORDS = ['paquete', 'paquetes', 'combo', 'pack', 'kit', 'bundle'];
+
 const normalizeText = (value?: string | null) =>
   (value ?? '')
     .toLowerCase()
@@ -3814,6 +4261,9 @@ const classifyOrderItem = (item: OrderItemEntry) => {
     normalizeText(item.productId),
   ].join(' ');
 
+  if (PACKAGE_KEYWORDS.some((keyword) => haystack.includes(keyword))) {
+    return 'package';
+  }
   if (BEVERAGE_KEYWORDS.some((keyword) => haystack.includes(keyword))) {
     return 'beverage';
   }
@@ -3828,22 +4278,31 @@ const summarizeOrderItems = (items: OrderItemEntry[]) =>
     (acc, item) => {
       const quantity = safeQuantity(item.quantity);
       const classification = classifyOrderItem(item);
-      acc.total += quantity;
+      acc.totalItems += quantity;
       if (classification === 'beverage') {
         acc.beverages += quantity;
       } else if (classification === 'food') {
         acc.foods += quantity;
+      } else if (classification === 'package') {
+        acc.packages += quantity;
       } else {
         acc.other += quantity;
       }
       return acc;
     },
-    { beverages: 0, foods: 0, other: 0, total: 0 }
+    { beverages: 0, foods: 0, packages: 0, other: 0, totalItems: 0 }
   );
+
+const ConsumptionStatCard = ({ label, value }: { label: string; value: number }) => (
+  <div className="rounded-2xl border border-primary-100/70 bg-white/80 px-4 py-3 text-center dark:border-white/10 dark:bg-white/5">
+    <p className="text-[var(--brand-muted)] text-xs">{label}</p>
+    <p className="text-2xl font-semibold text-primary-900 dark:text-white">{value}</p>
+  </div>
+);
 
 const ConsumptionSummary = ({ items }: { items: OrderItemEntry[] }) => {
   const summary = summarizeOrderItems(items);
-  if (summary.total === 0) {
+  if (summary.totalItems === 0) {
     return null;
   }
 
@@ -3852,6 +4311,9 @@ const ConsumptionSummary = ({ items }: { items: OrderItemEntry[] }) => {
     { label: 'Alimentos', value: summary.foods },
   ];
 
+  if (summary.packages > 0) {
+    stats.push({ label: 'Paquetes', value: summary.packages });
+  }
   if (summary.other > 0) {
     stats.push({ label: 'Otros', value: summary.other });
   }
@@ -3863,15 +4325,7 @@ const ConsumptionSummary = ({ items }: { items: OrderItemEntry[] }) => {
       </p>
       <div className="grid gap-3 sm:grid-cols-3">
         {stats.map((stat) => (
-          <div
-            key={stat.label}
-            className="rounded-2xl border border-primary-100/70 bg-white/80 px-4 py-3 text-center dark:border-white/10 dark:bg-white/5"
-          >
-            <p className="text-[var(--brand-muted)] text-xs">{stat.label}</p>
-            <p className="text-2xl font-semibold text-primary-900 dark:text-white">
-              {stat.value}
-            </p>
-          </div>
+          <ConsumptionStatCard key={stat.label} label={stat.label} value={stat.value} />
         ))}
       </div>
     </div>
@@ -3892,9 +4346,14 @@ const OrderItemsSection = ({ items }: { items: OrderItemEntry[] }) => (
           const hasUnitPrice = typeof item.price === 'number' && Number.isFinite(item.price);
           const unitPrice = hasUnitPrice ? (item.price as number) : null;
           const lineTotal = hasUnitPrice && unitPrice !== null ? unitPrice * quantity : null;
+          const descriptor = item.category ?? item.subcategory ?? 'Sin categoría';
+          const sizeLabel = item.sizeLabel ? ` · ${item.sizeLabel}` : '';
+          const listKey = item.productId
+            ? `${item.productId}-${item.sizeId ?? item.sizeLabel ?? index}`
+            : `${index}`;
           return (
             <li
-              key={`${item.productId ?? index}`}
+              key={listKey}
               className="flex items-center justify-between rounded-xl border border-white px-3 py-2 text-xs dark:border-white/70"
             >
               <div>
@@ -3902,8 +4361,8 @@ const OrderItemsSection = ({ items }: { items: OrderItemEntry[] }) => (
                   {item.name ?? item.productId ?? 'Producto'}
                 </p>
                 <p className="text-sm font-bold text-primary-800 dark:text-white/90">
-                  {quantity} uds ·{' '}
-                  {item.category ?? item.subcategory ?? 'Sin categoría'}
+                  {quantity} uds · {descriptor}
+                  {sizeLabel}
                 </p>
               </div>
               <span className="font-bold text-primary-400 dark:text-white">
@@ -4036,6 +4495,7 @@ const OrderDetailContent = ({
     totalItemsFromList > 0 ? totalItemsFromList : order.itemsCount ?? items.length ?? 0;
   const customerName = extractCustomerName(order.user);
   const customerPhone = extractCustomerPhone(order.user);
+  const tipValue = typeof order.tipAmount === 'number' ? order.tipAmount : null;
   return (
     <div className="space-y-5 text-base">
       <header>
@@ -4063,6 +4523,21 @@ const OrderDetailContent = ({
             <span className="font-bold text-primary-900 dark:text-white">
               {formatCurrency(order.total)}
             </span>
+          }
+        />
+        <DetailRow
+          label="Propina"
+          value={
+            tipValue && tipValue > 0 ? (
+              <span className="font-bold text-primary-700 dark:text-primary-100">
+                {formatCurrency(tipValue)}
+                {typeof order.tipPercent === 'number'
+                  ? ` (${order.tipPercent.toFixed(1)}%)`
+                  : ''}
+              </span>
+            ) : (
+              <span className="text-sm text-[var(--brand-muted)]">Sin propina registrada</span>
+            )
           }
         />
         <DetailRow
@@ -4134,7 +4609,7 @@ const OrderDetailContent = ({
             </div>
           )}
           <DetailActionFooter
-            label="Mover a la cola"
+            label="Mover a En preparación"
             onClick={() => onMoveToQueue(order, { paymentMethod: selectedPaymentMethod })}
             disabled={!selectedPaymentMethod || actionState?.isLoading}
             actionState={actionState}
@@ -4143,7 +4618,7 @@ const OrderDetailContent = ({
       )}
       {order.status === 'completed' && onReturnToQueue && (
         <DetailActionFooter
-          label="Regresar a la cola"
+          label="Regresar a En preparación"
           onClick={() => onReturnToQueue(order)}
           disabled={actionState?.isLoading}
           actionState={actionState}
@@ -4486,6 +4961,11 @@ const PartnerMetricsContent = ({
   partnerError,
   partnerMetrics,
   refreshPartnerMetrics,
+  useRange,
+  onToggleRange,
+  availableMonths,
+  selectedMonth,
+  onSelectMonth,
 }: {
   partnerDays: number;
   setPartnerDays: (days: number) => void;
@@ -4493,6 +4973,11 @@ const PartnerMetricsContent = ({
   partnerError: string | null;
   partnerMetrics: PartnerMetrics | null;
   refreshPartnerMetrics: () => Promise<void>;
+  useRange: boolean;
+  onToggleRange: (value: boolean) => void;
+  availableMonths: Array<{ month: string; label: string }>;
+  selectedMonth: string | null;
+  onSelectMonth: (month: string | null) => void;
 }) => {
   const [fiscalFolio, setFiscalFolio] = useState<FiscalFolioConfig>(DEFAULT_FOLIO_CONFIG);
 
@@ -4508,13 +4993,19 @@ const PartnerMetricsContent = ({
     }));
   }, []);
 
+  const monthLabel =
+    selectedMonth && availableMonths.length
+      ? availableMonths.find((month) => month.month === selectedMonth)?.label ?? selectedMonth
+      : buildMonthLabel(new Date().toISOString().substring(0, 7));
+  const periodLabel = useRange ? `${partnerDays} días` : monthLabel;
+
   return (
     <div className="space-y-6 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="badge">Panel de socios</p>
           <p className="text-sm text-[var(--brand-muted)]">
-            Métricas avanzadas de ventas y clientes para dirección ({partnerDays} días).
+            Métricas avanzadas de ventas y clientes para dirección ({periodLabel}).
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-4 text-sm text-[var(--brand-muted)]">
@@ -4524,6 +5015,7 @@ const PartnerMetricsContent = ({
               value={partnerDays}
               onChange={(event) => setPartnerDays(Number(event.target.value))}
             className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] dark:border-white/10"
+              disabled={!useRange}
           >
             {[30, 60, 90, 180, 360].map((daysOption) => (
                 <option key={daysOption} value={daysOption}>
@@ -4531,6 +5023,31 @@ const PartnerMetricsContent = ({
                 </option>
               ))}
             </select>
+          </label>
+          <label className="flex items-center gap-2 text-xs font-semibold">
+            Mes:
+            <select
+              value={selectedMonth ?? ''}
+              onChange={(event) => onSelectMonth(event.target.value || null)}
+              disabled={useRange || availableMonths.length === 0}
+              className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] dark:border-white/10"
+            >
+              <option value="">Selecciona mes</option>
+              {availableMonths.map((month) => (
+                <option key={month.month} value={month.month}>
+                  {month.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-xs font-semibold text-[var(--brand-text)] dark:text-white">
+            <input
+              type="checkbox"
+              checked={useRange}
+              onChange={(event) => onToggleRange(event.target.checked)}
+              className="h-4 w-4 rounded border-primary-300 text-primary-600 focus:ring-primary-500"
+            />
+            Usar rango de días
           </label>
           {partnerLoading && <p>Actualizando...</p>}
           <button
@@ -4551,7 +5068,7 @@ const PartnerMetricsContent = ({
         <div className="grid gap-6 lg:grid-cols-2">
           <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/10">
             <h3 className="text-lg font-semibold text-primary-600 dark:text-primary-200">
-              Ventas {partnerDays} días
+              Ventas {periodLabel}
             </h3>
             {partnerMetrics?.metrics ? (
               <>
@@ -4657,7 +5174,284 @@ const PartnerMetricsContent = ({
         </div>
       )}
 
-      <PartnerFiscalControls folio={fiscalFolio} onUpdate={handleFolioUpdate} onIssue={handleIssueFolio} />
+  <PartnerFiscalControls folio={fiscalFolio} onUpdate={handleFolioUpdate} onIssue={handleIssueFolio} />
+</div>
+);
+};
+
+const SalesPanel = ({
+  history,
+  selectedMonth,
+  onSelectMonth,
+  isLoading,
+  error,
+  onRefresh,
+  title,
+  description,
+  downloadLabel,
+}: {
+  history: SalesHistoryEntry[] | null;
+  selectedMonth: string | null;
+  onSelectMonth: (month: string) => void;
+  isLoading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+  title: string;
+  description: string;
+  downloadLabel: string;
+}) => {
+  const [exportFormat, setExportFormat] = useState<'csv' | 'excel'>('csv');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const monthOptions = history ?? [];
+  const currentEntry =
+    monthOptions.find((entry) => entry.month === selectedMonth) ?? monthOptions[0] ?? null;
+
+  useEffect(() => {
+    if (!selectedMonth && currentEntry) {
+      onSelectMonth(currentEntry.month);
+    }
+  }, [selectedMonth, currentEntry, onSelectMonth]);
+
+  const handleExport = async () => {
+    if (!currentEntry) {
+      return;
+    }
+    setExportError(null);
+    setIsExporting(true);
+    try {
+      const params = new URLSearchParams({
+        month: currentEntry.month,
+        format: exportFormat,
+      });
+      const response = await fetch(`/api/public-sales-summary?${params.toString()}`, {
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        let message = 'No pudimos descargar el archivo.';
+        try {
+          const payload = await response.json();
+          if (payload?.error) {
+            message = payload.error;
+          }
+        } catch {
+          // ignore
+        }
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const extension = exportFormat === 'csv' ? 'csv' : 'xls';
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `publico-general-${currentEntry.month}.${extension}`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'No pudimos descargar el archivo.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-5 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="badge">{title}</p>
+          <p className="text-sm text-[var(--brand-muted)]">{description}</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 text-xs font-semibold text-[var(--brand-muted)]">
+          <label className="flex items-center gap-2">
+            Mes:
+            <select
+              value={selectedMonth ?? ''}
+              onChange={(event) => onSelectMonth(event.target.value)}
+              disabled={monthOptions.length === 0 || isLoading}
+              className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] dark:border-white/10"
+            >
+              {monthOptions.map((option) => (
+                <option key={option.month} value={option.month}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="flex items-center gap-2">
+            <span>Formato:</span>
+            <div className="flex gap-2">
+              {[
+                { value: 'csv', label: 'CSV' },
+                { value: 'excel', label: 'Excel' },
+              ].map((option) => (
+                <label
+                  key={option.value}
+                  className={`flex items-center gap-1 rounded-full border px-3 py-1 text-xs ${
+                    exportFormat === option.value
+                      ? 'border-primary-500 bg-primary-100 text-primary-700'
+                      : 'border-primary-100/70 text-[var(--brand-muted)]'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name={`format-${title}`}
+                    value={option.value}
+                    checked={exportFormat === option.value}
+                    onChange={(event) => setExportFormat(event.target.value as 'csv' | 'excel')}
+                    className="h-3 w-3 text-primary-600 focus:ring-primary-500"
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void onRefresh()}
+            className="text-primary-600 hover:underline dark:text-primary-300"
+            disabled={isLoading}
+          >
+            Actualizar
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleExport()}
+            className="brand-button text-xs"
+            disabled={!currentEntry || isExporting}
+          >
+            {isExporting ? 'Descargando…' : downloadLabel}
+          </button>
+        </div>
+      </div>
+      {error ? (
+        <div className="rounded-2xl border border-danger-200/70 bg-danger-50/60 px-4 py-3 text-danger-700 dark:border-danger-500/30 dark:bg-danger-900/30 dark:text-danger-100">
+          {error}
+        </div>
+      ) : isLoading ? (
+        <p className="text-sm text-[var(--brand-muted)]">Cargando resumen…</p>
+      ) : !currentEntry ? (
+        <p className="text-sm text-[var(--brand-muted)]">
+          Aún no hay pedidos registrados del público general.
+        </p>
+      ) : (
+        <>
+          <div className="grid gap-4 md:grid-cols-3">
+            <SummaryCard
+              label="Venta mensual"
+              value={currentEntry.totalSales}
+              subtitle={currentEntry.label}
+              isCurrency
+            />
+            <SummaryCard
+              label="Propinas"
+              value={currentEntry.totalTips}
+              subtitle="Público general"
+              isCurrency
+            />
+            <SummaryCard
+              label="Tickets"
+              value={currentEntry.orderCount}
+              subtitle="Pedidos del mes"
+            />
+          </div>
+          <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+            <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
+              Últimos pedidos
+            </p>
+            {currentEntry.recentOrders.length === 0 ? (
+              <p className="mt-2 text-sm text-[var(--brand-muted)]">
+                Sin pedidos en este mes.
+              </p>
+            ) : (
+              <ul className="mt-3 space-y-2">
+                {currentEntry.recentOrders.map((order) => (
+                  <li
+                    key={order.id}
+                    className="flex items-center justify-between rounded-xl border border-primary-50/80 px-3 py-2 dark:border-white/10"
+                  >
+                    <div>
+                      <p className="font-semibold">
+                        {order.ticketCode ?? order.orderNumber ?? order.id}
+                      </p>
+                      <p className="text-xs text-[var(--brand-muted)]">
+                        {new Date(order.createdAt).toLocaleString('es-MX')} ·{' '}
+                        {order.paymentMethod ?? '—'}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-base font-semibold text-primary-700 dark:text-primary-100">
+                        {formatCurrency(order.total)}
+                      </p>
+                      <p className="text-xs text-[var(--brand-muted)]">
+                        Propina: {formatCurrency(order.tipAmount)}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {exportError && (
+            <div className="rounded-2xl border border-danger-200/70 bg-danger-50/60 px-3 py-2 text-xs text-danger-700 dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
+              {exportError}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
+
+const InventoryAccidentMetrics = ({
+  stats,
+}: {
+  stats: {
+    totalAccidents: number;
+    totalInventoryUnits: number;
+    topEntry: { category: InventoryCategoryId; item: InventoryEntry } | null;
+    topPercent: number;
+  };
+}) => {
+  const meta = stats.topEntry ? INVENTORY_CATEGORY_META[stats.topEntry.category] : null;
+  return (
+    <div className="space-y-4 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="badge">Accidentes en inventario</p>
+          <p className="text-sm text-[var(--brand-muted)]">
+            Seguimiento mensual de desperfectos reportados manualmente.
+          </p>
+        </div>
+        <p className="text-xs text-[var(--brand-muted)]">
+          Total registrados: <span className="font-semibold">{stats.totalAccidents}</span>
+        </p>
+      </div>
+      {stats.totalAccidents === 0 ? (
+        <p className="text-sm text-[var(--brand-muted)]">
+          Aún no registras accidentes en tus insumos. Usa el botón “Accidentes” en el inventario para empezar.
+        </p>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-3">
+          <SummaryCard
+            label="Insumo con más desperfectos"
+            value={stats.topEntry?.item.name ?? 'Sin registros'}
+            subtitle={meta ? meta.label : '—'}
+          />
+          <SummaryCard
+            label="Cantidad reportada"
+            value={stats.topEntry?.item.accidents ?? 0}
+            subtitle="Accidentes del mes"
+          />
+          <SummaryCard
+            label="Porcentaje del inventario"
+            value={`${stats.topPercent.toFixed(1)}%`}
+            subtitle={`${stats.totalInventoryUnits} uds totales`}
+          />
+        </div>
+      )}
     </div>
   );
 };
@@ -4779,7 +5573,6 @@ const ADVANCED_SECTION_ORDER: AdvancedMetricsSectionId[] = [
   'payments',
   'orders',
   'analytics',
-  'employees',
   'inventory',
 ];
 
@@ -4794,6 +5587,11 @@ const AdvancedMetricsPanel = ({
   error,
   selectedRange,
   onRangeChange,
+  availableMonths,
+  selectedMonth,
+  onMonthChange,
+  useRange,
+  onToggleRange,
   onRefresh,
 }: {
   metrics: AdvancedMetricsPayload | null;
@@ -4801,6 +5599,11 @@ const AdvancedMetricsPanel = ({
   error: string | null;
   selectedRange: string;
   onRangeChange: (range: string) => void;
+  availableMonths: Array<{ month: string; label: string }>;
+  selectedMonth: string | null;
+  onMonthChange: (month: string | null) => void;
+  useRange: boolean;
+  onToggleRange: (useRange: boolean) => void;
   onRefresh: () => void;
 }) => {
   const [exportFormat, setExportFormat] = useState<'csv' | 'xlsx'>('csv');
@@ -4811,10 +5614,14 @@ const AdvancedMetricsPanel = ({
       return;
     }
     const params = new URLSearchParams({
-      range: selectedRange,
       section: focusedSection,
       export: exportFormat,
     });
+    if (!useRange && selectedMonth) {
+      params.set('month', selectedMonth);
+    } else {
+      params.set('range', selectedRange);
+    }
     const anchor = document.createElement('a');
     anchor.href = `/api/advanced-metrics?${params.toString()}`;
     anchor.setAttribute('target', '_blank');
@@ -4836,6 +5643,7 @@ const AdvancedMetricsPanel = ({
             value={selectedRange}
             onChange={(event) => onRangeChange(event.target.value)}
             className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] dark:border-white/10"
+            disabled={!useRange}
           >
             {ADVANCED_RANGE_OPTIONS.map((option) => (
               <option
@@ -4848,6 +5656,31 @@ const AdvancedMetricsPanel = ({
               </option>
             ))}
           </select>
+        </label>
+        <label className="flex items-center gap-2 text-xs font-semibold">
+          Mes:
+          <select
+            value={selectedMonth ?? ''}
+            onChange={(event) => onMonthChange(event.target.value || null)}
+            className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] dark:border-white/10"
+            disabled={useRange || availableMonths.length === 0}
+          >
+            <option value="">Modo rango</option>
+            {availableMonths.map((month) => (
+              <option key={month.month} value={month.month}>
+                {month.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-2 text-xs font-semibold text-[var(--brand-text)] dark:text-white">
+          <input
+            type="checkbox"
+            checked={useRange}
+            onChange={(event) => onToggleRange(event.target.checked)}
+            className="h-4 w-4 rounded border-primary-300 text-primary-600 focus:ring-primary-500"
+          />
+          Usar rango de días
         </label>
         <div className="flex items-center gap-3 text-xs">
           {EXPORT_FORMATS.map((format) => (
@@ -4866,37 +5699,37 @@ const AdvancedMetricsPanel = ({
             Descargar vista
           </button>
         </div>
-        <button
-          type="button"
-          className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline dark:text-primary-200"
-          onClick={onRefresh}
-        >
-          Refrescar métricas
-        </button>
-      </div>
-      {error && (
-        <div className="rounded-2xl border border-danger-200 bg-danger-50/70 px-4 py-3 text-sm text-danger-700 dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
-          {error}
-        </div>
-      )}
-      {isLoading && <p className="text-sm text-[var(--brand-muted)]">Cargando métricas avanzadas…</p>}
-      {!isLoading && metrics && !metrics.hasData && (
-        <p className="text-sm text-[var(--brand-muted)]">Rango seleccionado sin datos disponibles.</p>
-      )}
-      {!isLoading && metrics && (
-        <div className="mt-5 space-y-5">
-          {ADVANCED_SECTION_ORDER.map((sectionId) => (
-            <AdvancedMetricsSectionBlock
-              key={sectionId}
-              sectionId={sectionId}
-              section={sectionData[sectionId]}
-              isFocused={focusedSection === sectionId}
-              onFocus={() => setFocusedSection(sectionId)}
-            />
-          ))}
-        </div>
-      )}
+      <button
+        type="button"
+        className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline dark:text-primary-200"
+        onClick={onRefresh}
+      >
+        Refrescar métricas
+      </button>
     </div>
+    {error && (
+      <div className="rounded-2xl border border-danger-200 bg-danger-50/70 px-4 py-3 text-sm text-danger-700 dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
+        {error}
+      </div>
+    )}
+    {isLoading && <p className="text-sm text-[var(--brand-muted)]">Cargando métricas avanzadas…</p>}
+    {!isLoading && metrics && !metrics.hasData && (
+      <p className="text-sm text-[var(--brand-muted)]">Rango seleccionado sin datos disponibles.</p>
+    )}
+    {!isLoading && metrics && (
+      <div className="mt-5 space-y-5">
+        {ADVANCED_SECTION_ORDER.map((sectionId) => (
+          <AdvancedMetricsSectionBlock
+            key={sectionId}
+            sectionId={sectionId}
+            section={sectionData[sectionId]}
+            isFocused={focusedSection === sectionId}
+            onFocus={() => setFocusedSection(sectionId)}
+          />
+        ))}
+      </div>
+    )}
+  </div>
   );
 };
 
@@ -4905,11 +5738,13 @@ const AdvancedMetricsSectionBlock = ({
   section,
   isFocused,
   onFocus,
+  hideExportButton = false,
 }: {
   sectionId: AdvancedMetricsSectionId;
   section?: AdvancedMetricsSection;
   isFocused: boolean;
   onFocus: () => void;
+  hideExportButton?: boolean;
 }) => {
   if (!section) {
     return null;
@@ -4925,13 +5760,15 @@ const AdvancedMetricsSectionBlock = ({
           <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">{section.title}</p>
           {!section.hasData && <p className="text-xs text-[var(--brand-muted)]">Sin datos en este rango.</p>}
         </div>
-        <button
-          type="button"
-          className="rounded-full border border-primary-100/70 px-3 py-1 text-xs font-semibold text-primary-600 hover:border-primary-300 dark:border-white/10"
-          onClick={onFocus}
-        >
-          {isFocused ? 'Seleccionado para exportar' : 'Exportar esta sección'}
-        </button>
+        {!hideExportButton && (
+          <button
+            type="button"
+            className="rounded-full border border-primary-100/70 px-3 py-1 text-xs font-semibold text-primary-600 hover:border-primary-300 dark:border-white/10"
+            onClick={onFocus}
+          >
+            {isFocused ? 'Seleccionado para exportar' : 'Exportar esta sección'}
+          </button>
+        )}
       </div>
       {section.cards.length > 0 && (
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -4990,6 +5827,158 @@ const AdvancedMetricsSectionBlock = ({
         </div>
       ))}
       {section.message && <p className="mt-3 text-xs text-[var(--brand-muted)]">{section.message}</p>}
+    </div>
+  );
+};
+
+const StaffAdvancedMetricsPanel = ({
+  section,
+  isLoading,
+  error,
+  availableMonths,
+  selectedRange,
+  onRangeChange,
+  selectedMonth,
+  onMonthChange,
+  useRange,
+  onToggleRange,
+  onRefresh,
+  availability,
+}: {
+  section: AdvancedMetricsSection | undefined | null;
+  isLoading: boolean;
+  error: string | null;
+  availableMonths: Array<{ month: string; label: string }>;
+  selectedRange: string;
+  onRangeChange: (range: string) => void;
+  selectedMonth: string | null;
+  onMonthChange: (month: string | null) => void;
+  useRange: boolean;
+  onToggleRange: (value: boolean) => void;
+  onRefresh: () => void;
+  availability: AdvancedMetricsPayload['rangeAvailability'] | null | undefined;
+}) => {
+  const [exportFormat, setExportFormat] = useState<'csv' | 'xlsx'>('csv');
+
+  const handleExport = () => {
+    if (typeof window === 'undefined' || !section) return;
+    const params = new URLSearchParams({
+      section: 'employees',
+      export: exportFormat,
+    });
+    if (!useRange && selectedMonth) {
+      params.set('month', selectedMonth);
+    } else {
+      params.set('range', selectedRange);
+    }
+    const anchor = document.createElement('a');
+    anchor.href = `/api/advanced-metrics?${params.toString()}`;
+    anchor.setAttribute('target', '_blank');
+    anchor.rel = 'noopener noreferrer';
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  };
+
+  return (
+    <div className="rounded-2xl border border-primary-100/70 bg-gradient-to-br from-white to-primary-50/40 p-4 text-sm dark:border-white/10 dark:from-white/5 dark:to-primary-900/10">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-4">
+          <label className="flex items-center gap-2 text-xs font-semibold">
+            Periodo:
+            <select
+              value={selectedRange}
+              onChange={(event) => onRangeChange(event.target.value)}
+              className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] dark:border-white/10"
+              disabled={!useRange}
+            >
+              {ADVANCED_RANGE_OPTIONS.map((option) => (
+                <option
+                  key={option.value}
+                  value={option.value}
+                  disabled={option.disabled || (availability ? availability[option.value] === false : false)}
+                >
+                  {option.label}
+                  {availability && availability[option.value] === false ? ' · sin datos' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-xs font-semibold">
+            Mes:
+            <select
+              value={selectedMonth ?? ''}
+              onChange={(event) => onMonthChange(event.target.value || null)}
+              className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] dark:border-white/10"
+              disabled={useRange || availableMonths.length === 0}
+            >
+              <option value="">Selecciona mes</option>
+              {availableMonths.map((month) => (
+                <option key={month.month} value={month.month}>
+                  {month.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-xs font-semibold text-[var(--brand-text)] dark:text-white">
+            <input
+              type="checkbox"
+              checked={useRange}
+              onChange={(event) => onToggleRange(event.target.checked)}
+              className="h-4 w-4 rounded border-primary-300 text-primary-600 focus:ring-primary-500"
+            />
+            Usar rango de días
+          </label>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          <div className="flex items-center gap-2">
+            {EXPORT_FORMATS.map((format) => (
+              <label key={format.value} className="flex items-center gap-1">
+                <input
+                  type="radio"
+                  name="staff-export"
+                  value={format.value}
+                  checked={exportFormat === format.value}
+                  onChange={() => setExportFormat(format.value)}
+                />
+                {format.label}
+              </label>
+            ))}
+          </div>
+          <button type="button" className="brand-button" onClick={handleExport} disabled={!section}>
+            Descargar personal
+          </button>
+          <button
+            type="button"
+            className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline dark:text-primary-200"
+            onClick={onRefresh}
+          >
+            Actualizar métricas
+          </button>
+        </div>
+      </div>
+      {error && (
+        <div className="mt-4 rounded-2xl border border-danger-200 bg-danger-50/70 px-4 py-3 text-sm text-danger-700 dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
+          {error}
+        </div>
+      )}
+      {isLoading && <p className="mt-4 text-sm text-[var(--brand-muted)]">Cargando métricas del personal…</p>}
+      {!isLoading && !section && !error && (
+        <p className="mt-4 text-sm text-[var(--brand-muted)]">
+          No tenemos datos del personal para el rango seleccionado.
+        </p>
+      )}
+      {!isLoading && section && (
+        <div className="mt-4">
+          <AdvancedMetricsSectionBlock
+            sectionId="employees"
+            section={section}
+            isFocused
+            onFocus={() => {}}
+            hideExportButton
+          />
+        </div>
+      )}
     </div>
   );
 };
@@ -5273,6 +6262,22 @@ const ForecastSalesWindow = ({
 
 type ClusterChartData = MarketingInsights['salesClusters'][number]['chart'];
 
+type MarketingClusterKey = 'high' | 'routine' | 'occasional';
+
+type MarketingHistoryEntry = {
+  month: string;
+  label: string;
+  clusters: Record<
+    MarketingClusterKey,
+    {
+      label: string;
+      count: number;
+      avgTicket: number;
+      chart: ClusterChartData;
+    }
+  >;
+};
+
 const ClusterChartGraphic = ({
   chart,
   width = 260,
@@ -5445,16 +6450,66 @@ const MarketingPanel = ({
   insights,
   selectedRange,
   onRangeChange,
+  availableMonths,
+  selectedMonth,
+  onMonthChange,
+  useRange,
+  onToggleRange,
   onRefresh,
 }: {
   insights: MarketingInsights | null;
   selectedRange: string;
   onRangeChange: (range: string) => void;
+  availableMonths: Array<{ month: string; label: string }>;
+  selectedMonth: string | null;
+  onMonthChange: (month: string | null) => void;
+  useRange: boolean;
+  onToggleRange: (useRange: boolean) => void;
   onRefresh: () => void;
 }) => {
   const [activeCluster, setActiveCluster] = useState<MarketingInsights['salesClusters'][number] | null>(null);
   const [chartZoom, setChartZoom] = useState(1);
   const modalSvgRef = useRef<SVGSVGElement | null>(null);
+  const [history, setHistory] = useState<MarketingHistoryEntry[] | null>(null);
+  const [historyMonths, setHistoryMonths] = useState<Array<{ month: string; label: string }>>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [selectedHistoryMonth, setSelectedHistoryMonth] = useState<string | null>(null);
+  const [selectedHistoryCluster, setSelectedHistoryCluster] = useState<MarketingClusterKey>('high');
+  const [historyExportFormat, setHistoryExportFormat] = useState<'csv' | 'excel'>('csv');
+
+  const refreshHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const response = await fetch('/api/marketing-history', { cache: 'no-store' });
+      const result = (await response.json()) as {
+        success: boolean;
+        error?: string;
+        data?: { months: Array<{ month: string; label: string }>; history: MarketingHistoryEntry[] };
+      };
+      if (!response.ok || !result.success || !result.data) {
+        throw new Error(result.error || 'No pudimos obtener el histórico de marketing.');
+      }
+      const payload = result.data;
+      setHistoryMonths(payload.months);
+      setHistory(payload.history);
+      setSelectedHistoryMonth((prev) => prev ?? payload.months[0]?.month ?? null);
+    } catch (error) {
+      setHistoryError(
+        error instanceof Error ? error.message : 'No pudimos obtener el histórico de marketing.'
+      );
+      setHistoryMonths([]);
+      setHistory(null);
+      setSelectedHistoryMonth(null);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshHistory();
+  }, [refreshHistory]);
 
   useEffect(() => {
     if (activeCluster) {
@@ -5463,6 +6518,30 @@ const MarketingPanel = ({
   }, [activeCluster]);
 
   const clampZoom = (value: number) => Number(Math.min(3, Math.max(1, value)).toFixed(2));
+
+  const selectedHistoryEntry =
+    history?.find((entry) => entry.month === selectedHistoryMonth) ?? null;
+  const selectedClusterSnapshot = selectedHistoryEntry
+    ? selectedHistoryEntry.clusters[selectedHistoryCluster]
+    : null;
+
+  const handleHistoryDownload = () => {
+    if (!selectedHistoryMonth || !selectedClusterSnapshot) {
+      return;
+    }
+    const params = new URLSearchParams({
+      month: selectedHistoryMonth,
+      cluster: selectedHistoryCluster,
+      format: historyExportFormat,
+    });
+    const anchor = document.createElement('a');
+    anchor.href = `/api/marketing-history?${params.toString()}`;
+    anchor.setAttribute('target', '_blank');
+    anchor.rel = 'noopener noreferrer';
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  };
 
   const handleModalWheel = (event: WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -5474,7 +6553,7 @@ const MarketingPanel = ({
     setChartZoom((prev) => clampZoom(prev + step));
   };
 
-  const handleDownload = () => {
+  const handleChartDownload = () => {
     if (!modalSvgRef.current || !activeCluster) return;
     if (typeof window === 'undefined') {
       return;
@@ -5530,20 +6609,54 @@ const MarketingPanel = ({
   return (
     <div className="mt-4 space-y-6 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <label className="flex items-center gap-2 text-xs font-semibold">
-          Horizonte:
-          <select
-            value={selectedRange}
-            onChange={(event) => onRangeChange(event.target.value)}
-            className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] dark:border-white/10"
-          >
-            {MARKETING_RANGE_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="flex flex-wrap items-center gap-4">
+          <label className="flex items-center gap-2 text-xs font-semibold">
+            <input
+              type="checkbox"
+              checked={useRange}
+              onChange={(event) => onToggleRange(event.target.checked)}
+              className="h-4 w-4 rounded border-primary-100/70 text-primary-500 focus:ring-primary-500 dark:border-white/20"
+            />
+            Usar rango de días
+          </label>
+          <label className="flex items-center gap-2 text-xs font-semibold">
+            Mes:
+            <select
+              value={selectedMonth ?? ''}
+              onChange={(event) => onMonthChange(event.target.value || null)}
+              disabled={useRange || availableMonths.length === 0}
+              className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] disabled:opacity-60 dark:border-white/10"
+            >
+              {availableMonths.length === 0 ? (
+                <option value="">Sin meses disponibles</option>
+              ) : (
+                <>
+                  <option value="">Selecciona un mes</option>
+                  {availableMonths.map((month) => (
+                    <option key={month.month} value={month.month}>
+                      {month.label}
+                    </option>
+                  ))}
+                </>
+              )}
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-xs font-semibold">
+            Periodo:
+            <select
+              value={selectedRange}
+              onChange={(event) => onRangeChange(event.target.value)}
+              disabled={!useRange}
+              className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] disabled:opacity-60 dark:border-white/10"
+            >
+              {MARKETING_RANGE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
         <button
           type="button"
           className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline dark:text-primary-200"
@@ -5788,7 +6901,7 @@ const MarketingPanel = ({
                 <button
                   type="button"
                   className="rounded-full border border-primary-100/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.35em] text-primary-600 transition hover:bg-primary-50 dark:border-white/20 dark:text-white"
-                  onClick={handleDownload}
+                  onClick={handleChartDownload}
                 >
                   Descargar PNG
                 </button>
@@ -6305,7 +7418,7 @@ const PaymentActivity = ({ payments }: { payments: PaymentsDashboard | null }) =
           Reportes pendientes
         </p>
         {pendingReports.length === 0 ? (
-          <p className="text-sm text-[var(--brand-muted)]">Sin reportes en cola.</p>
+          <p className="text-sm text-[var(--brand-muted)]">Sin reportes en preparación.</p>
         ) : (
           <ul className="mt-2 space-y-1 text-sm">
             {pendingReports.map((report) => (
@@ -6674,7 +7787,6 @@ interface StaffUtilityDrawerProps {
   onSelect: (view: StaffPanelView) => void;
   onLogout: () => void;
   user: AuthenticatedStaff;
-  sessionDuration: string;
   hasCampaignNotifications: boolean;
 }
 
@@ -6684,7 +7796,6 @@ const StaffUtilityDrawer = ({
   onSelect,
   onLogout,
   user,
-  sessionDuration,
   hasCampaignNotifications,
 }: StaffUtilityDrawerProps) => {
   const isManager = user.role === 'gerente';
@@ -6718,7 +7829,6 @@ const StaffUtilityDrawer = ({
         </div>
       </div>
       <p className="mt-2 text-sm font-medium text-[var(--brand-text)]">{user.email}</p>
-      <p className="text-xs text-[var(--brand-muted)]">Sesión: {sessionDuration}</p>
       <div className="mt-4 flex flex-col gap-2 text-sm">
         <button
           type="button"
@@ -6860,6 +7970,7 @@ interface StaffSidePanelProps {
     benefits: BenefitsPackage;
     sessions: StaffSessionRecord[];
     prepTasks: PrepTask[];
+    history: Array<{ month: string; label: string; hours: number; days: number }>;
   };
   salary: {
     hourlyRate: number;
@@ -6880,6 +7991,7 @@ interface StaffSidePanelProps {
   isSuperUser: boolean;
   managerInventory: InventoryState;
   onInventoryChange: (category: InventoryCategoryId, itemId: string, quantity: number) => void;
+  onInventoryAccidentChange: (category: InventoryCategoryId, itemId: string, accidents: number) => void;
   onInventorySync: () => void;
   managerSalaryDraft: ManagerSalaryDraft;
   onManagerSalaryDraftChange: (patch: Partial<ManagerSalaryDraft>) => void;
@@ -6927,6 +8039,7 @@ const StaffSidePanel = ({
   isSuperUser,
   managerInventory,
   onInventoryChange,
+  onInventoryAccidentChange,
   onInventorySync,
   managerSalaryDraft,
   onManagerSalaryDraftChange,
@@ -6998,16 +8111,31 @@ const StaffSidePanel = ({
               onOpenInventory={() => onSwitchView('inventory')}
             />
           )}
-          {view === 'metrics' && <StaffMetricsPanel metrics={metrics} shiftType={shiftType} />}
+          {view === 'metrics' && (
+            <div className="space-y-4">
+              <StaffMetricsPanel metrics={metrics} shiftType={shiftType} />
+              {isManager && (
+                <ManagerPaymentsPanel
+                  payments={payments}
+                  paymentsLoading={paymentsLoading}
+                  onRefreshPayments={onRefreshPayments}
+                  orderMetrics={orderPaymentMetrics}
+                  canViewAccounting={isManager}
+                  onOpenTipsPanel={() => onSwitchView('managerTips')}
+                />
+              )}
+            </div>
+          )}
           {view === 'salary' && <StaffSalaryPanel salary={salary} shiftType={shiftType} />}
           {view === 'cleaning' && <CleaningLogPanel cleaning={cleaning} />}
           {view === 'inventory' && (
             <ManagerInventoryPanel
               inventory={managerInventory}
               onQuantityChange={onInventoryChange}
+              onAccidentChange={onInventoryAccidentChange}
               onSyncMenu={onInventorySync}
               branchName={branchName}
-              canEdit={isSocio}
+              canEdit={isSocio || isManager}
             />
           )}
           {view === 'managerSalaries' && (
@@ -7026,6 +8154,9 @@ const StaffSidePanel = ({
               viewerEmail={viewerEmail}
               orderMetrics={orderPaymentMetrics}
               showTipShare={isSocio}
+              metricsLoading={paymentsLoading}
+              onRefreshMetrics={onRefreshPayments}
+              canViewSnapshot={isSocio || isSuperUser}
             />
           )}
           {view === 'managerEmployees' && (
@@ -7044,7 +8175,8 @@ const StaffSidePanel = ({
               paymentsLoading={paymentsLoading}
               onRefreshPayments={onRefreshPayments}
               orderMetrics={orderPaymentMetrics}
-              canViewAccounting={isSocio}
+              canViewAccounting={isManager}
+              onOpenTipsPanel={() => onSwitchView('managerTips')}
             />
           )}
           {view === 'governance' && (
@@ -7128,10 +8260,6 @@ const StaffProfilePanel = ({
             </p>
           </div>
           <div>
-            <p className="text-[var(--brand-muted)]">Sesión activa</p>
-            <p className="font-semibold">{profile.sessionDuration}</p>
-          </div>
-          <div>
             <p className="text-[var(--brand-muted)]">Ingreso</p>
             <p className="font-semibold">
               {profile.startedAt ? new Date(profile.startedAt).toLocaleDateString('es-MX') : '—'}
@@ -7213,6 +8341,7 @@ const StaffMetricsPanel = ({
 }) => {
   const sessionList = metrics.sessions.slice(0, 5);
   const prepSummary = metrics.prepTasks.slice(0, 5);
+  const historyEntries = metrics.history.slice(0, 6);
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3 text-sm">
@@ -7271,7 +8400,7 @@ const StaffMetricsPanel = ({
       </div>
       <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
         <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
-          Actividad en cola de producción
+          Actividad en preparación
         </p>
         <div className="mt-3 space-y-2">
           {prepSummary.length === 0 ? (
@@ -7281,6 +8410,28 @@ const StaffMetricsPanel = ({
               <div key={task.id} className="rounded-2xl bg-white/70 px-3 py-2 dark:bg-white/10">
                 <p className="font-semibold">{task.product?.name ?? 'Producto'}</p>
                 <p className="text-xs text-[var(--brand-muted)]">{task.status.toUpperCase()}</p>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+      <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Históricos mensuales</p>
+        <div className="mt-3 space-y-2">
+          {historyEntries.length === 0 ? (
+            <p className="text-xs text-[var(--brand-muted)]">Sin registros anteriores.</p>
+          ) : (
+            historyEntries.map((entry) => (
+              <div
+                key={entry.month}
+                className="flex items-center justify-between rounded-2xl bg-white/70 px-3 py-2 dark:bg-white/10"
+              >
+                <div>
+                  <p className="font-semibold capitalize">{entry.label}</p>
+                  <p className="text-xs text-[var(--brand-muted)]">
+                    {entry.days} {entry.days === 1 ? 'día' : 'días'} · {entry.hours.toFixed(1)} h
+                  </p>
+                </div>
               </div>
             ))
           )}
@@ -7331,6 +8482,16 @@ const StaffSalaryPanel = ({
     <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
       <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Calendario</p>
       <PaidLeaveCalendar days={salary.paidLeaveCalendar} />
+    </div>
+    <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+      <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Tip-share mensual</p>
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        <MetricPill label="Propinas estimadas" value={formatCurrency(salary.tipShare)} />
+        <MetricPill label="Participación" value={`${Math.round((salary.benefits.tipSharePercent ?? 0) * 100)}%`} />
+      </div>
+      <p className="mt-3 text-xs text-[var(--brand-muted)]">
+        El reparto se actualiza con cada corte diario y refleja tu porcentaje asignado por tipo de turno.
+      </p>
     </div>
   </div>
 );
@@ -7412,6 +8573,7 @@ const CleaningLogPanel = ({ cleaning }: { cleaning: StaffSidePanelProps['cleanin
 interface ManagerInventoryPanelProps {
   inventory: InventoryState;
   onQuantityChange: (category: InventoryCategoryId, itemId: string, quantity: number) => void;
+  onAccidentChange: (category: InventoryCategoryId, itemId: string, accidents: number) => void;
   onSyncMenu: () => void;
   branchName: string;
   canEdit: boolean;
@@ -7430,11 +8592,14 @@ const INVENTORY_CATEGORY_META: Record<
 const ManagerInventoryPanel = ({
   inventory,
   onQuantityChange,
+  onAccidentChange,
   onSyncMenu,
   branchName,
   canEdit,
 }: ManagerInventoryPanelProps) => {
-  const [editing, setEditing] = useState<{ category: InventoryCategoryId; id: string } | null>(null);
+  const [editing, setEditing] = useState<
+    { category: InventoryCategoryId; id: string; field: 'quantity' | 'accidents' } | null
+  >(null);
   const [draftValue, setDraftValue] = useState('');
   const [categoryEditing, setCategoryEditing] = useState<Record<InventoryCategoryId, boolean>>({
     foods: false,
@@ -7450,15 +8615,25 @@ const ManagerInventoryPanel = ({
     }
   }, [canEdit]);
 
-  const startEditing = (category: InventoryCategoryId, item: InventoryItem) => {
-    setEditing({ category, id: item.id });
-    setDraftValue(String(item.quantity));
+  const startEditing = (
+    category: InventoryCategoryId,
+    item: InventoryEntry,
+    field: 'quantity' | 'accidents'
+  ) => {
+    setEditing({ category, id: item.id, field });
+    const baseline = field === 'accidents' ? item.accidents ?? 0 : item.quantity ?? 0;
+    setDraftValue(String(baseline));
   };
 
   const handleSave = () => {
     if (!editing) return;
     const numericValue = Number.parseInt(draftValue, 10);
-    onQuantityChange(editing.category, editing.id, Number.isFinite(numericValue) ? numericValue : 0);
+    const value = Number.isFinite(numericValue) ? numericValue : 0;
+    if (editing.field === 'accidents') {
+      onAccidentChange(editing.category, editing.id, value);
+    } else {
+      onQuantityChange(editing.category, editing.id, value);
+    }
     setEditing(null);
   };
 
@@ -7519,7 +8694,11 @@ const ManagerInventoryPanel = ({
                 <p className="py-2 text-xs text-[var(--brand-muted)]">Sin insumos sincronizados.</p>
               ) : (
                 items.map((item) => {
-                  const isEditing = isCategoryEditing && editing?.category === category && editing.id === item.id;
+                  const isEditing =
+                    isCategoryEditing &&
+                    editing?.category === category &&
+                    editing.id === item.id;
+                  const editingField = editing?.field ?? 'quantity';
                   return (
                     <div key={item.id} className="flex items-center gap-3 py-2">
                       <div className="w-16 text-center font-mono text-lg font-semibold text-primary-600 dark:text-primary-200">
@@ -7529,6 +8708,9 @@ const ManagerInventoryPanel = ({
                         <p className="font-semibold">{item.name}</p>
                         <p className="text-xs text-[var(--brand-muted)]">Sucursal: {branchName}</p>
                         {item.unit && <p className="text-xs text-[var(--brand-muted)]">Unidad: {item.unit}</p>}
+                        <p className="text-xs text-[var(--brand-muted)]">
+                          Accidentes registrados: {item.accidents ?? 0}
+                        </p>
                       </div>
                       {isEditing ? (
                         <div className="flex items-center gap-2">
@@ -7543,7 +8725,7 @@ const ManagerInventoryPanel = ({
                             className="rounded-xl bg-primary-600 px-3 py-1 text-xs font-semibold text-white"
                             onClick={handleSave}
                           >
-                            Guardar
+                            Guardar {editingField === 'accidents' ? 'accidentes' : 'cantidad'}
                           </button>
                           <button
                             type="button"
@@ -7554,20 +8736,38 @@ const ManagerInventoryPanel = ({
                           </button>
                         </div>
                       ) : (
-                        <button
-                          type="button"
-                          className={`rounded-full border px-3 py-1 text-xs font-semibold ${
-                            isCategoryEditing && canEdit
-                              ? 'border-primary-300 text-primary-600'
-                              : 'border-primary-100/60 text-[var(--brand-muted)]'
-                          }`}
-                          onClick={() => {
-                            if (!canEdit || !isCategoryEditing) return;
-                            startEditing(category, item);
-                          }}
-                        >
-                          ✎
-                        </button>
+                        <div className="flex flex-col items-end gap-1 text-xs">
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                                isCategoryEditing && canEdit
+                                  ? 'border-primary-300 text-primary-600'
+                                  : 'border-primary-100/60 text-[var(--brand-muted)]'
+                              }`}
+                              onClick={() => {
+                                if (!canEdit || !isCategoryEditing) return;
+                                startEditing(category, item, 'quantity');
+                              }}
+                            >
+                              ✎ Cantidad
+                            </button>
+                            <button
+                              type="button"
+                              className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                                isCategoryEditing && canEdit
+                                  ? 'border-rose-300 text-rose-600'
+                                  : 'border-primary-100/60 text-[var(--brand-muted)]'
+                              }`}
+                              onClick={() => {
+                                if (!canEdit || !isCategoryEditing) return;
+                                startEditing(category, item, 'accidents');
+                              }}
+                            >
+                              Accidentes
+                            </button>
+                          </div>
+                        </div>
                       )}
                     </div>
                   );
@@ -7654,6 +8854,9 @@ interface ManagerTipsPanelProps {
   viewerEmail: string;
   orderMetrics?: OrderPaymentMetricsSummary | null;
   showTipShare?: boolean;
+  metricsLoading?: boolean;
+  onRefreshMetrics?: () => Promise<void> | void;
+  canViewSnapshot?: boolean;
 }
 
 const ManagerTipsPanel = ({
@@ -7664,13 +8867,16 @@ const ManagerTipsPanel = ({
   viewerEmail,
   orderMetrics,
   showTipShare = false,
+  metricsLoading = false,
+  onRefreshMetrics,
+  canViewSnapshot = false,
 }: ManagerTipsPanelProps) => {
   const [decryptedSnapshot, setDecryptedSnapshot] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
-      if (!viewerEmail || Object.keys(encryptedSnapshot).length === 0) {
+      if (!canViewSnapshot || !viewerEmail || Object.keys(encryptedSnapshot).length === 0) {
         setDecryptedSnapshot({});
         return;
       }
@@ -7694,7 +8900,7 @@ const ManagerTipsPanel = ({
     return () => {
       cancelled = true;
     };
-  }, [encryptedSnapshot, viewerEmail]);
+  }, [canViewSnapshot, encryptedSnapshot, viewerEmail]);
 
   const hasSnapshot = Object.keys(encryptedSnapshot).length > 0;
   const detectedTips = orderMetrics?.tips24h ?? payments?.totalTips ?? 0;
@@ -7705,89 +8911,111 @@ const ManagerTipsPanel = ({
     barista: monthlyTips * 0.4,
     manager: monthlyTips * 0.6,
   };
+  const hasTipData =
+    (orderMetrics?.hasData ?? false) ||
+    detectedTips > 0 ||
+    monthlyTips > 0 ||
+    (payments?.payments?.length ?? 0) > 0;
 
   return (
     <div className="space-y-4 text-sm">
-    <p className="text-[var(--brand-muted)]">
-      Ajusta el fondo de propinas manualmente y deja constancia para tu corte. Usa el reporte automático como referencia.
-    </p>
-    <div className="grid gap-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5 sm:grid-cols-2">
-      <div>
-        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Propinas detectadas</p>
-        <p className="text-2xl font-semibold">{formatCurrency(detectedTips)}</p>
-        <p className="text-xs text-[var(--brand-muted)]">Últimas 24h</p>
-      </div>
-      <div>
-        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Fondo manual</p>
-        <p className="text-2xl font-semibold text-primary-700">
-          {formatCurrency((draft.pool ?? 0) + (draft.manualAdjustment ?? 0))}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[var(--brand-muted)]">
+          Ajusta el fondo de propinas manualmente y deja constancia para tu corte. Los ajustes se cifran
+          con AES-GCM al cierre.
         </p>
+        <button
+          type="button"
+          onClick={() => onRefreshMetrics && onRefreshMetrics()}
+          disabled={metricsLoading}
+          className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline disabled:opacity-50 dark:text-primary-200"
+        >
+          {metricsLoading ? 'Actualizando…' : 'Actualizar reporte'}
+        </button>
+      </div>
+      <div className="grid gap-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5 sm:grid-cols-2">
+        {metricsLoading ? (
+          <>
+            <div className="h-24 rounded-2xl bg-primary-50/70 animate-pulse dark:bg-white/10" />
+            <div className="h-24 rounded-2xl bg-primary-50/70 animate-pulse dark:bg-white/10" />
+          </>
+        ) : (
+          <>
+            <div>
+              <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Propinas detectadas</p>
+              <p className="text-2xl font-semibold">{formatCurrency(detectedTips)}</p>
+              <p className="text-xs text-[var(--brand-muted)]">Últimas 24h</p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Fondo manual</p>
+              <p className="text-2xl font-semibold text-primary-700">
+                {formatCurrency((draft.pool ?? 0) + (draft.manualAdjustment ?? 0))}
+              </p>
+              <p className="text-xs text-[var(--brand-muted)]">
+                {draft.lastModified
+                  ? `Actualizado ${new Date(draft.lastModified).toLocaleString('es-MX')}`
+                  : 'Sin cambios recientes'}
+              </p>
+            </div>
+          </>
+        )}
+      </div>
+      {!metricsLoading && !hasTipData && (
         <p className="text-xs text-[var(--brand-muted)]">
-          {draft.lastModified ? `Actualizado ${new Date(draft.lastModified).toLocaleString('es-MX')}` : 'Sin cambios recientes'}
+          Sin pagos con propina recientes. Captura pedidos o vuelve a sincronizar más tarde.
         </p>
-      </div>
-    </div>
-    {showTipShare && (
-      <div className="grid gap-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5 sm:grid-cols-2">
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Baristas (40%)</p>
-          <p className="text-2xl font-semibold text-primary-700">{formatCurrency(monthlyTipShare.barista)}</p>
-          <p className="text-xs text-[var(--brand-muted)]">Mes actual</p>
+      )}
+      {showTipShare && (
+        <div className="grid gap-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5 sm:grid-cols-2">
+          <div>
+            <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Baristas (40%)</p>
+            <p className="text-2xl font-semibold text-primary-700">{formatCurrency(monthlyTipShare.barista)}</p>
+            <p className="text-xs text-[var(--brand-muted)]">Mes actual</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Gerentes (60%)</p>
+            <p className="text-2xl font-semibold text-primary-700">{formatCurrency(monthlyTipShare.manager)}</p>
+            <p className="text-xs text-[var(--brand-muted)]">Mes actual</p>
+          </div>
         </div>
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Gerentes (60%)</p>
-          <p className="text-2xl font-semibold text-primary-700">{formatCurrency(monthlyTipShare.manager)}</p>
-          <p className="text-xs text-[var(--brand-muted)]">Mes actual</p>
-        </div>
-      </div>
-    )}
-    {showTipShare && (
-      <div className="grid gap-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5 sm:grid-cols-2">
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Baristas (40%)</p>
-          <p className="text-2xl font-semibold text-primary-700">{formatCurrency(monthlyTipShare.barista)}</p>
-          <p className="text-xs text-[var(--brand-muted)]">Mes actual</p>
-        </div>
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Gerentes (60%)</p>
-          <p className="text-2xl font-semibold text-primary-700">{formatCurrency(monthlyTipShare.manager)}</p>
-          <p className="text-xs text-[var(--brand-muted)]">Mes actual</p>
-        </div>
-      </div>
-    )}
-    <label className="space-y-1">
-      <span className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Fondo base</span>
-      <input
-        type="number"
-        value={draft.pool}
-        min={0}
-        onChange={(event) => onChange({ pool: Number(event.target.value) || 0 })}
-        className="w-full rounded-2xl border border-primary-100/70 bg-white px-3 py-2 focus:border-primary-400 focus:outline-none dark:border-white/10 dark:bg-white/5"
-      />
-    </label>
-    <label className="space-y-1">
-      <span className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Ajuste manual</span>
-      <input
-        type="number"
-        value={draft.manualAdjustment}
-        onChange={(event) => onChange({ manualAdjustment: Number(event.target.value) || 0 })}
-        className="w-full rounded-2xl border border-primary-100/70 bg-white px-3 py-2 focus:border-primary-400 focus:outline-none dark:border-white/10 dark:bg-white/5"
-      />
-    </label>
-    <label className="space-y-1">
-      <span className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Notas de reparto</span>
-      <textarea
-        rows={3}
-        value={draft.distributionNote}
-        onChange={(event) => onChange({ distributionNote: event.target.value })}
-        className="w-full rounded-2xl border border-primary-100/70 bg-white px-3 py-2 focus:border-primary-400 focus:outline-none dark:border-white/10 dark:bg-white/5"
-      />
-    </label>
+      )}
+      <label className="space-y-1">
+        <span className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Fondo base</span>
+        <input
+          type="number"
+          value={draft.pool}
+          min={0}
+          onChange={(event) => onChange({ pool: Number(event.target.value) || 0 })}
+          className="w-full rounded-2xl border border-primary-100/70 bg-white px-3 py-2 focus:border-primary-400 focus:outline-none dark:border-white/10 dark:bg-white/5"
+        />
+      </label>
+      <label className="space-y-1">
+        <span className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Ajuste manual</span>
+        <input
+          type="number"
+          value={draft.manualAdjustment}
+          onChange={(event) => onChange({ manualAdjustment: Number(event.target.value) || 0 })}
+          className="w-full rounded-2xl border border-primary-100/70 bg-white px-3 py-2 focus:border-primary-400 focus:outline-none dark:border-white/10 dark:bg-white/5"
+        />
+      </label>
+      <label className="space-y-1">
+        <span className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Notas de reparto</span>
+        <textarea
+          rows={3}
+          value={draft.distributionNote}
+          onChange={(event) => onChange({ distributionNote: event.target.value })}
+          className="w-full rounded-2xl border border-primary-100/70 bg-white px-3 py-2 focus:border-primary-400 focus:outline-none dark:border-white/10 dark:bg-white/5"
+        />
+      </label>
       <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-xs dark:border-white/10 dark:bg-white/5">
         <p className="uppercase tracking-[0.3em] text-[var(--brand-muted)]">Campos cifrados AES-GCM</p>
-        {!hasSnapshot ? (
+        {!canViewSnapshot ? (
           <p className="mt-2 text-[var(--brand-muted)]">
-            Inicia sesión como socio o super usuario para generar/leer el snapshot con la llave {viewerEmail}.
+            Solo socios y super usuarios pueden revisar el snapshot cifrado vinculado a {viewerEmail}.
+          </p>
+        ) : !hasSnapshot ? (
+          <p className="mt-2 text-[var(--brand-muted)]">
+            Inicia sesión como socio o captura ajustes para generar el snapshot cifrado.
           </p>
         ) : (
           <>
@@ -7964,6 +9192,7 @@ interface ManagerPaymentsPanelProps {
   onRefreshPayments: () => Promise<void>;
   orderMetrics?: OrderPaymentMetricsSummary | null;
   canViewAccounting?: boolean;
+  onOpenTipsPanel?: () => void;
 }
 
 const ManagerPaymentsPanel = ({
@@ -7972,6 +9201,7 @@ const ManagerPaymentsPanel = ({
   onRefreshPayments,
   orderMetrics,
   canViewAccounting,
+  onOpenTipsPanel,
 }: ManagerPaymentsPanelProps) => {
   const preferOrders = Boolean(canViewAccounting && orderMetrics?.hasData);
   const [showLedgerModal, setShowLedgerModal] = useState(false);
@@ -7995,119 +9225,175 @@ const ManagerPaymentsPanel = ({
   const methodBreakdown = preferOrders
     ? orderMetrics?.methodTotals ?? []
     : payments?.methodBreakdown ?? [];
-  const ledgerEntries = preferOrders ? orderMetrics?.entries ?? [] : [];
+  const fallbackLedgerEntries = (payments?.payments ?? []).map((payment) => {
+    const method = (payment.method ?? 'otro').toLowerCase();
+    return {
+      id: payment.id,
+      date: payment.createdAt ?? payment.updatedAt ?? new Date().toISOString(),
+      reference: payment.ticketId ?? payment.orderId ?? payment.id,
+      paymentMethod: method,
+      debitAccount: paymentMethodAccount(method),
+      creditAccount: 'Ventas cafetería',
+      amount: payment.amount ?? 0,
+      tipAmount: payment.tipAmount ?? 0,
+    };
+  });
+  const ledgerEntries = preferOrders ? orderMetrics?.entries ?? [] : fallbackLedgerEntries;
+  const hasAnyData =
+    sales24h > 0 || tips24h > 0 || monthlyTips > 0 || methodBreakdown.length > 0 || ledgerEntries.length > 0;
 
   return (
     <div className="space-y-4 text-sm">
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <p className="text-[var(--brand-muted)]">Resumen rápido de pagos y propinas para cortes diarios.</p>
-      <button
-        type="button"
-        onClick={() => void onRefreshPayments()}
-        className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline dark:text-primary-200"
-      >
-        Actualizar pagos
-      </button>
-    </div>
-    {paymentsLoading && <p className="text-xs text-[var(--brand-muted)]">Sincronizando datos…</p>}
-    <div className="grid gap-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5 sm:grid-cols-2 lg:grid-cols-3">
-      <div>
-        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Ventas (24h)</p>
-        <p className="text-2xl font-semibold">{formatCurrency(sales24h)}</p>
-        <p className="text-xs text-[var(--brand-muted)]">{salesDescription}</p>
-      </div>
-      <div>
-        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Propinas (24h)</p>
-        <p className="text-2xl font-semibold">{formatCurrency(tips24h)}</p>
-        <p className="text-xs text-[var(--brand-muted)]">{tipsDescription}</p>
-      </div>
-      <div>
-        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Propinas del mes</p>
-        <p className="text-2xl font-semibold">{formatCurrency(monthlyTips)}</p>
-        <p className="text-xs text-[var(--brand-muted)]">Desde {monthStartLabel} · reinicia cada mes</p>
-      </div>
-    </div>
-    <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
-      <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Métodos</p>
-      <div className="mt-3 space-y-2">
-        {methodBreakdown.length > 0 ? (
-          methodBreakdown.map((entry) => (
-            <div
-              key={entry.method}
-              className="flex items-center justify-between rounded-2xl border border-primary-50/80 px-3 py-2 text-xs dark:border-white/10"
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[var(--brand-muted)]">Resumen rápido de pagos y propinas para cortes diarios.</p>
+        <div className="flex items-center gap-2">
+          {onOpenTipsPanel && (
+            <button
+              type="button"
+              onClick={onOpenTipsPanel}
+              className="rounded-full border border-primary-200 px-3 py-1 text-[11px] font-semibold text-primary-600 hover:border-primary-300 dark:border-white/20 dark:text-primary-100"
             >
-              <span className="capitalize">{entry.method}</span>
-              <span className="font-semibold">{formatCurrency(entry.amount)}</span>
-            </div>
-          ))
-        ) : (
-          <p className="text-xs text-[var(--brand-muted)]">Sin pagos registrados.</p>
-        )}
-      </div>
-    </div>
-    {canViewAccounting && ledgerEntries.length > 0 && (
-      <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-xs dark:border-white/10 dark:bg-white/5">
-        <div className="flex items-center justify-between">
-          <p className="uppercase tracking-[0.3em] text-[var(--brand-muted)]">Libro mayor</p>
+              Ver reparto
+            </button>
+          )}
           <button
             type="button"
-            className="text-[var(--brand-muted)] underline-offset-4 hover:underline"
-            onClick={() => setShowLedgerModal(true)}
+            onClick={() => void onRefreshPayments()}
+            className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline disabled:opacity-50 dark:text-primary-200"
+            disabled={paymentsLoading}
           >
-            Ver todo
+            {paymentsLoading ? 'Sincronizando…' : 'Actualizar pagos'}
           </button>
         </div>
-        <div className="mt-3 space-y-2">
-          {ledgerEntries.slice(0, 3).map((entry) => (
-            <div key={entry.id} className="rounded-2xl border border-primary-50/80 px-3 py-2 dark:border-white/10">
-              <div className="flex items-center justify-between text-sm">
-                <span className="font-semibold">{formatCurrency(entry.amount)}</span>
-                <span className="text-[var(--brand-muted)]">
-                  {new Date(entry.date).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })}
-                </span>
-              </div>
-              <p className="text-[var(--brand-muted)]">Ticket {entry.reference}</p>
-              <p className="text-[var(--brand-muted)]">
-                Debe: {entry.debitAccount} · Haber: {entry.creditAccount}
-              </p>
-              {entry.tipAmount > 0 && (
-                <p className="text-[var(--brand-muted)]">Propina ligada: {formatCurrency(entry.tipAmount)}</p>
-              )}
-            </div>
-          ))}
-        </div>
       </div>
-    )}
-    {canViewAccounting && showLedgerModal && (
-      <HistoryModalShell onClose={() => setShowLedgerModal(false)}>
-        <LedgerEntriesModal entries={ledgerEntries} onClose={() => setShowLedgerModal(false)} />
-      </HistoryModalShell>
-    )}
-    {canViewAccounting && showLedgerModal && (
-      <HistoryModalShell onClose={() => setShowLedgerModal(false)}>
-        <LedgerEntriesModal entries={ledgerEntries} onClose={() => setShowLedgerModal(false)} />
-      </HistoryModalShell>
-    )}
-    <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
-      <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Últimos pagos</p>
-      <div className="mt-3 space-y-2">
-        {(payments?.payments ?? []).slice(0, 5).map((payment) => (
-          <div key={payment.id} className="rounded-2xl border border-primary-50/80 px-3 py-2 text-xs dark:border-white/10">
-            <div className="flex items-center justify-between">
-              <p className="font-semibold">{formatCurrency(payment.amount ?? 0)}</p>
-              <span className="uppercase tracking-[0.2em] text-[var(--brand-muted)]">{payment.method ?? 'otro'}</span>
+      <div className="grid gap-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5 sm:grid-cols-2 lg:grid-cols-3">
+        {paymentsLoading ? (
+          Array.from({ length: 3 }).map((_, index) => (
+            <div key={`payments-card-skeleton-${index}`} className="h-24 rounded-2xl bg-primary-50/70 animate-pulse dark:bg-white/10" />
+          ))
+        ) : (
+          <>
+            <div>
+              <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Ventas (24h)</p>
+              <p className="text-2xl font-semibold">{formatCurrency(sales24h)}</p>
+              <p className="text-xs text-[var(--brand-muted)]">{salesDescription}</p>
             </div>
-            <p className="text-[var(--brand-muted)]">
-              {payment.createdAt ? new Date(payment.createdAt).toLocaleString('es-MX') : '—'} · Ticket{' '}
-              {payment.ticketId ?? payment.orderId ?? '—'}
-            </p>
-          </div>
-        ))}
-        {(payments?.payments?.length ?? 0) === 0 && (
-          <p className="text-xs text-[var(--brand-muted)]">Sin pagos disponibles.</p>
+            <div>
+              <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Propinas (24h)</p>
+              <p className="text-2xl font-semibold">{formatCurrency(tips24h)}</p>
+              <p className="text-xs text-[var(--brand-muted)]">{tipsDescription}</p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Propinas del mes</p>
+              <p className="text-2xl font-semibold">{formatCurrency(monthlyTips)}</p>
+              <p className="text-xs text-[var(--brand-muted)]">Desde {monthStartLabel} · reinicia cada mes</p>
+            </div>
+          </>
         )}
       </div>
-    </div>
+      {!paymentsLoading && !hasAnyData && (
+        <p className="text-xs text-[var(--brand-muted)]">Aún no registras pagos en este periodo.</p>
+      )}
+      <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
+        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Métodos</p>
+        <div className="mt-3 space-y-2">
+          {paymentsLoading ? (
+            Array.from({ length: 3 }).map((_, index) => (
+              <div
+                key={`method-skeleton-${index}`}
+                className="h-10 rounded-2xl border border-primary-50/80 bg-primary-50/40 animate-pulse dark:border-white/10 dark:bg-white/10"
+              />
+            ))
+          ) : methodBreakdown.length > 0 ? (
+            methodBreakdown.map((entry) => (
+              <div
+                key={entry.method}
+                className="flex items-center justify-between rounded-2xl border border-primary-50/80 px-3 py-2 text-xs dark:border-white/10"
+              >
+                <span className="capitalize">{getPaymentMethodLabel(entry.method)}</span>
+                <span className="font-semibold">{formatCurrency(entry.amount)}</span>
+              </div>
+            ))
+          ) : (
+            <p className="text-xs text-[var(--brand-muted)]">Sin pagos registrados.</p>
+          )}
+        </div>
+      </div>
+      {canViewAccounting && (
+        <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-xs dark:border-white/10 dark:bg-white/5">
+          <div className="flex items-center justify-between">
+            <p className="uppercase tracking-[0.3em] text-[var(--brand-muted)]">Libro mayor</p>
+            <button
+              type="button"
+              className="text-[var(--brand-muted)] underline-offset-4 hover:underline disabled:opacity-40"
+              onClick={() => setShowLedgerModal(true)}
+              disabled={ledgerEntries.length === 0}
+            >
+              Ver todo
+            </button>
+          </div>
+          <div className="mt-3 space-y-2">
+            {paymentsLoading ? (
+              Array.from({ length: 3 }).map((_, index) => (
+                <div key={`ledger-skeleton-${index}`} className="h-16 rounded-2xl border border-primary-50/80 bg-primary-50/40 animate-pulse dark:border-white/10 dark:bg-white/10" />
+              ))
+            ) : ledgerEntries.length > 0 ? (
+              ledgerEntries.slice(0, 3).map((entry) => (
+                <div key={entry.id} className="rounded-2xl border border-primary-50/80 px-3 py-2 dark:border-white/10">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-semibold">{formatCurrency(entry.amount)}</span>
+                    <span className="text-[var(--brand-muted)]">
+                      {new Date(entry.date).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })}
+                    </span>
+                  </div>
+                  <p className="text-[var(--brand-muted)]">Ticket {entry.reference}</p>
+                  <p className="text-[var(--brand-muted)]">
+                    Debe: {entry.debitAccount} · Haber: {entry.creditAccount}
+                  </p>
+                  {entry.tipAmount > 0 && (
+                    <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-primary-50 px-2 py-0.5 text-[10px] font-semibold text-primary-700 dark:bg-primary-900/30 dark:text-primary-100">
+                      Propina ligada {formatCurrency(entry.tipAmount)}
+                    </span>
+                  )}
+                </div>
+              ))
+            ) : (
+              <p className="text-[var(--brand-muted)]">Aún no hay asientos de corte.</p>
+            )}
+          </div>
+        </div>
+      )}
+      {canViewAccounting && showLedgerModal && (
+        <HistoryModalShell onClose={() => setShowLedgerModal(false)}>
+          <LedgerEntriesModal entries={ledgerEntries} onClose={() => setShowLedgerModal(false)} />
+        </HistoryModalShell>
+      )}
+      <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
+        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Últimos pagos</p>
+        <div className="mt-3 space-y-2">
+          {paymentsLoading ? (
+            Array.from({ length: 4 }).map((_, index) => (
+              <div key={`payment-skeleton-${index}`} className="h-14 rounded-2xl border border-primary-50/80 bg-primary-50/40 animate-pulse dark:border-white/10 dark:bg-white/10" />
+            ))
+          ) : (payments?.payments ?? []).slice(0, 5).map((payment) => (
+            <div key={payment.id} className="rounded-2xl border border-primary-50/80 px-3 py-2 text-xs dark:border-white/10">
+              <div className="flex items-center justify-between">
+                <p className="font-semibold">{formatCurrency(payment.amount ?? 0)}</p>
+                <span className="uppercase tracking-[0.2em] text-[var(--brand-muted)]">
+                  {payment.method ? getPaymentMethodLabel(payment.method) : 'otro'}
+                </span>
+              </div>
+              <p className="text-[var(--brand-muted)]">
+                {payment.createdAt ? new Date(payment.createdAt).toLocaleString('es-MX') : '—'} · Ticket{' '}
+                {payment.ticketId ?? payment.orderId ?? '—'}
+              </p>
+            </div>
+          ))}
+          {!paymentsLoading && (payments?.payments?.length ?? 0) === 0 && (
+            <p className="text-xs text-[var(--brand-muted)]">Sin pagos disponibles.</p>
+          )}
+        </div>
+      </div>
     </div>
   );
 };
@@ -8414,7 +9700,9 @@ const formatSessionDuration = (seconds: number) => {
   return `${hrs}:${mins}:${secs}`;
 };
 
-const resolveSessionDurationSeconds = (session: StaffSessionRecord, referenceTimestamp = Date.now()) => {
+type SessionDurationSource = Pick<StaffSessionRecord, 'sessionStart' | 'sessionEnd' | 'durationSeconds'>;
+
+const resolveSessionDurationSeconds = (session: SessionDurationSource, referenceTimestamp = Date.now()) => {
   if (typeof session.durationSeconds === 'number' && Number.isFinite(session.durationSeconds)) {
     return Math.max(0, Math.floor(session.durationSeconds));
   }

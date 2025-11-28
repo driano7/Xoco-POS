@@ -4,11 +4,14 @@ import { useSyncExternalStore } from 'react';
 
 export type CartItem = {
   productId: string;
+  variantId: string;
   name: string;
   price: number;
   quantity: number;
   category?: string | null;
   subcategory?: string | null;
+  sizeId?: string | null;
+  sizeLabel?: string | null;
 };
 
 type CartState = {
@@ -20,9 +23,9 @@ type CartSnapshot = CartState & {
   subtotal: number;
   total: number;
   addItem: (item: CartItem) => void;
-  increment: (productId: string) => void;
-  decrement: (productId: string) => void;
-  removeItem: (productId: string) => void;
+  increment: (variantId: string) => void;
+  decrement: (variantId: string) => void;
+  removeItem: (variantId: string) => void;
   clearCart: () => void;
 };
 
@@ -36,6 +39,9 @@ const clampQuantity = (value: number) => {
   return Math.min(99, Math.max(1, Math.round(value)));
 };
 
+const getItemKey = (variantId?: string | null, fallback?: string) =>
+  (variantId && variantId.trim()) || fallback || '';
+
 const getTotals = (items: CartItem[]) =>
   items.reduce(
     (acc, item) => {
@@ -48,7 +54,10 @@ const getTotals = (items: CartItem[]) =>
 
 export const addItem = (item: CartItem) => {
   setState((prev) => {
-    const existingIndex = prev.items.findIndex((entry) => entry.productId === item.productId);
+    const key = getItemKey(item.variantId, item.productId);
+    const existingIndex = prev.items.findIndex(
+      (entry) => getItemKey(entry.variantId, entry.productId) === key
+    );
     if (existingIndex >= 0) {
       const next = [...prev.items];
       const existing = next[existingIndex];
@@ -58,25 +67,30 @@ export const addItem = (item: CartItem) => {
       };
       return { items: next };
     }
-    return { items: [...prev.items, { ...item, quantity: clampQuantity(item.quantity) }] };
+    return {
+      items: [
+        ...prev.items,
+        { ...item, variantId: key, quantity: clampQuantity(item.quantity) },
+      ],
+    };
   });
 };
 
-export const increment = (productId: string) => {
+export const increment = (variantId: string) => {
   setState((prev) => ({
     items: prev.items.map((item) =>
-      item.productId === productId
+      getItemKey(item.variantId, item.productId) === variantId
         ? { ...item, quantity: clampQuantity(item.quantity + 1) }
         : item
     ),
   }));
 };
 
-export const decrement = (productId: string) => {
+export const decrement = (variantId: string) => {
   setState((prev) => ({
     items: prev.items
       .map((item) =>
-        item.productId === productId
+        getItemKey(item.variantId, item.productId) === variantId
           ? { ...item, quantity: clampQuantity(item.quantity - 1) }
           : item
       )
@@ -84,8 +98,10 @@ export const decrement = (productId: string) => {
   }));
 };
 
-export const removeItem = (productId: string) => {
-  setState((prev) => ({ items: prev.items.filter((item) => item.productId !== productId) }));
+export const removeItem = (variantId: string) => {
+  setState((prev) => ({
+    items: prev.items.filter((item) => getItemKey(item.variantId, item.productId) !== variantId),
+  }));
 };
 
 export const clearCart = () => {

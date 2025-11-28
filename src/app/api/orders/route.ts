@@ -23,47 +23,64 @@ const PUBLIC_SALE_USER_ID =
   sanitizeEnv(process.env.NEXT_PUBLIC_PUBLIC_SALE_USER_ID) ??
   PUBLIC_SALE_CLIENT_ID;
 
+let publicSaleUserEnsured = false;
+let ensuringPublicSaleUserPromise: Promise<void> | null = null;
+
 const ensurePublicSaleUser = async () => {
-  if (!PUBLIC_SALE_USER_ID) {
+  if (!PUBLIC_SALE_USER_ID || publicSaleUserEnsured) {
+    return;
+  }
+  if (ensuringPublicSaleUserPromise) {
+    await ensuringPublicSaleUserPromise;
     return;
   }
 
-  const identifier = PUBLIC_SALE_CLIENT_ID ?? PUBLIC_SALE_USER_ID;
+  ensuringPublicSaleUserPromise = (async () => {
+    const identifier = PUBLIC_SALE_CLIENT_ID ?? PUBLIC_SALE_USER_ID;
 
-  const { data: existing, error } = await supabaseAdmin
-    .from(USERS_TABLE)
-    .select('id')
-    .or(`id.eq.${PUBLIC_SALE_USER_ID},"clientId".eq.${identifier}`)
-    .limit(1)
-    .maybeSingle();
+    const { data: existing, error } = await supabaseAdmin
+      .from(USERS_TABLE)
+      .select('id')
+      .or(`id.eq.${PUBLIC_SALE_USER_ID},"clientId".eq.${identifier}`)
+      .limit(1)
+      .maybeSingle();
 
-  if (existing) {
-    return;
-  }
+    if (existing) {
+      publicSaleUserEnsured = true;
+      return;
+    }
 
-  if (error && error.code !== 'PGRST116') {
-    throw new Error(`Failed to verify public sale user: ${error.message}`);
-  }
+    if (error && error.code !== 'PGRST116') {
+      throw new Error(`Failed to verify public sale user: ${error.message}`);
+    }
 
-  const email =
-    process.env.SUPABASE_PUBLIC_SALE_EMAIL ??
-    'venta-publico@xoco-pos.local';
+    const email =
+      process.env.SUPABASE_PUBLIC_SALE_EMAIL ??
+      'venta-publico@xoco-pos.local';
 
-  const insertPayload: Record<string, string> = {
-    id: PUBLIC_SALE_USER_ID,
-    clientId: identifier,
-  };
+    const insertPayload: Record<string, string> = {
+      id: PUBLIC_SALE_USER_ID,
+      clientId: identifier,
+    };
 
-  if (email) {
-    insertPayload.email = email;
-  }
+    if (email) {
+      insertPayload.email = email;
+    }
 
-  const { error: insertError } = await supabaseAdmin.from(USERS_TABLE).upsert(insertPayload, {
-    onConflict: 'id',
-  });
+    const { error: insertError } = await supabaseAdmin.from(USERS_TABLE).upsert(insertPayload, {
+      onConflict: 'id',
+    });
 
-  if (insertError) {
-    throw new Error(`Failed to upsert public sale user: ${insertError.message}`);
+    if (insertError) {
+      throw new Error(`Failed to upsert public sale user: ${insertError.message}`);
+    }
+    publicSaleUserEnsured = true;
+  })();
+
+  try {
+    await ensuringPublicSaleUserPromise;
+  } finally {
+    ensuringPublicSaleUserPromise = null;
   }
 };
 const MAX_RESULTS = Number(process.env.ORDERS_LIMIT ?? 100);
@@ -117,6 +134,14 @@ const collectProductIds = (rawItems: unknown, target: Set<string>) => {
   });
 };
 
+const toTrimmedString = (value: unknown) => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  return null;
+};
+
 const mapOrderItems = (rawItems: unknown, productMap?: Map<string, ProductRecord>) => {
   const items = Array.isArray(rawItems) ? rawItems : [];
   return items.map((item) => {
@@ -133,6 +158,29 @@ const mapOrderItems = (rawItems: unknown, productMap?: Map<string, ProductRecord
       subcategory: typeof item?.subcategory === 'string' ? item.subcategory : null,
     };
 
+    const sizeId =
+      toTrimmedString(item?.sizeId) ??
+      toTrimmedString(item?.size_id) ??
+      toTrimmedString(item?.size);
+    const sizeLabel =
+      toTrimmedString(item?.sizeLabel) ??
+      toTrimmedString(item?.size_label) ??
+      toTrimmedString(item?.sizeName) ??
+      toTrimmedString(item?.size);
+    const packageId =
+      toTrimmedString(item?.packageId) ??
+      toTrimmedString(item?.package_id) ??
+      toTrimmedString(item?.bundleId) ??
+      toTrimmedString(item?.package);
+    const packageName =
+      toTrimmedString(item?.packageName) ??
+      toTrimmedString(item?.package_name) ??
+      toTrimmedString(item?.bundleName);
+    const metadata =
+      item?.metadata && typeof item.metadata === 'object'
+        ? (item.metadata as Record<string, unknown>)
+        : null;
+
     const productDetails =
       item?.product ??
       (normalizedProductId ? productMap?.get(normalizedProductId) ?? null : null);
@@ -145,6 +193,11 @@ const mapOrderItems = (rawItems: unknown, productMap?: Map<string, ProductRecord
       name: inlineDetails.name ?? productDetails?.name ?? null,
       category: inlineDetails.category ?? productDetails?.category ?? null,
       subcategory: inlineDetails.subcategory ?? productDetails?.subcategory ?? null,
+      sizeId,
+      sizeLabel,
+      packageId,
+      packageName,
+      metadata,
     };
   });
 };
@@ -165,6 +218,11 @@ type IncomingOrderItem = {
   name: string | null;
   category: string | null;
   subcategory: string | null;
+  sizeId: string | null;
+  sizeLabel: string | null;
+  packageId: string | null;
+  packageName: string | null;
+  metadata: Record<string, unknown> | null;
 };
 
 const normalizeOrderItems = (rawItems: unknown): IncomingOrderItem[] => {
@@ -185,6 +243,28 @@ const normalizeOrderItems = (rawItems: unknown): IncomingOrderItem[] => {
 
       const quantity = normalizeQuantity(item?.quantity ?? item?.qty);
       const price = normalizeNumber(item?.unitPrice ?? item?.price ?? item?.amount) ?? 0;
+      const sizeId =
+        toTrimmedString(item?.sizeId) ??
+        toTrimmedString(item?.size_id) ??
+        toTrimmedString(item?.size);
+      const sizeLabel =
+        toTrimmedString(item?.sizeLabel) ??
+        toTrimmedString(item?.size_label) ??
+        toTrimmedString(item?.sizeName) ??
+        toTrimmedString(item?.size);
+      const packageId =
+        toTrimmedString(item?.packageId) ??
+        toTrimmedString(item?.package_id) ??
+        toTrimmedString(item?.bundleId) ??
+        toTrimmedString(item?.package);
+      const packageName =
+        toTrimmedString(item?.packageName) ??
+        toTrimmedString(item?.package_name) ??
+        toTrimmedString(item?.bundleName);
+      const metadata =
+        item?.metadata && typeof item.metadata === 'object'
+          ? (item.metadata as Record<string, unknown>)
+          : null;
 
       return {
         productId,
@@ -193,6 +273,11 @@ const normalizeOrderItems = (rawItems: unknown): IncomingOrderItem[] => {
         name: typeof item?.name === 'string' ? item.name : null,
         category: typeof item?.category === 'string' ? item.category : null,
         subcategory: typeof item?.subcategory === 'string' ? item.subcategory : null,
+        sizeId,
+        sizeLabel,
+        packageId,
+        packageName,
+        metadata,
       };
     })
     .filter(Boolean) as IncomingOrderItem[];
@@ -206,20 +291,17 @@ const ensureProducts = async (items: IncomingOrderItem[]) => {
     return;
   }
 
-  const { data: existingById, error: existingByIdError } = await supabaseAdmin
-    .from(PRODUCTS_TABLE)
-    .select('id,"productId"')
-    .in('id', productIds);
+  const [existingByIdResult, existingByProductIdResult] = await Promise.all([
+    supabaseAdmin.from(PRODUCTS_TABLE).select('id,"productId"').in('id', productIds),
+    supabaseAdmin.from(PRODUCTS_TABLE).select('id,"productId"').in('productId', productIds),
+  ]);
 
+  const { data: existingById, error: existingByIdError } = existingByIdResult;
   if (existingByIdError) {
     throw new Error(`Failed to fetch products: ${existingByIdError.message}`);
   }
 
-  const { data: existingByProductId, error: existingByProductIdError } = await supabaseAdmin
-    .from(PRODUCTS_TABLE)
-    .select('id,"productId"')
-    .in('productId', productIds);
-
+  const { data: existingByProductId, error: existingByProductIdError } = existingByProductIdResult;
   if (existingByProductIdError) {
     throw new Error(`Failed to fetch products by productId: ${existingByProductIdError.message}`);
   }
@@ -328,7 +410,10 @@ export async function GET(request: Request) {
     ) as Array<Record<string, unknown>>;
 
     const productIds = new Set<string>();
-    ordersData.forEach((order) => collectProductIds(order?.order_items, productIds));
+    ordersData.forEach((order) => {
+      collectProductIds(order?.order_items, productIds);
+      collectProductIds(order?.items, productIds);
+    });
 
     let productMap = new Map<string, ProductRecord>();
     if (productIds.size > 0) {
@@ -359,10 +444,10 @@ export async function GET(request: Request) {
         user?: Record<string, unknown> | null;
       };
       const sourceItems =
-        Array.isArray(order_items) && order_items.length
-          ? order_items
-          : Array.isArray(rawStoredItems)
-            ? rawStoredItems
+        Array.isArray(rawStoredItems) && rawStoredItems.length
+          ? rawStoredItems
+          : Array.isArray(order_items)
+            ? order_items
             : [];
       const items = mapOrderItems(sourceItems, productMap);
       return {
@@ -486,6 +571,11 @@ export async function POST(request: Request) {
       subcategory: item.subcategory,
       quantity: item.quantity,
       price: item.price,
+      sizeId: item.sizeId,
+      sizeLabel: item.sizeLabel,
+      packageId: item.packageId,
+      packageName: item.packageName,
+      metadata: item.metadata ?? null,
     }));
     const orderRecord: Record<string, unknown> = {
       id: orderId,

@@ -8,9 +8,7 @@ export async function GET() {
   try {
     const { data: products, error } = await supabaseAdmin
       .from(PRODUCTS_TABLE)
-      .select(
-        'id,"productId",name,category,subcategory,price,cost,"totalSales","totalRevenue","avgRating","reviewCount","stockQuantity","lowStockThreshold","isActive","createdAt","updatedAt"'
-      )
+      .select('*')
       .order('updatedAt', { ascending: false })
       .limit(MAX_PRODUCTS);
 
@@ -54,3 +52,4 @@ export async function GET() {
     return NextResponse.json({ success: false, error: 'Failed to fetch catalog' }, { status: 500 });
   }
 }
+export const dynamic = 'force-dynamic';

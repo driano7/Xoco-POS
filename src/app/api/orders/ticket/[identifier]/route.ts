@@ -155,6 +155,101 @@ export async function GET(
       return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
     };
 
+    const toTrimmedString = (value: unknown) => {
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        return trimmed || null;
+      }
+      return null;
+    };
+
+    const buildSnapshotItems = () => {
+      if (!Array.isArray(order.items)) {
+        return [] as Array<{
+          id: string;
+          productId: string | null;
+          quantity: number;
+          price: number | null;
+          product: { name?: string | null; category?: string | null; subcategory?: string | null } | null;
+          sizeId: string | null;
+          sizeLabel: string | null;
+          packageId: string | null;
+          packageName: string | null;
+          metadata: Record<string, unknown> | null;
+        }>;
+      }
+
+      return (order.items as Array<Record<string, unknown>>).map((rawItem, index) => {
+        const productId =
+          typeof rawItem.productId === 'string'
+            ? rawItem.productId
+            : typeof rawItem.id === 'string'
+              ? rawItem.id
+              : null;
+        const quantity = normalizeQuantity(rawItem.quantity ?? rawItem.qty ?? rawItem.amount);
+        const price = normalizePrice(rawItem.price ?? rawItem.amount ?? rawItem.unitPrice);
+        const category =
+          typeof rawItem.category === 'string'
+            ? rawItem.category
+            : typeof rawItem.type === 'string'
+              ? rawItem.type
+              : null;
+        const subcategory =
+          typeof rawItem.subcategory === 'string'
+            ? rawItem.subcategory
+            : typeof rawItem.group === 'string'
+              ? rawItem.group
+              : null;
+        const name =
+          typeof rawItem.name === 'string'
+            ? rawItem.name
+            : typeof rawItem.title === 'string'
+              ? rawItem.title
+              : productId;
+        const sizeId =
+          toTrimmedString(rawItem.sizeId) ??
+          toTrimmedString(rawItem.size_id) ??
+          toTrimmedString(rawItem.size);
+        const sizeLabel =
+          toTrimmedString(rawItem.sizeLabel) ??
+          toTrimmedString(rawItem.size_label) ??
+          toTrimmedString(rawItem.sizeName) ??
+          toTrimmedString(rawItem.size);
+        const packageId =
+          toTrimmedString(rawItem.packageId) ??
+          toTrimmedString(rawItem.package_id) ??
+          toTrimmedString(rawItem.bundleId) ??
+          toTrimmedString(rawItem.package);
+        const packageName =
+          toTrimmedString(rawItem.packageName) ??
+          toTrimmedString(rawItem.package_name) ??
+          toTrimmedString(rawItem.bundleName);
+        const metadata =
+          rawItem.metadata && typeof rawItem.metadata === 'object'
+            ? (rawItem.metadata as Record<string, unknown>)
+            : null;
+
+        return {
+          id: (typeof rawItem.id === 'string' && rawItem.id) || `${order.id}-snapshot-${index}`,
+          productId,
+          quantity,
+          price,
+          product: {
+            name: typeof name === 'string' ? name : null,
+            category,
+            subcategory,
+          },
+          sizeId,
+          sizeLabel,
+          packageId,
+          packageName,
+          metadata,
+        };
+      });
+    };
+
+    const snapshotItems = buildSnapshotItems().filter((item) => item.quantity > 0);
+
     const {
       data: orderItems,
       error: orderItemsError,
@@ -194,56 +289,38 @@ export async function GET(
       );
     }
 
-    let items =
-      orderItems?.map((item) => ({
-        id: item.id,
-        productId: item.productId ?? null,
-        quantity: item.quantity ?? 0,
-        price: item.price ?? null,
-        product: item.productId ? productMap.get(String(item.productId)) ?? null : null,
-      })) ?? [];
+    let items = snapshotItems.length
+      ? snapshotItems.map((item) => ({
+          id: item.id,
+          productId: item.productId,
+          quantity: item.quantity,
+          price: item.price,
+          product:
+            item.productId && productMap.size
+              ? productMap.get(String(item.productId)) ?? item.product ?? null
+              : item.product ?? null,
+          sizeId: item.sizeId,
+          sizeLabel: item.sizeLabel,
+          packageId: item.packageId,
+          packageName: item.packageName,
+          metadata: item.metadata,
+        }))
+      : [];
 
-    if (!items.length && Array.isArray(order.items)) {
-      const fallbackItems = (order.items as Array<Record<string, unknown>>).map((rawItem, index) => {
-        const productId =
-          typeof rawItem.productId === 'string'
-            ? rawItem.productId
-            : typeof rawItem.id === 'string'
-              ? rawItem.id
-              : null;
-        const quantity = normalizeQuantity(rawItem.quantity ?? rawItem.qty ?? rawItem.amount);
-        const price = normalizePrice(rawItem.price ?? rawItem.amount ?? rawItem.unitPrice);
-        const category =
-          typeof rawItem.category === 'string'
-            ? rawItem.category
-            : typeof rawItem.type === 'string'
-              ? rawItem.type
-              : null;
-        const subcategory =
-          typeof rawItem.subcategory === 'string'
-            ? rawItem.subcategory
-            : typeof rawItem.group === 'string'
-              ? rawItem.group
-              : null;
-        const name =
-          typeof rawItem.name === 'string'
-            ? rawItem.name
-            : typeof rawItem.title === 'string'
-              ? rawItem.title
-              : productId;
-        return {
-          id: rawItem.id ?? `${order.id}-snapshot-${index}`,
-          productId,
-          quantity,
-          price,
-          product: {
-            name: typeof name === 'string' ? name : null,
-            category,
-            subcategory,
-          },
-        };
-      });
-      items = fallbackItems.filter((item) => item.quantity > 0);
+    if (!items.length) {
+      items =
+        orderItems?.map((item) => ({
+          id: item.id,
+          productId: item.productId ?? null,
+          quantity: item.quantity ?? 0,
+          price: item.price ?? null,
+          product: item.productId ? productMap.get(String(item.productId)) ?? null : null,
+          sizeId: null,
+          sizeLabel: null,
+          packageId: null,
+          packageName: null,
+          metadata: null,
+        })) ?? [];
     }
 
     const customerId = order.userId ?? ticketRecord?.userId ?? null;

@@ -29,6 +29,11 @@ export interface OrderItemSummary {
   subcategory?: string | null;
   quantity?: number | null;
   price?: number | null;
+  sizeId?: string | null;
+  sizeLabel?: string | null;
+  packageId?: string | null;
+  packageName?: string | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface Order {
@@ -310,6 +315,9 @@ export interface CatalogProduct {
   isActive?: boolean;
   createdAt?: string | null;
   updatedAt?: string | null;
+  availableSizes?: unknown;
+  available_sizes?: unknown;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface CatalogPayload {
@@ -409,6 +417,8 @@ export interface PartnerMetrics {
   };
   reports: ReportRequest[];
   advanced: PartnerAdvancedMetrics;
+  availableMonths?: Array<{ month: string; label: string }>;
+  selectedMonth?: string | null;
 }
 
 export type AdvancedMetricsSectionId =
@@ -495,6 +505,8 @@ export interface AdvancedMetricsPayload {
   until: string;
   hasData: boolean;
   rangeAvailability: Record<string, boolean>;
+  availableMonths?: Array<{ month: string; label: string }>;
+  selectedMonth?: string | null;
   sections: Record<AdvancedMetricsSectionId, AdvancedMetricsSection>;
   forecasts: ForecastPayload;
   marketing: MarketingInsights;
@@ -813,8 +825,14 @@ export async function updatePosSettings(data: PosSettings): Promise<PosSettings>
   return payload.data;
 }
 
-export async function fetchPartnerMetrics(days?: number): Promise<PartnerMetrics> {
-  const url = buildApiUrl('/api/partner-metrics', days ? { days } : undefined);
+export async function fetchPartnerMetrics(params?: { days?: number; month?: string }): Promise<PartnerMetrics> {
+  const query: Record<string, string> = {};
+  if (params?.month) {
+    query.month = params.month;
+  } else if (params?.days) {
+    query.days = String(params.days);
+  }
+  const url = buildApiUrl('/api/partner-metrics', Object.keys(query).length ? query : undefined);
   const response = await fetch(url, { cache: 'no-store' });
 
   if (!response.ok) {
@@ -898,5 +916,10 @@ export interface TicketDetail {
     quantity: number;
     price?: number | null;
     product?: { name?: string | null; category?: string | null; subcategory?: string | null } | null;
+    sizeId?: string | null;
+    sizeLabel?: string | null;
+    packageId?: string | null;
+    packageName?: string | null;
+    metadata?: Record<string, unknown> | null;
   }>;
 }
