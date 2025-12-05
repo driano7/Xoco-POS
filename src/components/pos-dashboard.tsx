@@ -1720,9 +1720,6 @@ export function PosDashboard() {
     []
   );
   const handleClosePresetQr = useCallback(() => setPresetQr(null), []);
-  const [prepSearchInput, setPrepSearchInput] = useState('');
-  const [prepFilter, setPrepFilter] = useState('');
-  const [showPastPrepModal, setShowPastPrepModal] = useState(false);
   const {
     beverageOptions,
     foodOptions,
@@ -2065,29 +2062,9 @@ export function PosDashboard() {
     past: basePastReservations.length,
     completed: baseCompletedReservations.length,
   };
-  const { active: baseActivePrep, completed: baseCompletedPrep, past: pastPrep } = useMemo(
+  const { active: baseActivePrep, completed: baseCompletedPrep } = useMemo(
     () => groupPrepTasks(prepTasks),
     [prepTasks]
-  );
-  const normalizedPrepFilter = prepFilter.trim().toLowerCase();
-  const filterPrepList = useCallback(
-    (list: PrepTask[]) => {
-      if (!normalizedPrepFilter) {
-        return list;
-      }
-      const matches = (value?: string | null) =>
-        value?.toLowerCase().includes(normalizedPrepFilter) ?? false;
-      return list.filter((task) => buildPrepTaskSearchTerms(task).some(matches));
-    },
-    [normalizedPrepFilter]
-  );
-  const activePrep = useMemo(
-    () => filterPrepList(baseActivePrep),
-    [baseActivePrep, filterPrepList]
-  );
-  const completedPrep = useMemo(
-    () => filterPrepList(baseCompletedPrep),
-    [baseCompletedPrep, filterPrepList]
   );
   const topCustomer = loyaltyStats?.topCustomer ?? null;
   const totalSales = payments?.totalAmount ?? 0;
@@ -2103,6 +2080,21 @@ export function PosDashboard() {
     message: null,
     error: null,
   });
+  const notifyOrderScanState = useCallback(
+    (order?: Order | null) => {
+      if (!order) {
+        return;
+      }
+      if (order.status === 'completed') {
+        setSnackbar('Este pedido ya se entregó.');
+        return;
+      }
+      if (order.id && hiddenQueueOrderIds.has(order.id)) {
+        setSnackbar('Este pedido ya está en preparación.');
+      }
+    },
+    [hiddenQueueOrderIds]
+  );
   const [scannerFeedback, setScannerFeedback] = useState<string | null>(null);
   const [customerQuery, setCustomerQuery] = useState('');
   const [customerFilter, setCustomerFilter] = useState('');
@@ -2249,12 +2241,6 @@ export function PosDashboard() {
     },
     [advancedMetrics?.availableMonths, advancedMetricsMonth]
   );
-
-  useEffect(() => {
-    if (!prepSearchInput.trim()) {
-      setPrepFilter('');
-    }
-  }, [prepSearchInput]);
 
   useEffect(() => {
     setManagerInventory((prev) => {
@@ -2524,6 +2510,7 @@ export function PosDashboard() {
               const detail = await fetchTicketDetail(parsed.data.ticketId);
               const orderFromDetail = buildOrderFromTicketDetail(detail, parsed.data);
               setDetail({ type: 'order', data: orderFromDetail });
+              notifyOrderScanState(orderFromDetail);
               rememberClientId(
                 orderFromDetail.clientId ??
                   orderFromDetail.user?.clientId ??
@@ -2544,6 +2531,7 @@ export function PosDashboard() {
           }
           const fallbackOrder = buildOrderFromTicketPayload(parsed.data);
           setDetail({ type: 'order', data: fallbackOrder });
+          notifyOrderScanState(fallbackOrder);
           rememberClientId(
             fallbackOrder.clientId ??
               fallbackOrder.user?.clientId ??
@@ -2589,6 +2577,7 @@ export function PosDashboard() {
         const detail = await fetchTicketDetail(trimmed);
         const orderFromDetail = buildOrderFromTicketDetail(detail);
         setDetail({ type: 'order', data: orderFromDetail });
+        notifyOrderScanState(orderFromDetail);
         rememberClientId(
           orderFromDetail.clientId ??
             orderFromDetail.user?.clientId ??
@@ -2604,6 +2593,7 @@ export function PosDashboard() {
       const orderMatch = tryMatchOrder(normalized);
       if (orderMatch) {
         setDetail({ type: 'order', data: orderMatch });
+        notifyOrderScanState(orderMatch);
         setScannerFeedback(null);
         tryCloseScanner();
         rememberClientId(orderMatch.clientId ?? orderMatch.user?.clientId ?? null);
@@ -2630,7 +2620,7 @@ export function PosDashboard() {
 
       setSnackbar('No encontramos un registro con ese código.');
     },
-    [rememberClientId, tryMatchCustomer, tryMatchOrder, tryMatchReservation]
+    [notifyOrderScanState, rememberClientId, tryMatchCustomer, tryMatchOrder, tryMatchReservation]
   );
 
   useEffect(() => {
@@ -3409,92 +3399,9 @@ const currentMonthMetrics = useMemo(() => {
 
             <OrdersPanel
               hiddenOrderIds={hiddenQueueOrderIds}
+              activePrepTasks={baseActivePrep}
               onSelect={(order) => setDetail({ type: 'order', data: order })}
             />
-
-            <section className="card space-y-6 p-6">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="badge">En producción</p>
-                  <p className="text-sm text-[var(--brand-muted)]">
-                    Los pedidos visibles siguen el corte 23:59; purgamos los registros pasados después de 48h.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--brand-muted)]">
-                  {prepLoading && <p>Actualizando...</p>}
-                  <button
-                    type="button"
-                    onClick={() => setShowPastPrepModal(true)}
-                    className="brand-button text-xs"
-                    disabled={pastPrep.length === 0}
-                  >
-                    Pasados ({pastPrep.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void refreshPrep()}
-                    className="rounded-full border border-primary-200 px-3 py-1 font-semibold text-primary-600 transition hover:bg-primary-50 dark:border-white/20 dark:text-primary-200 disabled:opacity-50"
-                  >
-                    Actualizar en preparación
-                  </button>
-                </div>
-              </div>
-              <form
-                className="flex flex-wrap items-center gap-3 text-xs text-[var(--brand-muted)]"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  setPrepFilter(prepSearchInput);
-                }}
-              >
-                <label className="flex flex-col text-[var(--brand-muted)]">
-                  <span className="font-semibold uppercase tracking-[0.25em]">Buscar ticket/cliente</span>
-                  <input
-                    value={prepSearchInput}
-                    onChange={(event) => setPrepSearchInput(event.target.value)}
-                    placeholder="ID, ticket, producto o handler"
-                    className="mt-1 rounded-xl border border-primary-100/70 px-3 py-1 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/5 dark:text-white"
-                  />
-                </label>
-                <button type="submit" className="brand-button text-xs">
-                  Buscar
-                </button>
-                {prepFilter && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPrepSearchInput('');
-                      setPrepFilter('');
-                    }}
-                    className="brand-button--ghost text-xs"
-                  >
-                    Limpiar
-                  </button>
-                )}
-              </form>
-
-              {prepError ? (
-                <div className="rounded-2xl border border-dashed border-danger-300/70 bg-danger-50/60 px-4 py-3 text-sm text-danger-700 dark:border-danger-700/40 dark:bg-danger-900/30 dark:text-danger-100">
-                  {prepError}
-                </div>
-              ) : prepLoading ? (
-                <PrepQueueSkeleton />
-              ) : (
-                <div className="grid gap-6 lg:grid-cols-2">
-                  <PrepQueueColumn
-                    title="En barra"
-                    tasks={activePrep}
-                    highlight="text-primary-400"
-                    onSelect={(task) => setDetail({ type: 'prep', data: task })}
-                  />
-                  <PrepQueueColumn
-                    title="Entregados recientes"
-                    tasks={completedPrep}
-                    highlight="text-emerald-600"
-                    onSelect={(task) => setDetail({ type: 'prep', data: task })}
-                  />
-                </div>
-              )}
-            </section>
 
             <section id={reservationsSectionId} className="card space-y-6 p-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -3621,6 +3528,9 @@ const currentMonthMetrics = useMemo(() => {
                       loyaltyCustomer={findLoyaltyCustomerForOrder(detail.data)}
                       isLoyaltyReady={!loyaltyLoading}
                       onWalletScanRequest={handleWalletScanRequest}
+                      isInPrepQueue={
+                        Boolean(detail.data?.id && hiddenQueueOrderIds.has(detail.data.id))
+                      }
                     />
                   )}
                   {detail.type === 'reservation' && (
@@ -3683,15 +3593,6 @@ const currentMonthMetrics = useMemo(() => {
                   onClose={() => setShowReservationCompletedHistory(false)}
                   hasFilter={Boolean(reservationFilter.trim())}
                   onSelect={(reservation) => setDetail({ type: 'reservation', data: reservation })}
-                />
-              </DetailModal>
-            )}
-            {showPastPrepModal && (
-              <DetailModal onClose={() => setShowPastPrepModal(false)}>
-                <PrepQueuePastContent
-                  tasks={pastPrep}
-                  onClose={() => setShowPastPrepModal(false)}
-                  onSelect={(task) => setDetail({ type: 'prep', data: task })}
                 />
               </DetailModal>
             )}
@@ -5087,6 +4988,23 @@ const OrderItemsSection = ({ items }: { items: OrderItemEntry[] }) => (
             isBeverageDescriptor(item.category) ||
             isBeverageDescriptor(item.subcategory) ||
             isBeverageDescriptor(item.name);
+          const metadataSize = (() => {
+            const record = parseMetadataRecord(item.metadata);
+            if (!record) {
+              return null;
+            }
+            return (
+              toTrimmedString(record.size) ??
+              toTrimmedString(record.sizeLabel) ??
+              toTrimmedString(record.sizeName) ??
+              toTrimmedString(record.variant)
+            );
+          })();
+          const resolvedSize = item.sizeLabel ?? metadataSize ?? null;
+          const productTypeLabel = `${isBeverage ? 'Bebida' : 'Alimento'} (tipo de producto)`;
+          const descriptorRole = isBeverage ? 'tipo de bebida' : 'categoría';
+          const descriptorLabel = descriptor ? `${descriptor} (${descriptorRole})` : null;
+          const sizeLabel = resolvedSize ? `${resolvedSize} (tamaño)` : null;
           const listKey = item.productId
             ? `${item.productId}-${item.sizeId ?? item.sizeLabel ?? index}`
             : `${index}`;
@@ -5100,14 +5018,16 @@ const OrderItemsSection = ({ items }: { items: OrderItemEntry[] }) => (
                   {item.name ?? item.productId ?? 'Producto'}
                 </p>
                 <p className="text-sm font-bold text-primary-800 dark:text-white/90">
-                  {quantity} uds · {descriptor}
-                  {item.sizeLabel && (
+                  {quantity} uds · {productTypeLabel}
+                  {descriptorLabel ? ` - ${descriptorLabel}` : ''}
+                  {sizeLabel && (
                     <span
                       className={`ml-1 ${
                         isBeverage ? 'underline decoration-primary-500 underline-offset-4' : ''
                       }`}
                     >
-                      · {item.sizeLabel}
+                      {' - '}
+                      {sizeLabel}
                     </span>
                   )}
                 </p>
@@ -5147,6 +5067,8 @@ const DetailActionFooter = ({
     variant === 'danger'
       ? 'bg-danger-600 hover:bg-danger-700'
       : 'bg-primary-600 hover:bg-primary-700';
+  const isBusy = Boolean(actionState?.isLoading);
+  const buttonLabel = isBusy ? 'Procesando…' : label;
 
   return (
     <div className="space-y-2">
@@ -5156,7 +5078,7 @@ const DetailActionFooter = ({
         disabled={disabled}
         className={`w-full rounded-2xl px-4 py-2 text-sm font-semibold text-white transition disabled:opacity-40 ${baseClasses}`}
       >
-        {disabled ? 'Procesando…' : label}
+        {buttonLabel}
       </button>
       {actionState?.message && (
         <p className="text-xs font-semibold text-emerald-600">{actionState.message}</p>
@@ -5177,6 +5099,7 @@ const OrderDetailContent = ({
   loyaltyCustomer,
   isLoyaltyReady = true,
   onWalletScanRequest,
+  isInPrepQueue = false,
 }: {
   order: Order;
   onMoveToQueue?: (
@@ -5192,6 +5115,7 @@ const OrderDetailContent = ({
   loyaltyCustomer?: LoyaltyCustomer | null;
   isLoyaltyReady?: boolean;
   onWalletScanRequest?: (onCapture: (value: string) => void) => void;
+  isInPrepQueue?: boolean;
 }) => {
   const [items, setItems] = useState<OrderItemEntry[]>(
     Array.isArray(order.items) ? (order.items as OrderItemEntry[]) : []
@@ -5288,7 +5212,12 @@ const OrderDetailContent = ({
   const customerNotes = extractCustomerNotes(order);
   const generalNotes = extractOrderNotes(order);
   const fallbackNotes = !staffNotes && !customerNotes ? generalNotes : null;
-  const tipValue = typeof order.tipAmount === 'number' ? order.tipAmount : null;
+  const tipValue =
+    typeof order.tipAmount === 'number'
+      ? order.tipAmount
+      : typeof order.totals?.tipAmount === 'number'
+        ? (order.totals?.tipAmount as number)
+        : null;
   const assignedStaffDisplay = order.queuedByStaffName ?? order.queuedByStaffId ?? null;
   const paymentReferenceTypeLabel = order.queuedPaymentReferenceType
     ? PAYMENT_REFERENCE_TYPE_LABELS[order.queuedPaymentReferenceType] ??
@@ -5303,6 +5232,17 @@ const OrderDetailContent = ({
   const beverageSize = extractBeverageSizeFromItems(hydratedItems);
   const loyaltyDisplayName = loyaltyCustomer ? getCustomerDisplayName(loyaltyCustomer) : null;
   const loyaltyCoffees = loyaltyCustomer?.loyaltyCoffees ?? null;
+  const showPaymentSections = !isInPrepQueue && order.status !== 'completed';
+  const totalAmount = typeof order.total === 'number' ? order.total : null;
+  const tipAmountValue = typeof tipValue === 'number' ? tipValue : 0;
+  const showTipDetails = showPaymentSections && tipAmountValue > 0;
+  const subtotalAmount =
+    showTipDetails && totalAmount !== null ? Math.max(totalAmount - tipAmountValue, 0) : null;
+  const handledStatusBadge = isInPrepQueue
+    ? 'En preparación'
+    : order.status === 'completed'
+      ? 'Entregado'
+      : null;
   return (
     <div className="space-y-5 text-base">
       <header>
@@ -5350,29 +5290,37 @@ const OrderDetailContent = ({
           />
         )}
         <DetailRow label="Ticket POS" value={order.ticketCode ?? 'Sin ticket'} />
+        {showTipDetails && subtotalAmount !== null && (
+          <DetailRow
+            label="Subtotal"
+            value={
+              <span className="font-bold text-primary-900 dark:text-white">
+                {formatCurrency(subtotalAmount)}
+              </span>
+            }
+          />
+        )}
         <DetailRow
-          label="Total"
+          label={showTipDetails ? 'Total con propina' : 'Total'}
           value={
             <span className="font-bold text-primary-900 dark:text-white">
-              {formatCurrency(order.total)}
+              {formatCurrency(totalAmount ?? order.total ?? 0)}
             </span>
           }
         />
-        <DetailRow
-          label="Propina"
-          value={
-            tipValue && tipValue > 0 ? (
+        {showTipDetails && (
+          <DetailRow
+            label="Propina"
+            value={
               <span className="font-bold text-primary-700 dark:text-primary-100">
-                {formatCurrency(tipValue)}
+                {formatCurrency(tipAmountValue)}
                 {typeof order.tipPercent === 'number'
                   ? ` (${order.tipPercent.toFixed(1)}%)`
                   : ''}
               </span>
-            ) : (
-              <span className="text-sm text-[var(--brand-muted)]">Sin propina registrada</span>
-            )
-          }
-        />
+            }
+          />
+        )}
         <DetailRow
           label="Artículos"
           value={`${totalItems} ${totalItems === 1 ? 'artículo' : 'artículos'}`}
@@ -5383,58 +5331,68 @@ const OrderDetailContent = ({
             assignedStaffDisplay ? (
               <span className="font-bold text-primary-900 dark:text-white">
                 {assignedStaffDisplay}
+                {handledStatusBadge && (
+                  <span className="ml-2 rounded-full bg-primary-100 px-2 py-[2px] text-[10px] uppercase tracking-[0.2em] text-primary-700 dark:bg-white/10 dark:text-white">
+                    {handledStatusBadge}
+                  </span>
+                )}
               </span>
             ) : (
               <span className="text-sm text-[var(--brand-muted)]">Pendiente por asignar</span>
             )
           }
         />
-        <DetailRow
-          label="Método de pago"
-          value={
-            <span className="text-sm font-normal text-[var(--brand-text)] dark:text-white">
-              {paymentMethodLabel ?? 'Pendiente por definir'}
-            </span>
-          }
-        />
-        <DetailRow
-          label="Referencia"
-          value={
-            order.queuedPaymentReference ? (
-              <span className="text-sm font-semibold text-primary-900 dark:text-primary-100">
-                {order.queuedPaymentReference}
-                {paymentReferenceTypeLabel && (
-                  <span className="ml-2 rounded-full bg-primary-100 px-2 py-[2px] text-[10px] uppercase tracking-[0.2em] text-primary-700 dark:bg-white/10 dark:text-white">
-                    {paymentReferenceTypeLabel}
-                  </span>
-                )}
+        {showPaymentSections && (
+          <DetailRow
+            label="Método de pago"
+            value={
+              <span className="text-sm font-normal text-[var(--brand-text)] dark:text-white">
+                {paymentMethodLabel ?? 'Pendiente por definir'}
               </span>
-            ) : (
-              <span className="text-sm text-[var(--brand-muted)]">Pendiente</span>
-            )
-          }
-        />
-        {loyaltyCustomer ? (
-          <div className="rounded-2xl border border-primary-100/80 bg-white/80 p-3 text-sm dark:border-white/10 dark:bg-white/5">
-            <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
-              Programa de lealtad
-            </p>
-            <CustomerLoyaltyCoffees
-              count={loyaltyCoffees ?? 0}
-              customerName={loyaltyDisplayName ?? customerName ?? 'Cliente'}
-              statusLabel="Cafés acumulados"
-              subtitle="Actualizamos el sello al registrar bebidas."
-            />
-          </div>
-        ) : isLoyaltyReady ? (
-          <div className="rounded-2xl border border-dashed border-primary-200/70 bg-white/70 p-3 text-xs text-[var(--brand-muted)] dark:border-white/10 dark:bg-white/5">
-            Cliente sin registro en el programa de lealtad.
-          </div>
-        ) : (
-          <div className="rounded-2xl border border-dashed border-primary-200/70 bg-white/70 p-3 text-xs text-[var(--brand-muted)] dark:border-white/10 dark:bg-white/5">
-            Consultando programa de lealtad…
-          </div>
+            }
+          />
         )}
+        {showPaymentSections && (
+          <DetailRow
+            label="Referencia"
+            value={
+              order.queuedPaymentReference ? (
+                <span className="text-sm font-semibold text-primary-900 dark:text-primary-100">
+                  {order.queuedPaymentReference}
+                  {paymentReferenceTypeLabel && (
+                    <span className="ml-2 rounded-full bg-primary-100 px-2 py-[2px] text-[10px] uppercase tracking-[0.2em] text-primary-700 dark:bg-white/10 dark:text-white">
+                      {paymentReferenceTypeLabel}
+                    </span>
+                  )}
+                </span>
+              ) : (
+                <span className="text-sm text-[var(--brand-muted)]">Pendiente</span>
+              )
+            }
+          />
+        )}
+        {showPaymentSections &&
+          (loyaltyCustomer ? (
+            <div className="rounded-2xl border border-primary-100/80 bg-white/80 p-3 text-sm dark:border-white/10 dark:bg-white/5">
+              <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
+                Programa de lealtad
+              </p>
+              <CustomerLoyaltyCoffees
+                count={loyaltyCoffees ?? 0}
+                customerName={loyaltyDisplayName ?? customerName ?? 'Cliente'}
+                statusLabel="Cafés acumulados"
+                subtitle="Actualizamos el sello al registrar bebidas."
+              />
+            </div>
+          ) : isLoyaltyReady ? (
+            <div className="rounded-2xl border border-dashed border-primary-200/70 bg-white/70 p-3 text-xs text-[var(--brand-muted)] dark:border-white/10 dark:bg-white/5">
+              Cliente sin registro en el programa de lealtad.
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-primary-200/70 bg-white/70 p-3 text-xs text-[var(--brand-muted)] dark:border-white/10 dark:bg-white/5">
+              Consultando programa de lealtad…
+            </div>
+          ))}
       </div>
       {customerNotes && (
         <OrderNotesCard note={customerNotes} label="Comentario del cliente" />
@@ -5455,7 +5413,7 @@ const OrderDetailContent = ({
         </p>
       )}
       <OrderItemsSection items={items} />
-      {order.status !== 'completed' && onMoveToQueue && (
+      {showPaymentSections && order.status !== 'completed' && onMoveToQueue && (
         <div className="space-y-3">
           {selectedPaymentMethod && !showPaymentSelector ? (
             <div className="rounded-2xl border border-primary-100/70 bg-white/70 p-4 text-sm dark:border-white/10 dark:bg-white/5">

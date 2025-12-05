@@ -84,6 +84,11 @@ export interface Order {
   queuedPaymentMethod?: string | null;
   tipAmount?: number | null;
   tipPercent?: number | null;
+  totals?: {
+    totalAmount?: number | null;
+    tipAmount?: number | null;
+    itemsCount?: number | null;
+  } | null;
   metadata?: Record<string, unknown> | string | null;
   notes?: string | null;
   queuedByStaffId?: string | null;

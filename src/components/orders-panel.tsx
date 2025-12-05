@@ -31,7 +31,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { useOrders } from '@/hooks/use-orders';
 import { usePagination } from '@/hooks/use-pagination';
-import type { Order } from '@/lib/api';
+import type { Order, PrepTask } from '@/lib/api';
 
 const ITEMS_PER_PAGE = 3;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -107,9 +107,14 @@ const buildOrderSearchTerms = (order: Order) => {
 interface OrdersPanelProps {
   onSelect?: (order: Order) => void;
   hiddenOrderIds?: ReadonlySet<string>;
+  activePrepTasks?: PrepTask[];
 }
 
-export function OrdersPanel({ onSelect, hiddenOrderIds }: OrdersPanelProps = {}) {
+export function OrdersPanel({
+  onSelect,
+  hiddenOrderIds,
+  activePrepTasks,
+}: OrdersPanelProps = {}) {
   const { orders, isLoading, error, refresh } = useOrders();
   const visibleOrders = useMemo(
     () =>
@@ -152,6 +157,69 @@ export function OrdersPanel({ onSelect, hiddenOrderIds }: OrdersPanelProps = {})
       return Number.isFinite(timestamp) && timestamp >= threshold;
     });
   }, [completedAll]);
+
+  const inProgressOrders = useMemo(() => {
+    if (!activePrepTasks?.length) {
+      return [];
+    }
+    const visibleMap = new Map<string, Order>();
+    visibleOrders.forEach((order) => {
+      if (order.id) {
+        visibleMap.set(order.id, order);
+      }
+    });
+    const seen = new Set<string>();
+    const result: Order[] = [];
+    activePrepTasks.forEach((task) => {
+      const orderId =
+        task.order?.id ??
+        task.orderItem?.orderId ??
+        task.order?.orderNumber ??
+        task.id;
+      if (!orderId || seen.has(orderId)) {
+        return;
+      }
+      seen.add(orderId);
+      const existing = visibleMap.get(orderId);
+      if (existing) {
+        if (!result.some((order) => order.id === existing.id)) {
+          result.push(existing);
+        }
+        return;
+      }
+      const handlerName =
+        task.handlerName ??
+        task.handler?.firstName ??
+        task.handler?.lastName ??
+        task.handler?.email ??
+        null;
+      const fallback: Order = {
+        id: orderId,
+        status: 'pending',
+        ticketCode: task.order?.ticketCode ?? null,
+        orderNumber: task.order?.orderNumber ?? null,
+        clientId: task.order?.clientId ?? task.customer?.clientId ?? null,
+        userId: task.order?.userId ?? task.customer?.id ?? null,
+        total: task.order?.total ?? task.amount ?? null,
+        currency: task.order?.currency ?? 'MXN',
+        createdAt: task.order?.createdAt ?? task.orderItem?.createdAt ?? null,
+        itemsCount:
+          task.order?.items?.reduce((sum, item) => sum + (item.quantity ?? 0), 0) ??
+          task.orderItem?.quantity ??
+          null,
+        user: {
+          firstName: task.customer?.name ?? null,
+          clientId: task.customer?.clientId ?? null,
+          email: task.customer?.email ?? null,
+        },
+        metadata: task.order?.metadata ?? null,
+        queuedByStaffName: handlerName,
+        queuedByStaffId: task.handledByStaffId ?? task.handler?.id ?? null,
+      };
+      result.push(fallback);
+    });
+    return result;
+  }, [activePrepTasks, visibleOrders]);
 
   return (
     <section className="card space-y-6 p-6 text-sm">
@@ -239,11 +307,17 @@ export function OrdersPanel({ onSelect, hiddenOrderIds }: OrdersPanelProps = {})
           {error}
         </p>
       ) : (
-        <div className="grid gap-6 lg:grid-cols-2">
+        <div className="grid gap-6 lg:grid-cols-3">
           <OrdersColumn
             title="Pendientes"
             orders={pending}
             highlight="text-primary-400"
+            onSelect={onSelect}
+          />
+          <OrdersColumn
+            title="En preparación"
+            orders={inProgressOrders}
+            highlight="text-amber-500"
             onSelect={onSelect}
           />
           <OrdersColumn
