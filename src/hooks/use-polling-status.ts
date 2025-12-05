@@ -89,12 +89,17 @@ export function usePollingStatus(
   const config = getNetworkConfig(network);
 
   const checkPayment = useCallback(async () => {
-    if (!network || !config.baseUrl) {
+    const missingLightningData = network === 'LIGHTNING' && !invoice;
+    const missingEvmData =
+      config.isEVM && (!walletAddress || (!tokenContractAddress && !expectedValueWei));
+    if (!network || !config.baseUrl || missingLightningData || missingEvmData) {
       setPaymentStatus('ERROR');
       setStatusText(
-        network
-          ? `Red no configurada o no soportada: ${network} en modo ${NETWORK_MODE}`
-          : 'Selecciona una red'
+        missingLightningData || missingEvmData
+          ? 'Completa los datos del pago para iniciar el seguimiento.'
+          : network
+            ? `Red no configurada o no soportada: ${network} en modo ${NETWORK_MODE}`
+            : 'Selecciona una red'
       );
       return;
     }
@@ -171,13 +176,15 @@ export function usePollingStatus(
   ]);
 
   useEffect(() => {
-    if (!network) {
+    const shouldPollLightning = network === 'LIGHTNING' && invoice;
+    const shouldPollEvm = Boolean(config.isEVM && walletAddress);
+    if (!network || (!shouldPollLightning && !shouldPollEvm)) {
       return;
     }
     void checkPayment();
     const timer = setInterval(checkPayment, interval);
     return () => clearInterval(timer);
-  }, [checkPayment, interval, network]);
+  }, [checkPayment, interval, network, invoice, walletAddress, config.isEVM]);
 
   return {
     paymentStatus,

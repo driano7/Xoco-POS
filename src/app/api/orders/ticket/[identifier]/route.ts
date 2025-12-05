@@ -461,6 +461,9 @@ export async function GET(
         : Array.isArray((parsed as { lineItems?: unknown[] }).lineItems)
           ? ((parsed as { lineItems?: unknown[] }).lineItems as unknown[])
           : [];
+      if (!rawItems.length) {
+        return [];
+      }
 
       const normalizedItems: Array<{
         id: string;

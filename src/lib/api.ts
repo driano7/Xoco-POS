@@ -574,7 +574,7 @@ const buildApiUrl = (
 export async function fetchOrders(status?: OrderStatus): Promise<Order[]> {
   const url = buildApiUrl('/api/orders', status ? { status } : undefined);
 
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
 
   if (!response.ok) {
     throw new Error('No pudimos cargar los tickets');
@@ -591,7 +591,7 @@ export async function fetchOrders(status?: OrderStatus): Promise<Order[]> {
 
 export async function fetchLoyaltyStats(): Promise<LoyaltyStats> {
   const url = buildApiUrl('/api/loyalty');
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
 
   if (!response.ok) {
     throw new Error('No pudimos cargar las métricas de lealtad');
@@ -609,7 +609,7 @@ export async function fetchLoyaltyStats(): Promise<LoyaltyStats> {
 export async function fetchReservations(status?: ReservationStatus): Promise<Reservation[]> {
   const url = buildApiUrl('/api/reservations', status ? { status } : undefined);
 
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
 
   if (!response.ok) {
     throw new Error('No pudimos cargar las reservaciones');
@@ -627,7 +627,7 @@ export async function fetchReservations(status?: ReservationStatus): Promise<Res
 export async function fetchPrepQueue(status?: PrepStatus): Promise<PrepTask[]> {
   const url = buildApiUrl('/api/prep-queue', status ? { status } : undefined);
 
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
 
   if (!response.ok) {
     throw new Error('No pudimos cargar la cola de producción');
@@ -673,6 +673,7 @@ export async function enqueueOrder(
 
   const response = await fetch(url, {
     method: 'POST',
+    keepalive: true,
     headers: Object.keys(headers).length ? headers : undefined,
     body: staffId
       ? JSON.stringify({
@@ -689,7 +690,7 @@ export async function enqueueOrder(
 
 export async function completeOrder(orderId: string): Promise<void> {
   const url = buildApiUrl(`/api/orders/${orderId}/complete`);
-  const response = await fetch(url, { method: 'POST' });
+  const response = await fetch(url, { method: 'POST', keepalive: true });
 
   if (!response.ok) {
     throw new Error('No pudimos marcar el pedido como completado');
@@ -703,6 +704,7 @@ const updateReservationStatus = async (
   const url = buildApiUrl(`/api/reservations/${reservationId}/complete`);
   const response = await fetch(url, {
     method: 'POST',
+    keepalive: true,
     headers: {
       'Content-Type': 'application/json',
     },
@@ -728,7 +730,7 @@ export async function cancelReservation(reservationId: string): Promise<void> {
 
 export async function fetchTicketDetail(identifier: string): Promise<TicketDetail> {
   const url = buildApiUrl(`/api/orders/ticket/${encodeURIComponent(identifier)}`);
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
 
   if (!response.ok) {
     const message = await response.text();
@@ -744,7 +746,7 @@ export async function fetchTicketDetail(identifier: string): Promise<TicketDetai
 
 export async function completePrepTask(taskId: string): Promise<void> {
   const url = buildApiUrl(`/api/prep-queue/${taskId}/complete`);
-  const response = await fetch(url, { method: 'POST' });
+  const response = await fetch(url, { method: 'POST', keepalive: true });
 
   if (!response.ok) {
     throw new Error('No pudimos cerrar la tarea de preparación');
@@ -753,7 +755,7 @@ export async function completePrepTask(taskId: string): Promise<void> {
 
 export async function fetchInventoryDashboard(): Promise<InventoryDashboard> {
   const url = buildApiUrl('/api/inventory-dashboard');
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
 
   if (!response.ok) {
     throw new Error('No pudimos cargar el inventario');
@@ -770,7 +772,7 @@ export async function fetchInventoryDashboard(): Promise<InventoryDashboard> {
 
 export async function fetchPaymentsDashboard(): Promise<PaymentsDashboard> {
   const url = buildApiUrl('/api/payments-dashboard');
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
 
   if (!response.ok) {
     throw new Error('No pudimos cargar el panel de pagos');
@@ -787,7 +789,7 @@ export async function fetchPaymentsDashboard(): Promise<PaymentsDashboard> {
 
 export async function fetchStaffDashboard(): Promise<StaffDashboard> {
   const url = buildApiUrl('/api/staff-dashboard');
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
 
   if (!response.ok) {
     throw new Error('No pudimos cargar el staff');
@@ -804,7 +806,7 @@ export async function fetchStaffDashboard(): Promise<StaffDashboard> {
 
 export async function fetchCatalog(): Promise<CatalogPayload> {
   const url = buildApiUrl('/api/catalog');
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
 
   if (!response.ok) {
     throw new Error('No pudimos cargar el catálogo');
@@ -821,7 +823,7 @@ export async function fetchCatalog(): Promise<CatalogPayload> {
 
 export async function fetchTransactionsHistory(): Promise<TransactionHistoryEntry[]> {
   const url = buildApiUrl('/api/transactions-history');
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
 
   if (!response.ok) {
     throw new Error('No pudimos cargar las transacciones');
@@ -841,7 +843,7 @@ export async function fetchTransactionsHistory(): Promise<TransactionHistoryEntr
 
 export async function fetchPosSettings(): Promise<PosSettings> {
   const url = buildApiUrl('/api/pos-settings');
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
 
   if (!response.ok) {
     throw new Error('No pudimos cargar la configuración del POS');
@@ -885,7 +887,7 @@ export async function fetchPartnerMetrics(params?: { days?: number; month?: stri
     query.days = String(params.days);
   }
   const url = buildApiUrl('/api/partner-metrics', Object.keys(query).length ? query : undefined);
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
 
   if (!response.ok) {
     throw new Error('No pudimos cargar las métricas de socios');
@@ -916,7 +918,7 @@ export async function fetchAdvancedMetrics(
     });
   }
   const url = buildApiUrl('/api/advanced-metrics', Object.keys(params).length ? params : undefined);
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
 
   if (!response.ok) {
     throw new Error('No pudimos cargar las métricas avanzadas');

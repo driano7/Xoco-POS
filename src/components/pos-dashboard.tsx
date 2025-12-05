@@ -2765,7 +2765,8 @@ export function PosDashboard() {
           paymentMethod: options?.paymentMethod ?? null,
           paymentReference: options?.paymentReference ?? null,
         });
-        await Promise.all([refresh(), refreshPrep()]);
+        void refresh();
+        void refreshPrep();
         setActionState({
           isLoading: false,
           message: 'Pedido marcado como en preparación',
@@ -2802,7 +2803,8 @@ export function PosDashboard() {
           paymentMethod: options?.paymentMethod ?? null,
           paymentReference: options?.paymentReference ?? null,
         });
-        await Promise.all([refresh(), refreshPrep()]);
+        void refresh();
+        void refreshPrep();
         setActionState({
           isLoading: false,
           message: 'Pedido regresado a En preparación',
@@ -2839,7 +2841,8 @@ export function PosDashboard() {
       try {
         await completePrepTask(task.id);
         await completeOrder(task.order.id);
-        await Promise.all([refresh(), refreshPrep()]);
+        void refresh();
+        void refreshPrep();
         setActionState({
           isLoading: false,
           message: 'Pedido marcado como completado',

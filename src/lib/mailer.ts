@@ -53,6 +53,14 @@ const assertMailerConfig = () => {
   return transporter;
 };
 
+if (process.env.NODE_ENV === 'production') {
+  try {
+    assertMailerConfig();
+  } catch (error) {
+    console.error('SMTP configuration error:', error);
+  }
+}
+
 export async function sendPasswordResetEmail({
   to,
   resetUrl,
