@@ -1,104 +1,326 @@
-## Xoco POS
+<div align="center">
+  <img src="https://raw.githubusercontent.com/driano7/XocoCafe/main/public/static/images/XocoBanner.png" width="200" alt="Logo Xoco Café"/>
+</div>
 
-Xoco POS es el panel operativo del programa de fidelidad y punto de venta para Xoco Café. Está construido sobre Next.js 14 y centraliza los flujos diarios del equipo: toma de pedidos, reservaciones, cola de producción, reportes de pago, inventario y seguimiento de clientes frecuentes.
+<h1 align="center">Xoco POS — Sistema de Punto de Venta</h1>
 
-## Propósito
+<p align="center">
+  <i>Ventas • Inventario • Flujo de Preparación • Operación Interna</i>
+</p>
 
-- **Venta al público y clientes frecuentes**: registrar pedidos, asignarlos a clientes cifrados y moverlos a la barra de producción.
-- **Visibilidad operativa**: una sola vista para monitorear órdenes, reservaciones, métricas de lealtad, inventario y actividad del personal.
-- **Automatización**: sincroniza los datos con Supabase (PostgreSQL) y expone APIs serverless que estandarizan cálculos de tickets, tareas de preparación y reportes.
+<p align="center">
+  <img src="https://img.shields.io/badge/licencia-Apache%202.0-brown.svg" />
+  <img src="https://img.shields.io/badge/estado-En%20Desarrollo-yellow.svg" />
+  <img src="https://img.shields.io/badge/framework-React%20%2B%20Node.js-blue.svg" />
+  <img src="https://img.shields.io/badge/empresa-Xoco%20Café-orange.svg" />
+</p>
 
-## Características principales
+---
 
-- **Dashboard unificado** (`src/components/pos-dashboard.tsx`)
-  - Panel de órdenes con acciones rápidas (enviar/regresar a cola, completar pedido, etc.).
-  - Búsqueda inteligente de tickets y clientes escaneando QR o introduciendo IDs manualmente.
-  - Gestión de reservaciones con filtros, historial y confirmaciones.
-  - Seguimiento de fidelidad: cafés acumulados, preferencias de bebida/comida y actualización inline.
-  - Actividad de pagos y reportes pendientes.
-  - Métricas de personal, inventario y KPIs internos.
-- **Cola de producción (Prep Queue)** (`src/app/api/prep-queue`, `src/hooks/use-prep-queue.ts`)
-  - Agrupa tareas por estado (pendiente, en progreso, completado).
-  - Enriquecimiento con cliente, producto, cantidades, montos y asignación a baristas.
-  - Acciones para marcar tareas como terminadas o reenviarlas.
-- **Pedidos y tickets** (`src/app/api/orders`, `src/app/api/orders/ticket`)
-  - Normaliza items, totales y propinas.
-  - Genera códigos de ticket (prefijo `XL-`) y mantiene snapshots de productos.
-  - Desencripta nombres/ teléfonos usando AES-GCM con pbkdf2 cuando la información está cifrada.
-- **Integración con Supabase**
-  - Tablas configurables via variables (ordenes, items, tickets, productos, usuarios, staff).
-  - Uso del cliente administrador (`supabaseAdmin`) en los endpoints server-side.
-  - Scripts auxiliares para poblar/asegurar usuarios especiales como “venta al público”.
+# 🌱 Descripción General  
+**Xoco POS** es el sistema oficial de Punto de Venta diseñado para las operaciones internas de Xoco Café.  
+Administra ventas, flujo de preparación, control de inventario y coordinación del staff.  
 
-## Tecnologías
+Algunas ideas de interfaz y conceptos del punto de venta fueron inspirados en el proyecto open-source **Frappe Books**:  
+https://github.com/frappe/books.  
 
-- [Next.js 14 (App Router)](https://nextjs.org/)
-- [React 18](https://react.dev/)
-- [Supabase](https://supabase.com/) como backend (PostgreSQL + Auth + Storage)
-- [Tailwind CSS](https://tailwindcss.com/) y estilos propios
-- [TypeScript](https://www.typescriptlang.org/)
+El sistema ha sido adaptado, rediseñado y programado específicamente para Xoco Café.
 
-## Estructura relevante
+---
 
+# ⭐ Funciones Principales  
+
+1. **Procesamiento de Ventas.** Interfaz rápida e intuitiva para registrar pedidos.  
+2. **Flujo de Preparación.** Actualizaciones en tiempo real para baristas y staff.  
+3. **Inventario y Consumo.** Registro de ingredientes, niveles de stock y alertas.  
+4. **Gestión de Usuarios.** Roles de Administrador, Barista y Cajero.  
+5. **Reportes y Métricas.** Ventas, historial y análisis de desempeño.  
+6. **Diseño Multiplataforma.** Funcionamiento en tableta, touchscreen y escritorio.  
+
+---
+
+# 🧱 Componentes del Sistema  
+
+## 💸 Operación POS  
+- Interfaz de caja para ventas y tickets.  
+- Catálogo de productos con categorías y modificadores.  
+- Cálculo automático de impuestos.  
+- Múltiples métodos de pago.  
+
+## 🍽️ Flujo de Preparación  
+- Tablero de órdenes en tiempo real.  
+- Enrutamiento automático por categoría.  
+- Tiempos de preparación y estado por pedido.  
+
+## 📦 Inventario  
+- Consumo por ingrediente y receta.  
+- Alertas de bajo inventario.  
+- Referencia de proveedores y costos.  
+
+## 👥 Roles de Usuario  
+- Administrador, Barista, Cajero.  
+- Permisos por módulo o acción.  
+
+---
+
+# 💻 Tecnologías  
+
+Tecnología | Función  
+---------- | --------  
+React.js | Framework principal de la interfaz.  
+Node.js / Express | API y lógica de negocio.  
+Firebase / MongoDB | Base de datos y autenticación.  
+Netlify / Vercel | Plataforma de despliegue.  
+Tailwind / Styled Components | Estilos de la interfaz.  
+PWA | Compatibilidad con tabletas y móviles.  
+
+---
+
+# 🔁 Migración & Inspiración  
+
+Algunos patrones de interfaz y conceptos fueron **referenciados y adaptados** del proyecto:  
+➡️ https://github.com/frappe/books.  
+
+Todo el código del sistema POS ha sido **reimplementado**, reestructurado o adaptado por **Donovan Riaño** para ajustarse al ecosistema de Xoco Café.
+
+---
+
+# ✒️ Créditos  
+
+## Equipo Fundador  
+- Sergio Cortés.  
+- Alejandro Galván.  
+- **Donovan Riaño.**  
+- Juan Aragón.  
+
+## Desarrollo  
+- **Desarrollador Principal:** *Donovan Riaño.*  
+- Funcionalidades del POS adaptadas exclusivamente para la operación interna de Xoco Café.  
+- Algunas tareas fueron asistidas con IA (Codex), con verificación manual.  
+
+---
+
+# 📜 Licencia — Apache License 2.0  
+
+El sistema Xoco POS es **propiedad intelectual de Xoco Café**.  
+Todo el código y arquitectura fueron desarrollados por:  
+**Donovan Riaño (Desarrollador Principal).**
+
+Bajo la licencia Apache 2.0:
+
+- Debe mantenerse la atribución a **Xoco Café**.  
+- Debe preservarse el crédito a **Donovan Riaño**.  
+- La redistribución debe incluir esta licencia.  
+- Se aplican derechos y protecciones de patente.  
+- Cualquier modificación debe documentarse.  
+
+Revisa el archivo `LICENSE` para los términos legales completos.
+
+---
+
+# 🧾 Encabezados de Licencia por Tipo de Archivo
+
+Incluye el encabezado correspondiente cuando crees o modifiques archivos en este repositorio:
+
+### Archivos JS / TS / TSX / JSX / Configuración
+
+```ts
+/*
+ * --------------------------------------------------------------------
+ *  Xoco POS — Point of Sale System
+ *  Software Property of Xoco Café
+ *  Copyright (c) 2025 Xoco Café
+ *  Principal Developer: Donovan Riaño
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at:
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *  --------------------------------------------------------------------
+ *  PROPIEDAD DEL SOFTWARE — XOCO CAFÉ.
+ *  Sistema Xoco POS — Punto de Venta.
+ *  Desarrollador Principal: Donovan Riaño.
+ *
+ *  Este archivo está licenciado bajo Apache License 2.0.
+ *  Consulta el archivo LICENSE en la raíz del proyecto para más detalles.
+ * --------------------------------------------------------------------
+ */
 ```
-src/
-├─ app/
-│  └─ api/                 # Endpoints serverless (orders, tickets, prep queue…)
-├─ components/             # UI principal (pos-dashboard, modales, helpers)
-├─ hooks/                  # Hooks para data fetching (use-prep-queue, use-orders…)
-├─ lib/
-│  ├─ api.ts               # Cliente fetch + tipos compartidos
-│  └─ customer-decrypt.ts  # Utilidades AES-GCM para campos cifrados
+
+### Archivos CSS / SCSS / Tailwind
+
+```css
+/*
+ * --------------------------------------------------------------------
+ *  Xoco POS — Styling
+ *  Part of the Xoco POS — Point of Sale System.
+ *  Software Property of Xoco Café.
+ *  Copyright (c) 2025 Xoco Café.
+ *  Principal Developer: Donovan Riaño.
+ *
+ *  Licensed under the Apache License, Version 2.0.
+ *  See the LICENSE file in the project root for full details.
+ *
+ *  PROPIEDAD DEL SOFTWARE — XOCO CAFÉ.
+ *  Este archivo de estilos forma parte del sistema Xoco POS.
+ * --------------------------------------------------------------------
+ */
 ```
 
-## Requisitos previos
+### Archivos HTML
 
-- Node.js 18+
-- npm (o pnpm/yarn/bun) para instalar dependencias
-- Proyecto de Supabase con las tablas necesarias y las variables de entorno configuradas.
+```html
+<!--
+  --------------------------------------------------------------------
+  Xoco POS — Point of Sale System.
+  Software Property of Xoco Café.
+  Copyright (c) 2025 Xoco Café.
+  Principal Developer: Donovan Riaño.
 
-Variables clave (ver `.env.local.example` o `.env.local`):
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at:
+      http://www.apache.org/licenses/LICENSE-2.0
 
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  --------------------------------------------------------------------
+  PROPIEDAD DEL SOFTWARE — XOCO CAFÉ.
+  Sistema Xoco POS — Punto de Venta.
+  Desarrollador Principal: Donovan Riaño.
+  Consulta el archivo LICENSE en la raíz del proyecto para más detalles.
+  --------------------------------------------------------------------
+-->
 ```
-NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_ANON_KEY=
-SUPABASE_SERVICE_ROLE_KEY=
-SUPABASE_ORDERS_TABLE=orders
-SUPABASE_ORDER_ITEMS_TABLE=order_items
-SUPABASE_PREP_QUEUE_TABLE=prep_queue
-SUPABASE_PRODUCTS_TABLE=products
-SUPABASE_USERS_TABLE=users
-SUPABASE_PUBLIC_SALE_CLIENT_ID=AAA-1111
-...
-```
 
-## Instalación y scripts
+---
 
-```bash
-npm install        # instala dependencias
-npm run dev        # entorno local (http://localhost:5173 por defecto)
-npm run lint       # ejecuta ESLint
-npm run build      # compila para producción
-npm start          # ejecuta el build resultante
-```
+<div align="center">
+  <img src="https://raw.githubusercontent.com/driano7/XocoCafe/main/public/static/images/XocoBanner.png" width="200" alt="Xoco Café Logo"/>
+</div>
 
-> Nota: el puerto puede configurarse con `next dev -p <puerto>` en `package.json`.
+<h1 align="center">Xoco POS — Point of Sale System</h1>
 
-## Flujo de trabajo
+<p align="center">
+  <i>Integrated Sales • Inventory • Workflow • Operations</i>
+</p>
 
-1. El frontend consume hooks como `useOrders`, `usePrepQueue`, `useReservations`, que llaman a las APIs internas (ver `src/lib/api.ts`).
-2. Las rutas en `src/app/api/**` consultan Supabase con el rol administrador, normalizan datos, aplican reglas de negocio y devuelven JSON.
-3. El dashboard reacciona en tiempo real usando polling ligero y acciones optimistas (snackbars, loaders) para los eventos del staff.
+<p align="center">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-brown.svg" />
+  <img src="https://img.shields.io/badge/status-In%20Development-yellow.svg" />
+  <img src="https://img.shields.io/badge/framework-React%20%2B%20Node.js-blue.svg" />
+  <img src="https://img.shields.io/badge/company-Xoco%20Café-orange.svg" />
+</p>
 
-## Desarrollo y contribución
+---
 
-- Mantén el tipado estricto de `src/lib/api.ts` para evitar regresiones en las vistas.
-- Si agregas nuevas tablas o columnas, actualiza las variables de entorno y las consultas en `supabaseAdmin`.
-- Ejecuta `npm run lint` antes de subir cambios.
-- Documenta scripts puntuales (como el upsert de usuarios especiales) dentro de `/scripts` y elimínalos si solo se usan una vez.
+# 🌱 Overview  
+**Xoco POS** is the official Point of Sale system developed for Xoco Café’s internal operations.  
+It manages sales, order flow, inventory tracking, and real-time staff coordination.  
+Some POS-related concepts and interface ideas were inspired by the open-source project **Frappe Books**:  
+https://github.com/frappe/books.  
 
-## Próximos pasos sugeridos
+The system is adapted, redesigned, and reimplemented specifically for Xoco Café.
 
-- Integrar suscripciones en tiempo real (Supabase Realtime) para reducir polling.
-- Añadir pruebas end-to-end (Playwright/Cypress) para los flujos críticos de pedidos/reservaciones.
-- Automatizar los reportes PDF o notificaciones cuando cambie el estado de la cola de producción.
+---
+
+# ⭐ Core Features  
+
+1. **Sales Processing.** Fast and intuitive order creation interface.  
+2. **Order Workflow.** Real-time updates for baristas and staff.  
+3. **Inventory & Consumption Tracking.** Stock levels, usage logs, and alerts.  
+4. **User Management.** Role-based permissions for Admin, Barista, and Cashier.  
+5. **Analytics & Reporting.** Sales metrics and historical performance data.  
+6. **Cross-Platform Interface.** Optimized for tablets, touchscreens, and desktop use.  
+
+---
+
+# 🧱 System Components  
+
+## 💸 POS Operations  
+- Cashier interface for orders and receipts.  
+- Product catalog with categories and modifiers.  
+- Automated tax calculations.  
+- Multiple payment method support.  
+
+## 🍽️ Preparation Flow  
+- Real-time order board for baristas.  
+- Automatic routing by drink or food category.  
+- Timers and preparation status tracking.  
+
+## 📦 Inventory Management  
+- Ingredient consumption tracking per order.  
+- Low-stock alerts.  
+- Supplier reference and cost data.  
+
+## 👥 User & Role System  
+- Admin, Barista, Cashier roles.  
+- Permissions assigned per action or module.  
+
+---
+
+# 💻 Technology Stack  
+
+Technology | Purpose  
+---------- | --------  
+React.js | Main user interface framework.  
+Node.js / Express | Backend logic and API routing.  
+Firebase / MongoDB | Database and authentication layer.  
+Netlify / Vercel | Deployment platform.  
+Tailwind CSS / Styled Components | Styling system.  
+PWA Support | Mobile/tablet-friendly capabilities.  
+
+---
+
+# 🔁 Migration & Source Inspiration  
+
+Some interface patterns and conceptual approaches were **referenced and adapted** from:  
+➡️ https://github.com/frappe/books.  
+
+All code in Xoco POS is **newly implemented**, restructured, or rewritten by **Donovan Riaño** to fit the Xoco Café ecosystem.
+
+---
+
+# ✒️ Credits  
+
+## Founding Team  
+- Sergio Cortés.  
+- Alejandro Galván.  
+- **Donovan Riaño.**  
+- Juan Aragón.  
+
+## Development  
+- **Principal Developer:** *Donovan Riaño.*  
+- POS functionalities adapted specifically for operational needs at Xoco Café.  
+- Certain development tasks assisted using AI (Codex), with full manual review and modifications.  
+
+---
+
+# 📜 License — Apache License 2.0  
+
+The Xoco POS system is the **intellectual property of Xoco Café**.  
+All code and system architecture were developed by:  
+**Donovan Riaño (Principal Developer).**
+
+Under the Apache 2.0 License:
+
+- Attribution to **Xoco Café** is required.  
+- Credit to **Donovan Riaño** must be maintained.  
+- Software redistribution must include the Apache 2.0 license.  
+- Patent protections apply.  
+- Any modifications must be clearly documented.  
+
+See the `LICENSE` file for full legal terms.
+
+---

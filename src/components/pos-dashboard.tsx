@@ -1,3 +1,31 @@
+/*
+ * --------------------------------------------------------------------
+ *  Xoco POS — Point of Sale System
+ *  Software Property of Xoco Café
+ *  Copyright (c) 2025 Xoco Café
+ *  Principal Developer: Donovan Riaño
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at:
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *  --------------------------------------------------------------------
+ *  PROPIEDAD DEL SOFTWARE — XOCO CAFÉ.
+ *  Sistema Xoco POS — Punto de Venta.
+ *  Desarrollador Principal: Donovan Riaño.
+ *
+ *  Este archivo está licenciado bajo Apache License 2.0.
+ *  Consulta el archivo LICENSE en la raíz del proyecto para más detalles.
+ * --------------------------------------------------------------------
+ */
+
 'use client';
 
 import Image from 'next/image';
@@ -77,6 +105,151 @@ const formatDate = (value?: string | null) =>
 const getOrderDisplayCode = (order: Order) =>
   order.ticketCode ?? order.orderNumber ?? order.id;
 
+const COMMENT_METADATA_KEYS = [
+  'notes',
+  'note',
+  'comentarios',
+  'comentario',
+  'comments',
+  'instructions',
+  'instruction',
+  'instrucciones',
+  'mensaje',
+  'message',
+  'observaciones',
+  'observacion',
+];
+
+const toTrimmedString = (value: unknown) =>
+  typeof value === 'string' ? value.trim() || null : null;
+
+const extractNotesFromMetadata = (metadata: unknown): string | null => {
+  if (!metadata) {
+    return null;
+  }
+  if (typeof metadata === 'string') {
+    return metadata.trim() || null;
+  }
+  if (Array.isArray(metadata)) {
+    for (const entry of metadata) {
+      const candidate = extractNotesFromMetadata(entry);
+      if (candidate) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+  if (typeof metadata === 'object') {
+    const record = metadata as Record<string, unknown>;
+    for (const key of COMMENT_METADATA_KEYS) {
+      const candidate = toTrimmedString(record[key]);
+      if (candidate) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+};
+
+const extractOrderNotes = (
+  order?: { metadata?: unknown; notes?: unknown; message?: unknown; instructions?: unknown }
+) => {
+  if (!order) {
+    return null;
+  }
+  const directFields = [order.notes, order.message, order.instructions];
+  for (const value of directFields) {
+    const text = toTrimmedString(value);
+    if (text) {
+      return text;
+    }
+  }
+  return extractNotesFromMetadata(order.metadata);
+};
+
+const parseMetadataObject = (value: unknown): Record<string, unknown> | null => {
+  if (!value) {
+    return null;
+  }
+  if (isPlainObject(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return isPlainObject(parsed) ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+};
+
+const STAFF_NOTES_METADATA_KEYS = ['posNote', 'staffNote', 'notaPos', 'barraNote', 'kitchenNote'];
+const CUSTOMER_NOTES_METADATA_KEYS = [
+  'customerNote',
+  'customerNotes',
+  'customerMessage',
+  'mensajeCliente',
+  'frontNote',
+  'appNote',
+];
+
+const extractCommentFromMetadata = (
+  metadata: unknown,
+  keys: string[]
+): string | null => {
+  if (!metadata) {
+    return null;
+  }
+  if (typeof metadata === 'string') {
+    return null;
+  }
+  if (Array.isArray(metadata)) {
+    for (const entry of metadata) {
+      const candidate = extractCommentFromMetadata(entry, keys);
+      if (candidate) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+  if (typeof metadata === 'object') {
+    const record = metadata as Record<string, unknown>;
+    for (const key of keys) {
+      const candidate = toTrimmedString(record[key]);
+      if (candidate) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+  return null;
+};
+
+const extractStaffNotes = (
+  order?: { metadata?: unknown; notes?: unknown; instructions?: unknown }
+) => {
+  if (!order) {
+    return null;
+  }
+  return (
+    toTrimmedString(order.notes) ??
+    toTrimmedString(order.instructions) ??
+    extractCommentFromMetadata(order.metadata, STAFF_NOTES_METADATA_KEYS)
+  );
+};
+
+const extractCustomerNotes = (order?: { metadata?: unknown; message?: unknown }) => {
+  if (!order) {
+    return null;
+  }
+  return (
+    toTrimmedString(order.message) ??
+    extractCommentFromMetadata(order.metadata, CUSTOMER_NOTES_METADATA_KEYS)
+  );
+};
+
 const getMonthStart = () => {
   const date = new Date();
   date.setDate(1);
@@ -103,6 +276,14 @@ const PAYMENT_METHOD_LABELS = PAYMENT_METHOD_OPTIONS.reduce<Record<string, strin
   acc[method.key] = method.label;
   return acc;
 }, {});
+
+const PAYMENT_REFERENCE_TYPE_LABELS: Record<string, string> = {
+  evm_address: 'Wallet EVM',
+  ens_name: 'ENS',
+  transaction_id: 'Transferencia',
+  text: 'Referencia',
+  lightning_invoice: 'Lightning',
+};
 
 const getPaymentMethodLabel = (method: string) => {
   const normalized = method.toLowerCase();
@@ -267,23 +448,265 @@ const formatCustomerDisplay = (user?: MaybeCustomer | null, fallbackId?: string 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === 'object' && !Array.isArray(value));
 
-const parseScannedPayload = (payload: string): ScanResult | null => {
-  const parsePriceValue = (value: unknown) => {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return value;
+const parseNumericValue = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
     }
-    if (typeof value === 'string') {
-      const parsed = Number.parseFloat(value);
-      return Number.isFinite(parsed) ? parsed : null;
-    }
-    return null;
-  };
+    const normalized =
+      trimmed.includes('.') && trimmed.includes(',')
+        ? trimmed.replace(/,/g, '')
+        : trimmed.includes(',')
+          ? trimmed.replace(',', '.')
+          : trimmed;
+    const parsed = Number.parseFloat(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
 
+const looksLikeEvmAddress = (value: string) => /^0x[a-fA-F0-9]{40}$/.test(value.trim());
+const looksLikeEnsName = (value: string) =>
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.(eth|xyz|luxe)$/i.test(value.trim());
+const looksLikeLightningInvoice = (value: string) => {
+  const normalized = value.trim().toLowerCase().replace(/^lightning:/, '');
+  return (
+    normalized.startsWith('lnbc') ||
+    normalized.startsWith('lntb') ||
+    normalized.startsWith('lntbs') ||
+    normalized.startsWith('lnbcrt') ||
+    normalized.startsWith('lnurl')
+  );
+};
+const normalizeLightningReference = (value: string) => value.replace(/^lightning:/i, '');
+
+const parseCompactTicketTimestamp = (value: string): string | null => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const pattern =
+    /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:[\sT-]+(\d{1,2}):(\d{2}))?/u;
+  const match = trimmed.match(pattern);
+  if (match) {
+    const [, dayStr, monthStr, yearStr, hourStr, minuteStr] = match;
+    const day = Number(dayStr);
+    const month = Number(monthStr);
+    const year = yearStr.length === 2 ? Number(`20${yearStr}`) : Number(yearStr);
+    const hour = hourStr ? Number(hourStr) : 0;
+    const minute = minuteStr ? Number(minuteStr) : 0;
+    const date = new Date(year, month - 1, day, hour, minute, 0, 0);
+    if (!Number.isNaN(date.getTime())) {
+      return date.toISOString();
+    }
+  }
+  const fallback = new Date(trimmed);
+  return Number.isNaN(fallback.getTime()) ? null : fallback.toISOString();
+};
+
+const parseCompactTicketPayload = (root: Record<string, unknown>): ScannedTicket | null => {
+  const candidateIds = [
+    typeof root.t === 'string' ? root.t.trim() : null,
+    typeof root.ticket === 'string' ? root.ticket.trim() : null,
+    typeof root.ticketId === 'string' ? root.ticketId.trim() : null,
+    typeof root.o === 'string' ? root.o.trim() : null,
+  ].filter((value): value is string => Boolean(value));
+  if (candidateIds.length === 0) {
+    return null;
+  }
+
+  const ticketId = candidateIds[0];
+  const toLineItem = (entry: unknown, index: number) => {
+    if (!isPlainObject(entry)) {
+      return null;
+    }
+    const record = entry as Record<string, unknown>;
+    const name =
+      (typeof record.n === 'string' && record.n.trim()) ||
+      (typeof record.name === 'string' && record.name.trim()) ||
+      `Producto ${index + 1}`;
+    const quantityValue =
+      parseNumericValue(record.q) ??
+      parseNumericValue(record.qty) ??
+      parseNumericValue(record.quantity);
+    const quantity = quantityValue && quantityValue > 0 ? quantityValue : 1;
+    const price = parseNumericValue(record.p ?? record.price ?? record.amount);
+    const category =
+      (typeof record.c === 'string' && record.c.trim()) ||
+      (typeof record.category === 'string' && record.category.trim()) ||
+      null;
+    const size =
+      (typeof record.s === 'string' && record.s.trim()) ||
+      (typeof record.size === 'string' && record.size.trim()) ||
+      null;
+    return {
+      id:
+        (typeof record.id === 'string' && record.id.trim()) ||
+        (typeof record.productId === 'string' && record.productId.trim()) ||
+        `${ticketId}-${index}`,
+      productId: typeof record.productId === 'string' ? record.productId : null,
+      name,
+      category,
+      quantity,
+      price,
+      sizeId: size,
+      sizeLabel: size,
+      packageId: null,
+      packageName: null,
+      metadata: null,
+    };
+  };
+  const rawItems = Array.isArray(root.i) ? root.i : Array.isArray(root.items) ? root.items : [];
+  const lineItems = rawItems
+    .map(toLineItem)
+    .filter(Boolean) as NonNullable<ScannedTicket['lineItems']>[number][];
+
+  if (lineItems.length === 0) {
+    return null;
+  }
+
+  const orders = lineItems.map((item) => ({
+    name: item.name ?? 'Producto',
+    quantity: item.quantity ?? 1,
+    unitPrice: item.price ?? null,
+  }));
+  const totalsAmount =
+    parseNumericValue(root.a) ??
+    parseNumericValue(root.total) ??
+    parseNumericValue(root.amount) ??
+    null;
+  const tipPayload = isPlainObject(root.tip) ? (root.tip as Record<string, unknown>) : null;
+  const tipAmount =
+    parseNumericValue(root.tipAmount) ??
+    parseNumericValue(tipPayload?.a) ??
+    parseNumericValue(tipPayload?.amount) ??
+    null;
+  const tipPercent =
+    parseNumericValue(root.tipPercent) ??
+    parseNumericValue(tipPayload?.p) ??
+    parseNumericValue(tipPayload?.percent) ??
+    null;
+  const deliveryTipPayload = isPlainObject(root.dt)
+    ? (root.dt as Record<string, unknown>)
+    : null;
+  const deliveryTipAmount =
+    parseNumericValue(deliveryTipPayload?.a) ??
+    parseNumericValue(deliveryTipPayload?.amount) ??
+    null;
+  const deliveryTipPercent =
+    parseNumericValue(deliveryTipPayload?.p) ??
+    parseNumericValue(deliveryTipPayload?.percent) ??
+    null;
+  const customerField = typeof root.c === 'string' ? root.c : null;
+  let customerName: string | null = null;
+  let customerEmail: string | null = null;
+  if (customerField) {
+    const [namePart, emailPart] = customerField.split('|');
+    customerName = namePart?.trim() || null;
+    customerEmail = emailPart?.trim() || null;
+  }
+
+  const metadata: Record<string, unknown> = {};
+  if (typeof root.addr === 'string' && root.addr.trim()) {
+    metadata.deliveryAddressId = root.addr.trim();
+  }
+  if (deliveryTipAmount !== null) {
+    metadata.deliveryTipAmount = deliveryTipAmount;
+  }
+  if (deliveryTipPercent !== null) {
+    metadata.deliveryTipPercent = deliveryTipPercent;
+  }
+  if (typeof root.o === 'string' && root.o.trim()) {
+    metadata.orderId = root.o.trim();
+  }
+  if (typeof root.t === 'string' && root.t.trim()) {
+    metadata.ticketCode = root.t.trim();
+  }
+  if (typeof root.ts === 'string' && root.ts.trim()) {
+    metadata.rawTimestamp = root.ts.trim();
+  }
+
+  const issuedAt =
+    typeof root.ts === 'string' ? parseCompactTicketTimestamp(root.ts) : null;
+
+  return {
+    ticketId,
+    clientEmail: customerEmail ?? null,
+    issuedAt,
+    orders,
+    lineItems,
+    totals: {
+      itemsCount: lineItems.reduce((sum, item) => sum + (item.quantity ?? 0), 0),
+      totalAmount: totalsAmount,
+      tipAmount: tipAmount ?? null,
+    },
+    tipAmount: tipAmount ?? null,
+    tipPercent: tipPercent ?? null,
+    paymentMethod:
+      typeof root.paymentMethod === 'string'
+        ? root.paymentMethod
+        : typeof root.m === 'string'
+          ? root.m
+          : null,
+    notes:
+      typeof root.notes === 'string'
+        ? root.notes
+        : typeof root.message === 'string'
+          ? root.message
+          : null,
+    metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+    customer:
+      customerName || customerEmail
+        ? {
+            name: customerName ?? null,
+            email: customerEmail ?? null,
+          }
+        : undefined,
+  };
+};
+
+const parseScannedPayload = (payload: string): ScanResult | null => {
   try {
+    const trimmedPayload = payload.trim();
+    if (trimmedPayload) {
+      const possibleAddress = trimmedPayload
+        .replace(/^ethereum:/i, '')
+        .replace(/^wallet:/i, '')
+        .split(/[?]/)[0];
+      if (looksLikeEvmAddress(possibleAddress)) {
+        return {
+          type: 'payment',
+          data: { reference: possibleAddress, format: 'evm_address' },
+        };
+      }
+      if (looksLikeEnsName(trimmedPayload)) {
+        return {
+          type: 'payment',
+          data: { reference: trimmedPayload, format: 'ens_name' },
+        };
+      }
+      if (looksLikeLightningInvoice(trimmedPayload)) {
+        const normalizedLightning = trimmedPayload.replace(/^lightning:/i, '');
+        return {
+          type: 'payment',
+          data: { reference: normalizedLightning, format: 'lightning_invoice' },
+        };
+      }
+    }
     const parsed = JSON.parse(payload) as unknown;
     if (!isPlainObject(parsed)) {
       return null;
     }
+
+    const compactTicket = parseCompactTicketPayload(parsed);
+    if (compactTicket) {
+      return { type: 'ticket', data: compactTicket };
+    }
+
     if (typeof parsed.ticketId === 'string') {
       const rawLineItems = Array.isArray(parsed.items)
         ? parsed.items
@@ -313,7 +736,7 @@ const parseScannedPayload = (payload: string): ScanResult | null => {
             name: typeof item.name === 'string' ? item.name : 'Producto',
             category: typeof item.category === 'string' ? item.category : null,
             quantity: safeQuantity(item.quantity as number | null | undefined) ?? 1,
-            price: parsePriceValue(item.price ?? item.unitPrice) ?? null,
+            price: parseNumericValue(item.price ?? item.unitPrice) ?? null,
             sizeId:
               (typeof item.sizeId === 'string' && item.sizeId) ||
               (typeof item.sizeIdentifier === 'string' && item.sizeIdentifier) ||
@@ -337,11 +760,9 @@ const parseScannedPayload = (payload: string): ScanResult | null => {
             name: typeof item.name === 'string' ? item.name : 'Producto',
             quantity: safeQuantity(item.quantity as number | null | undefined) ?? 1,
             unitPrice:
-              typeof item.unitPrice === 'number'
-                ? item.unitPrice
-                : typeof item.price === 'number'
-                  ? item.price
-                  : null,
+              parseNumericValue(item.unitPrice) ??
+              parseNumericValue(item.price) ??
+              null,
           };
         });
       const rawCustomer = isPlainObject(parsed.customer) ? parsed.customer : null;
@@ -381,21 +802,14 @@ const parseScannedPayload = (payload: string): ScanResult | null => {
         : undefined;
       const totalsPayload = isPlainObject(parsed.totals) ? (parsed.totals as Record<string, unknown>) : null;
       const tipPayload = isPlainObject(parsed.tip) ? (parsed.tip as Record<string, unknown>) : null;
-      const tipAmount = parsePriceValue(
-        parsed.tipAmount ??
-          (typeof tipPayload?.amount === 'number' || typeof tipPayload?.amount === 'string'
-            ? tipPayload.amount
-            : null) ??
-          totalsPayload?.tipAmount
-      );
+      const tipAmount =
+        parseNumericValue(parsed.tipAmount) ??
+        parseNumericValue(tipPayload?.amount) ??
+        parseNumericValue(totalsPayload?.tipAmount);
       const tipPercentValue =
-        typeof parsed.tipPercent === 'number'
-          ? parsed.tipPercent
-          : typeof tipPayload?.percent === 'number'
-            ? (tipPayload.percent as number)
-            : typeof totalsPayload?.tipPercent === 'number'
-              ? (totalsPayload.tipPercent as number)
-              : null;
+        parseNumericValue(parsed.tipPercent) ??
+        parseNumericValue(tipPayload?.percent) ??
+        parseNumericValue(totalsPayload?.tipPercent);
       return {
         type: 'ticket',
         data: {
@@ -553,6 +967,42 @@ const buildOrderFromTicketDetail = (detail: TicketDetail, fallback?: ScannedTick
   const fallbackLast = lastName ?? (nameSegments.length > 1 ? nameSegments.slice(1).join(' ') : null);
 
   const itemsCount = combinedItems.reduce((sum, item) => sum + (item.quantity ?? 0), 0);
+  const metadataPayload = (detail.order as { metadata?: unknown })?.metadata ?? null;
+  const metadataObject = parseMetadataObject(metadataPayload);
+  const prepAssignment =
+    metadataObject?.prepAssignment && isPlainObject(metadataObject.prepAssignment)
+      ? parseMetadataObject(metadataObject.prepAssignment)
+      : null;
+  const paymentMetadata =
+    metadataObject?.payment && isPlainObject(metadataObject.payment)
+      ? parseMetadataObject(metadataObject.payment)
+      : null;
+  const resolvedQueuedByStaffId =
+    (detail.order as { queuedByStaffId?: string | null }).queuedByStaffId ??
+    toTrimmedString(prepAssignment?.staffId) ??
+    detail.ticket.handledByStaffId ??
+    null;
+  const resolvedQueuedByStaffName =
+    (detail.order as { queuedByStaffName?: string | null }).queuedByStaffName ??
+    toTrimmedString(prepAssignment?.staffName) ??
+    detail.ticket.handledByStaffName ??
+    null;
+  const resolvedPaymentMethod =
+    (detail.order as { queuedPaymentMethod?: string | null }).queuedPaymentMethod ??
+    toTrimmedString(paymentMetadata?.method) ??
+    detail.ticket.paymentMethod ??
+    fallback?.paymentMethod ??
+    null;
+  const resolvedPaymentReference =
+    (detail.order as { queuedPaymentReference?: string | null }).queuedPaymentReference ??
+    toTrimmedString(paymentMetadata?.reference) ??
+    detail.ticket.paymentReference ??
+    null;
+  const resolvedPaymentReferenceType =
+    (detail.order as { queuedPaymentReferenceType?: string | null }).queuedPaymentReferenceType ??
+    toTrimmedString(paymentMetadata?.referenceType) ??
+    detail.ticket.paymentReferenceType ??
+    null;
 
   return {
     id: detail.order.id,
@@ -567,7 +1017,11 @@ const buildOrderFromTicketDetail = (detail: TicketDetail, fallback?: ScannedTick
     itemsCount,
     tipAmount: detail.ticket.tipAmount ?? fallback?.tipAmount ?? null,
     tipPercent: detail.ticket.tipPercent ?? fallback?.tipPercent ?? null,
-    queuedPaymentMethod: detail.ticket.paymentMethod ?? fallback?.paymentMethod ?? null,
+    queuedPaymentMethod: resolvedPaymentMethod,
+    queuedPaymentReference: resolvedPaymentReference,
+    queuedPaymentReferenceType: resolvedPaymentReferenceType,
+    queuedByStaffId: resolvedQueuedByStaffId,
+    queuedByStaffName: resolvedQueuedByStaffName,
     user: {
       firstName: fallbackFirst,
       lastName: fallbackLast,
@@ -577,6 +1031,10 @@ const buildOrderFromTicketDetail = (detail: TicketDetail, fallback?: ScannedTick
     },
     createdAt: detail.order.createdAt ?? detail.ticket.createdAt ?? null,
     type: 'POS',
+    metadata: metadataPayload ?? fallback?.metadata ?? null,
+    notes:
+      toTrimmedString((detail.order as { notes?: unknown })?.notes) ??
+      toTrimmedString(fallback?.notes ?? null),
   } as Order;
 };
 
@@ -633,6 +1091,8 @@ const buildOrderFromTicketPayload = (ticket: ScannedTicket): Order => {
   },
     createdAt: ticket.issuedAt ?? null,
     type: 'POS',
+    metadata: ticket.metadata ?? ticket.notes ?? null,
+    notes: toTrimmedString(ticket.notes ?? null),
   } as Order;
 };
 
@@ -841,6 +1301,10 @@ type ScannedTicket = {
   tipAmount?: number | null;
   tipPercent?: number | null;
   paymentMethod?: string | null;
+  notes?: string | null;
+  metadata?: Record<string, unknown> | string | null;
+  instructions?: string | null;
+  message?: string | null;
   customer?: {
     id?: string | null;
     clientId?: string | null;
@@ -895,10 +1359,16 @@ type ScannedCustomer = {
   email?: string | null;
 };
 
+type ScannedPayment = {
+  reference: string;
+  format: 'evm_address' | 'ens_name' | 'lightning_invoice';
+};
+
 type ScanResult =
   | { type: 'ticket'; data: ScannedTicket }
   | { type: 'reservation'; data: ScannedReservation }
-  | { type: 'customer'; data: ScannedCustomer };
+  | { type: 'customer'; data: ScannedCustomer }
+  | { type: 'payment'; data: ScannedPayment };
 
 type NavSection =
   | 'home'
@@ -1239,6 +1709,17 @@ export function PosDashboard() {
   const [snackbar, setSnackbar] = useState<string | null>(null);
   const [showNewOrderForm, setShowNewOrderForm] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const [walletScanResolver, setWalletScanResolver] = useState<((value: string) => void) | null>(
+    null
+  );
+  const [showWalletScanner, setShowWalletScanner] = useState(false);
+  const [walletScannerFeedback, setWalletScannerFeedback] = useState<string | null>(null);
+  const [presetQr, setPresetQr] = useState<{ type: 'evm' | 'lightning'; value: string } | null>(null);
+  const handleOpenPresetQr = useCallback(
+    (type: 'evm' | 'lightning', value: string) => setPresetQr({ type, value }),
+    []
+  );
+  const handleClosePresetQr = useCallback(() => setPresetQr(null), []);
   const [prepSearchInput, setPrepSearchInput] = useState('');
   const [prepFilter, setPrepFilter] = useState('');
   const [showPastPrepModal, setShowPastPrepModal] = useState(false);
@@ -1626,6 +2107,7 @@ export function PosDashboard() {
   const [customerQuery, setCustomerQuery] = useState('');
   const [customerFilter, setCustomerFilter] = useState('');
   const [prefilledClientId, setPrefilledClientId] = useState<string | null>(null);
+  const [lastPaymentReference, setLastPaymentReference] = useState<string | null>(null);
   const loyaltyCustomers = useMemo(
     () => loyaltyStats?.customers ?? [],
     [loyaltyStats]
@@ -1641,6 +2123,56 @@ export function PosDashboard() {
       return idMatch || userMatch;
     });
   }, [customerFilter, loyaltyCustomers]);
+  const loyaltyLookup = useMemo(() => {
+    const map = new Map<string, LoyaltyCustomer>();
+    loyaltyCustomers.forEach((customer) => {
+      const identifiers = [
+        customer.clientId,
+        customer.userId,
+        customer.email,
+      ]
+        .map((value) => value?.trim().toLowerCase())
+        .filter((value): value is string => Boolean(value));
+      identifiers.forEach((key) => {
+        if (!map.has(key)) {
+          map.set(key, customer);
+        }
+      });
+    });
+    return map;
+  }, [loyaltyCustomers]);
+  const findLoyaltyCustomerForOrder = useCallback(
+    (order: Order) => {
+      const identifiers = [
+        order.clientId,
+        order.user?.clientId,
+        order.userId,
+        order.user?.email,
+      ]
+        .map((value) => value?.trim().toLowerCase())
+        .filter((value): value is string => Boolean(value));
+      for (const identifier of identifiers) {
+        if (loyaltyLookup.has(identifier)) {
+          return loyaltyLookup.get(identifier) ?? null;
+        }
+      }
+      return null;
+    },
+    [loyaltyLookup]
+  );
+  const resolveLoyaltyCustomerByIdentifier = useCallback(
+    (identifier?: string | null) => {
+      if (!identifier) {
+        return null;
+      }
+      const normalized = identifier.trim().toLowerCase();
+      if (!normalized) {
+        return null;
+      }
+      return loyaltyLookup.get(normalized) ?? null;
+    },
+    [loyaltyLookup]
+  );
 
   const notificationsFeed = useMemo(() => {
     const feed: { id: string; message: string; timestamp: string }[] = [];
@@ -1991,7 +2523,7 @@ export function PosDashboard() {
             try {
               const detail = await fetchTicketDetail(parsed.data.ticketId);
               const orderFromDetail = buildOrderFromTicketDetail(detail, parsed.data);
-              setDetail({ type: "order", data: orderFromDetail });
+              setDetail({ type: 'order', data: orderFromDetail });
               rememberClientId(
                 orderFromDetail.clientId ??
                   orderFromDetail.user?.clientId ??
@@ -2020,6 +2552,17 @@ export function PosDashboard() {
               null
           );
           tryCloseScanner();
+          return;
+        }
+        if (parsed.type === 'payment') {
+          setLastPaymentReference(parsed.data.reference);
+          const feedbackMessage =
+            parsed.data.format === 'ens_name'
+              ? 'Referencia ENS detectada. Selecciona un pedido y usa la referencia al capturar el pago.'
+              : parsed.data.format === 'lightning_invoice'
+                ? 'Factura Lightning detectada. Selecciona un pedido y usa la referencia al capturar el pago.'
+                : 'Wallet EVM detectada. Selecciona un pedido y usa la referencia al capturar el pago.';
+          setScannerFeedback(feedbackMessage);
           return;
         }
         if (parsed.type === 'reservation') {
@@ -2134,6 +2677,7 @@ export function PosDashboard() {
 
   const handleOpenScanner = useCallback(() => {
     setActiveSection('home');
+    setScannerFeedback(null);
     setShowScanner(true);
   }, [setActiveSection]);
 
@@ -2141,6 +2685,53 @@ export function PosDashboard() {
     setShowScanner(false);
     setScannerFeedback(null);
   }, []);
+
+  const handleCloseWalletScanner = useCallback(() => {
+    setWalletScanResolver(null);
+    setWalletScannerFeedback(null);
+    setShowWalletScanner(false);
+  }, []);
+
+  const handleWalletScanRequest = useCallback(
+    (onCapture: (value: string) => void) => {
+      setActiveSection('home');
+      setWalletScanResolver(() => onCapture);
+      setWalletScannerFeedback('Escanea la wallet o ENS para llenar la referencia.');
+      setShowWalletScanner(true);
+    },
+    [setActiveSection]
+  );
+  const handleWalletScannerPayload = useCallback(
+    (payload: string) => {
+      const trimmed = payload.trim();
+      if (!trimmed) {
+        setWalletScannerFeedback('No pudimos leer el código, intenta nuevamente.');
+        return;
+      }
+      if (!walletScanResolver) {
+        handleCloseWalletScanner();
+        return;
+      }
+      const parsed = parseScannedPayload(trimmed);
+      if (parsed?.type === 'payment') {
+        walletScanResolver(parsed.data.reference);
+        handleCloseWalletScanner();
+        return;
+      }
+      if (looksLikeEvmAddress(trimmed) || looksLikeEnsName(trimmed)) {
+        walletScanResolver(trimmed);
+        handleCloseWalletScanner();
+        return;
+      }
+      if (looksLikeLightningInvoice(trimmed)) {
+        walletScanResolver(normalizeLightningReference(trimmed));
+        handleCloseWalletScanner();
+        return;
+      }
+      setWalletScannerFeedback('Este QR no contiene una wallet ENS/EVM o factura Lightning compatible.');
+    },
+    [handleCloseWalletScanner, walletScanResolver]
+  );
 
   const getCurrentStaffName = useCallback(
     () => {
@@ -2159,7 +2750,10 @@ export function PosDashboard() {
   );
 
   const handleMoveOrderToQueue = useCallback(
-    async (order: Order, options?: { paymentMethod?: string | null }) => {
+    async (
+      order: Order,
+      options?: { paymentMethod?: string | null; paymentReference?: string | null }
+    ) => {
       if (!user) {
         return;
       }
@@ -2169,6 +2763,7 @@ export function PosDashboard() {
           staffId: user.id,
           staffName: getCurrentStaffName(),
           paymentMethod: options?.paymentMethod ?? null,
+          paymentReference: options?.paymentReference ?? null,
         });
         await Promise.all([refresh(), refreshPrep()]);
         setActionState({
@@ -2192,7 +2787,10 @@ export function PosDashboard() {
   );
 
   const handleReturnOrderToQueue = useCallback(
-    async (order: Order, options?: { paymentMethod?: string | null }) => {
+    async (
+      order: Order,
+      options?: { paymentMethod?: string | null; paymentReference?: string | null }
+    ) => {
       if (!user) {
         return;
       }
@@ -2202,6 +2800,7 @@ export function PosDashboard() {
           staffId: user.id,
           staffName: getCurrentStaffName(),
           paymentMethod: options?.paymentMethod ?? null,
+          paymentReference: options?.paymentReference ?? null,
         });
         await Promise.all([refresh(), refreshPrep()]);
         setActionState({
@@ -2718,19 +3317,41 @@ const currentMonthMetrics = useMemo(() => {
                 </button>
               </div>
               <div className="grid gap-4 lg:grid-cols-2">
-                <QuickAction
-                  title="Abrir nuevo pedido"
-                  description="Escanea el QR de un cliente o crea un pedido POS manual."
-                  cta="Nuevo pedido"
-                  onClick={() => handleOpenNewOrder()}
-                />
-                <QuickAction
-                  title="Escanear QR inteligente"
-                  description="Escanea tickets, reservas o clientes en un solo lector."
-                  cta="Abrir lector"
-                  onClick={() => handleOpenScanner()}
-                />
-              </div>
+              <QuickAction
+                title="Abrir nuevo pedido"
+                description="Escanea el QR de un cliente o crea un pedido POS manual."
+                cta="Nuevo pedido"
+                onClick={() => handleOpenNewOrder()}
+              />
+              <QuickAction
+                title="Escanear QR inteligente"
+                description="Escanea tickets, reservas o clientes en un solo lector."
+                cta="Abrir lector"
+                onClick={() => handleOpenScanner()}
+              />
+            </div>
+            <div className="mt-2 flex flex-wrap justify-center gap-3">
+              <button
+                type="button"
+                onClick={() =>
+                  handleOpenPresetQr('evm', '0xd717d02a2434f8506b14143f60d998337d6f5649')
+                }
+                className="inline-flex items-center gap-3 rounded-2xl border border-primary-100/70 bg-white/80 px-5 py-3 text-sm font-semibold text-primary-700 transition hover:border-primary-300 hover:text-primary-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
+              >
+                <span aria-hidden="true">📷</span>
+                QR dirección EVM (0x…5649)
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  handleOpenPresetQr('lightning', 'howlingnote18@walletofsatoshi.com')
+                }
+                className="inline-flex items-center gap-3 rounded-2xl border border-primary-100/70 bg-white/80 px-5 py-3 text-sm font-semibold text-primary-700 transition hover:border-primary-300 hover:text-primary-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
+              >
+                <span aria-hidden="true">⚡️</span>
+                QR Lightning (howlingnote18@walletofsatoshi.com)
+              </button>
+            </div>
               {menuError && (
                 <p className="rounded-2xl border border-danger-200/70 bg-danger-50/50 px-4 py-2 text-xs text-danger-600 dark:border-danger-500/40 dark:bg-danger-900/20 dark:text-danger-200">
                   {menuError} ·{' '}
@@ -2752,6 +3373,8 @@ const currentMonthMetrics = useMemo(() => {
                 <NewOrderModal
                   onClose={handleCloseNewOrder}
                   prefillClientId={prefilledClientId}
+                  onWalletScanRequest={handleWalletScanRequest}
+                  resolveLoyaltyCustomer={resolveLoyaltyCustomerByIdentifier}
                   onSuccess={async () => {
                     await refresh();
                     setSnackbar('Nuevo pedido creado manualmente.');
@@ -2762,9 +3385,23 @@ const currentMonthMetrics = useMemo(() => {
             )}
 
             {showScanner && (
-              <section className="card space-y-4 p-6">
-                <SmartScannerPanel onPayload={handleScannerPayload} onClose={handleCloseScanner} feedback={scannerFeedback} />
-              </section>
+              <>
+                <section className="card space-y-4 p-6">
+                  <SmartScannerPanel onPayload={handleScannerPayload} onClose={handleCloseScanner} feedback={scannerFeedback} />
+                </section>
+                <div className="mt-2 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleOpenPresetQr('lightning', 'howlingnote18@walletofsatoshi.com')
+                    }
+                    className="inline-flex items-center gap-3 rounded-2xl border border-primary-100/70 bg-white/80 px-5 py-3 text-sm font-semibold text-primary-700 transition hover:border-primary-300 hover:text-primary-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
+                  >
+                    <span aria-hidden="true">⚡️</span>
+                    QR Lightning (howlingnote18@walletofsatoshi.com)
+                  </button>
+                </div>
+              </>
             )}
 
             <OrdersPanel
@@ -2956,7 +3593,10 @@ const currentMonthMetrics = useMemo(() => {
             </section>
 
             {detail && (
-              <DetailModal onClose={() => setDetail(null)}>
+              <DetailModal
+                onClose={() => setDetail(null)}
+                size={detail.type === 'scan-customer' ? 'wide' : 'default'}
+              >
                 <div className="space-y-6">
                 <div className="flex items-center justify-between">
                   <p className="badge">Detalle seleccionado</p>
@@ -2971,9 +3611,13 @@ const currentMonthMetrics = useMemo(() => {
                 {detail.type === 'order' && (
                     <OrderDetailContent
                       order={detail.data}
-                      onMoveToQueue={() => void handleMoveOrderToQueue(detail.data)}
-                      onReturnToQueue={() => void handleReturnOrderToQueue(detail.data)}
+                      onMoveToQueue={(order, options) => void handleMoveOrderToQueue(order, options)}
+                      onReturnToQueue={(order, options) => void handleReturnOrderToQueue(order, options)}
                       actionState={actionState}
+                      prefilledPaymentReference={lastPaymentReference}
+                      loyaltyCustomer={findLoyaltyCustomerForOrder(detail.data)}
+                      isLoyaltyReady={!loyaltyLoading}
+                      onWalletScanRequest={handleWalletScanRequest}
                     />
                   )}
                   {detail.type === 'reservation' && (
@@ -3416,6 +4060,14 @@ const currentMonthMetrics = useMemo(() => {
           </section>
         )}
 
+        {showWalletScanner && (
+          <WalletScannerOverlay
+            onPayload={handleWalletScannerPayload}
+            onClose={handleCloseWalletScanner}
+            feedback={walletScannerFeedback}
+          />
+        )}
+        {presetQr && <PresetPaymentQrOverlay preset={presetQr} onClose={handleClosePresetQr} />}
         {snackbar && <Snackbar message={snackbar} onClose={() => setSnackbar(null)} />}
       </main>
     </div>
@@ -3425,9 +4077,11 @@ const currentMonthMetrics = useMemo(() => {
 const DetailModal = ({
   children,
   onClose,
+  size = 'default',
 }: {
   children: ReactNode;
   onClose: () => void;
+  size?: 'default' | 'wide';
 }) => {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -3451,7 +4105,11 @@ const DetailModal = ({
         role="presentation"
         onClick={onClose}
       />
-      <div className="relative z-10 max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-3xl bg-white p-6 text-[var(--brand-text)] shadow-2xl dark:bg-[#1f1613] dark:text-white">
+      <div
+        className={`relative z-10 max-h-[90vh] w-full overflow-y-auto rounded-3xl bg-white text-[var(--brand-text)] shadow-2xl dark:bg-[#1f1613] dark:text-white ${
+          size === 'wide' ? 'max-w-5xl p-8' : 'max-w-3xl p-6'
+        }`}
+      >
         {children}
       </div>
     </div>
@@ -3831,7 +4489,12 @@ const PrepQueueSkeleton = () => (
 const PrepTaskCard = ({ task, onSelect }: { task: PrepTask; onSelect?: (task: PrepTask) => void }) => {
   const quantity = task.orderItem?.quantity ?? 1;
   const productName = task.product?.name ?? 'Producto';
-  const orderNumber = task.order?.orderNumber ?? task.order?.id?.slice(0, 6) ?? 'Sin código';
+  const orderCode =
+    task.order?.ticketCode ??
+    task.order?.orderNumber ??
+    task.order?.shortCode ??
+    (task.order?.id ? task.order.id.slice(0, 6) : null) ??
+    'Sin código';
   const amount = task.amount ?? 0;
   const statusLabel =
     task.status === 'in_progress'
@@ -3874,7 +4537,7 @@ const PrepTaskCard = ({ task, onSelect }: { task: PrepTask; onSelect?: (task: Pr
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.3em] text-primary-400 font-bold underline">
-            {orderNumber}
+            {orderCode}
           </p>
           <p className="text-base font-semibold">
             {quantity} × {productName}
@@ -4311,11 +4974,9 @@ const ConsumptionSummary = ({ items }: { items: OrderItemEntry[] }) => {
     { label: 'Alimentos', value: summary.foods },
   ];
 
-  if (summary.packages > 0) {
-    stats.push({ label: 'Paquetes', value: summary.packages });
-  }
-  if (summary.other > 0) {
-    stats.push({ label: 'Otros', value: summary.other });
+  const totalPackages = summary.packages + summary.other;
+  if (totalPackages > 0) {
+    stats.push({ label: 'Paquetes', value: totalPackages });
   }
 
   return (
@@ -4330,6 +4991,78 @@ const ConsumptionSummary = ({ items }: { items: OrderItemEntry[] }) => {
       </div>
     </div>
   );
+};
+
+const normalizeDescriptor = (value?: string | null) =>
+  value
+    ? value
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+    : '';
+const BEVERAGE_DESCRIPTOR_KEYWORDS = [
+  'bebida',
+  'bebidas',
+  'drink',
+  'drinks',
+  'coffee',
+  'cafe',
+  'latte',
+  'espresso',
+  'matcha',
+  'frappe',
+  'tea',
+  'te',
+];
+
+const isBeverageDescriptor = (value?: string | null) => {
+  if (!value) {
+    return false;
+  }
+  const normalized = normalizeDescriptor(value);
+  return BEVERAGE_DESCRIPTOR_KEYWORDS.some((keyword) => normalized.includes(keyword));
+};
+
+const parseMetadataRecord = (value: unknown): Record<string, unknown> | null => {
+  if (!value) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+};
+
+const extractBeverageSizeFromItems = (orderItems: OrderItemEntry[]) => {
+  for (const item of orderItems) {
+    if (isBeverageDescriptor(item.category) || isBeverageDescriptor(item.subcategory) || isBeverageDescriptor(item.name)) {
+      if (item.sizeLabel) {
+        return item.sizeLabel;
+      }
+      const record = parseMetadataRecord(item.metadata);
+      if (record) {
+        const metadataSize =
+          toTrimmedString(record.size) ??
+          toTrimmedString(record.sizeLabel) ??
+          toTrimmedString(record.sizeName) ??
+          toTrimmedString(record.variant);
+        if (metadataSize) {
+          return metadataSize;
+        }
+      }
+    }
+  }
+  return null;
 };
 
 const OrderItemsSection = ({ items }: { items: OrderItemEntry[] }) => (
@@ -4347,7 +5080,10 @@ const OrderItemsSection = ({ items }: { items: OrderItemEntry[] }) => (
           const unitPrice = hasUnitPrice ? (item.price as number) : null;
           const lineTotal = hasUnitPrice && unitPrice !== null ? unitPrice * quantity : null;
           const descriptor = item.category ?? item.subcategory ?? 'Sin categoría';
-          const sizeLabel = item.sizeLabel ? ` · ${item.sizeLabel}` : '';
+          const isBeverage =
+            isBeverageDescriptor(item.category) ||
+            isBeverageDescriptor(item.subcategory) ||
+            isBeverageDescriptor(item.name);
           const listKey = item.productId
             ? `${item.productId}-${item.sizeId ?? item.sizeLabel ?? index}`
             : `${index}`;
@@ -4362,7 +5098,15 @@ const OrderItemsSection = ({ items }: { items: OrderItemEntry[] }) => (
                 </p>
                 <p className="text-sm font-bold text-primary-800 dark:text-white/90">
                   {quantity} uds · {descriptor}
-                  {sizeLabel}
+                  {item.sizeLabel && (
+                    <span
+                      className={`ml-1 ${
+                        isBeverage ? 'underline decoration-primary-500 underline-offset-4' : ''
+                      }`}
+                    >
+                      · {item.sizeLabel}
+                    </span>
+                  )}
                 </p>
               </div>
               <span className="font-bold text-primary-400 dark:text-white">
@@ -4373,6 +5117,13 @@ const OrderItemsSection = ({ items }: { items: OrderItemEntry[] }) => (
         })}
       </ul>
     )}
+  </div>
+);
+
+const OrderNotesCard = ({ note, label = 'Comentarios del pedido' }: { note: string; label?: string }) => (
+  <div className="rounded-2xl border border-primary-100/70 bg-white/80 px-4 py-3 text-sm text-[var(--brand-text)] dark:border-white/10 dark:bg-white/5 dark:text-white">
+    <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">{label}</p>
+    <p className="mt-1 whitespace-pre-line">{note}</p>
   </div>
 );
 
@@ -4419,11 +5170,25 @@ const OrderDetailContent = ({
   onMoveToQueue,
   onReturnToQueue,
   actionState,
+  prefilledPaymentReference,
+  loyaltyCustomer,
+  isLoyaltyReady = true,
+  onWalletScanRequest,
 }: {
   order: Order;
-  onMoveToQueue?: (order: Order, options?: { paymentMethod?: string | null }) => void;
-  onReturnToQueue?: (order: Order, options?: { paymentMethod?: string | null }) => void;
+  onMoveToQueue?: (
+    order: Order,
+    options?: { paymentMethod?: string | null; paymentReference?: string | null }
+  ) => void;
+  onReturnToQueue?: (
+    order: Order,
+    options?: { paymentMethod?: string | null; paymentReference?: string | null }
+  ) => void;
   actionState?: DetailActionState;
+  prefilledPaymentReference?: string | null;
+  loyaltyCustomer?: LoyaltyCustomer | null;
+  isLoyaltyReady?: boolean;
+  onWalletScanRequest?: (onCapture: (value: string) => void) => void;
 }) => {
   const [items, setItems] = useState<OrderItemEntry[]>(
     Array.isArray(order.items) ? (order.items as OrderItemEntry[]) : []
@@ -4432,16 +5197,35 @@ const OrderDetailContent = ({
   const [itemsError, setItemsError] = useState<string | null>(null);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string | null>(null);
   const [showPaymentSelector, setShowPaymentSelector] = useState<boolean>(!order.queuedPaymentMethod);
+  const [paymentReference, setPaymentReference] = useState<string>(order.queuedPaymentReference ?? '');
   const paymentMethodLabel = selectedPaymentMethod
     ? PAYMENT_METHOD_LABELS[selectedPaymentMethod] ?? selectedPaymentMethod
     : null;
+  const handleWalletScan = () => {
+    if (!onWalletScanRequest) {
+      return;
+    }
+    onWalletScanRequest((value) => {
+      setPaymentReference(value);
+    });
+  };
 
   useEffect(() => {
     setItems(Array.isArray(order.items) ? (order.items as OrderItemEntry[]) : []);
     setItemsError(null);
     setSelectedPaymentMethod(order.queuedPaymentMethod ?? null);
     setShowPaymentSelector(!order.queuedPaymentMethod);
+    setPaymentReference(order.queuedPaymentReference ?? '');
   }, [order]);
+
+  useEffect(() => {
+    if (order.queuedPaymentReference || !prefilledPaymentReference) {
+      return;
+    }
+    if (!paymentReference) {
+      setPaymentReference(prefilledPaymentReference);
+    }
+  }, [order.queuedPaymentReference, paymentReference, prefilledPaymentReference]);
 
   useEffect(() => {
     if (items.length > 0) {
@@ -4495,7 +5279,27 @@ const OrderDetailContent = ({
     totalItemsFromList > 0 ? totalItemsFromList : order.itemsCount ?? items.length ?? 0;
   const customerName = extractCustomerName(order.user);
   const customerPhone = extractCustomerPhone(order.user);
+  const customerFirstName = (order.user?.firstName ?? order.user?.firstNameEncrypted ?? '').trim();
+  const customerLastName = (order.user?.lastName ?? order.user?.lastNameEncrypted ?? '').trim();
+  const staffNotes = extractStaffNotes(order);
+  const customerNotes = extractCustomerNotes(order);
+  const generalNotes = extractOrderNotes(order);
+  const fallbackNotes = !staffNotes && !customerNotes ? generalNotes : null;
   const tipValue = typeof order.tipAmount === 'number' ? order.tipAmount : null;
+  const assignedStaffDisplay = order.queuedByStaffName ?? order.queuedByStaffId ?? null;
+  const paymentReferenceTypeLabel = order.queuedPaymentReferenceType
+    ? PAYMENT_REFERENCE_TYPE_LABELS[order.queuedPaymentReferenceType] ??
+      order.queuedPaymentReferenceType
+    : null;
+  const hydratedItems =
+    items.length > 0
+      ? items
+        : Array.isArray(order.items)
+          ? (order.items as OrderItemEntry[])
+          : [];
+  const beverageSize = extractBeverageSizeFromItems(hydratedItems);
+  const loyaltyDisplayName = loyaltyCustomer ? getCustomerDisplayName(loyaltyCustomer) : null;
+  const loyaltyCoffees = loyaltyCustomer?.loyaltyCoffees ?? null;
   return (
     <div className="space-y-5 text-base">
       <header>
@@ -4512,10 +5316,36 @@ const OrderDetailContent = ({
           label="Cliente"
           value={
             <span className="font-bold text-primary-900 dark:text-white">
-              {customerName || 'Cliente anónimo'}
+              {customerFirstName || customerLastName ? (
+                <>
+                  {customerFirstName && (
+                    <span className="underline decoration-primary-500 underline-offset-4">
+                      {customerFirstName}
+                    </span>
+                  )}
+                  {customerFirstName && customerLastName && ' '}
+                  {customerLastName && (
+                    <span className="underline decoration-primary-500 underline-offset-4">
+                      {customerLastName}
+                    </span>
+                  )}
+                </>
+              ) : (
+                customerName || 'Cliente anónimo'
+              )}
             </span>
           }
         />
+        {beverageSize && (
+          <DetailRow
+            label="Tamaño bebida"
+            value={
+              <span className="font-bold text-primary-900 underline decoration-primary-500 underline-offset-4 dark:text-white">
+                {beverageSize}
+              </span>
+            }
+          />
+        )}
         <DetailRow label="Ticket POS" value={order.ticketCode ?? 'Sin ticket'} />
         <DetailRow
           label="Total"
@@ -4545,6 +5375,18 @@ const OrderDetailContent = ({
           value={`${totalItems} ${totalItems === 1 ? 'artículo' : 'artículos'}`}
         />
         <DetailRow
+          label="Atendió"
+          value={
+            assignedStaffDisplay ? (
+              <span className="font-bold text-primary-900 dark:text-white">
+                {assignedStaffDisplay}
+              </span>
+            ) : (
+              <span className="text-sm text-[var(--brand-muted)]">Pendiente por asignar</span>
+            )
+          }
+        />
+        <DetailRow
           label="Método de pago"
           value={
             <span className="text-sm font-normal text-[var(--brand-text)] dark:text-white">
@@ -4552,7 +5394,52 @@ const OrderDetailContent = ({
             </span>
           }
         />
+        <DetailRow
+          label="Referencia"
+          value={
+            order.queuedPaymentReference ? (
+              <span className="text-sm font-semibold text-primary-900 dark:text-primary-100">
+                {order.queuedPaymentReference}
+                {paymentReferenceTypeLabel && (
+                  <span className="ml-2 rounded-full bg-primary-100 px-2 py-[2px] text-[10px] uppercase tracking-[0.2em] text-primary-700 dark:bg-white/10 dark:text-white">
+                    {paymentReferenceTypeLabel}
+                  </span>
+                )}
+              </span>
+            ) : (
+              <span className="text-sm text-[var(--brand-muted)]">Pendiente</span>
+            )
+          }
+        />
+        {loyaltyCustomer ? (
+          <div className="rounded-2xl border border-primary-100/80 bg-white/80 p-3 text-sm dark:border-white/10 dark:bg-white/5">
+            <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
+              Programa de lealtad
+            </p>
+            <CustomerLoyaltyCoffees
+              count={loyaltyCoffees ?? 0}
+              customerName={loyaltyDisplayName ?? customerName ?? 'Cliente'}
+              statusLabel="Cafés acumulados"
+              subtitle="Actualizamos el sello al registrar bebidas."
+            />
+          </div>
+        ) : isLoyaltyReady ? (
+          <div className="rounded-2xl border border-dashed border-primary-200/70 bg-white/70 p-3 text-xs text-[var(--brand-muted)] dark:border-white/10 dark:bg-white/5">
+            Cliente sin registro en el programa de lealtad.
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-primary-200/70 bg-white/70 p-3 text-xs text-[var(--brand-muted)] dark:border-white/10 dark:bg-white/5">
+            Consultando programa de lealtad…
+          </div>
+        )}
       </div>
+      {customerNotes && (
+        <OrderNotesCard note={customerNotes} label="Comentario del cliente" />
+      )}
+      {staffNotes && <OrderNotesCard note={staffNotes} label="Notas del POS" />}
+      {fallbackNotes && (
+        <OrderNotesCard note={fallbackNotes} label="Comentarios adicionales" />
+      )}
       <ConsumptionSummary items={items} />
       {itemsLoading && (
         <p className="rounded-xl border border-dashed border-primary-200/60 bg-white/60 px-3 py-2 text-xs text-[var(--brand-muted)] dark:border-white/10 dark:bg-white/5">
@@ -4608,9 +5495,44 @@ const OrderDetailContent = ({
               </div>
             </div>
           )}
+          <div className="rounded-2xl border border-primary-100/70 bg-white/70 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+            <label className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+              Referencia de pago
+            </label>
+            <div className="mt-2">
+              <div className="relative">
+                <input
+                  value={paymentReference}
+                  onChange={(event) => setPaymentReference(event.target.value)}
+                  placeholder="ID de transferencia, terminal o wallet (ENS / 0x…)"
+                  className="w-full rounded-xl border border-primary-100/70 bg-transparent px-3 py-2 pr-12 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/5 dark:text-white"
+                />
+                {selectedPaymentMethod === 'cripto' && onWalletScanRequest && (
+                  <button
+                    type="button"
+                    onClick={handleWalletScan}
+                    className="absolute inset-y-0 right-3 flex items-center justify-center rounded-full border border-primary-200 bg-primary-50 px-2 text-base transition hover:border-primary-400 hover:bg-primary-100 dark:border-white/30 dark:bg-white/10"
+                  >
+                    <span aria-hidden="true">📷</span>
+                    <span className="sr-only">Escanear referencia cripto</span>
+                  </button>
+                )}
+              </div>
+            </div>
+            {!order.queuedPaymentReference && prefilledPaymentReference && (
+              <p className="mt-2 text-xs text-[var(--brand-muted)]">
+                Última referencia escaneada: {prefilledPaymentReference}
+              </p>
+            )}
+          </div>
           <DetailActionFooter
             label="Mover a En preparación"
-            onClick={() => onMoveToQueue(order, { paymentMethod: selectedPaymentMethod })}
+            onClick={() =>
+              onMoveToQueue?.(order, {
+                paymentMethod: selectedPaymentMethod,
+                paymentReference: paymentReference || undefined,
+              })
+            }
             disabled={!selectedPaymentMethod || actionState?.isLoading}
             actionState={actionState}
           />
@@ -4619,7 +5541,11 @@ const OrderDetailContent = ({
       {order.status === 'completed' && onReturnToQueue && (
         <DetailActionFooter
           label="Regresar a En preparación"
-          onClick={() => onReturnToQueue(order)}
+          onClick={() =>
+            onReturnToQueue?.(order, {
+              paymentReference: paymentReference || order.queuedPaymentReference || null,
+            })
+          }
           disabled={actionState?.isLoading}
           actionState={actionState}
         />
@@ -4770,6 +5696,13 @@ const PrepTaskDetailContent = ({
     task.order?.clientId ||
     task.order?.userId ||
     'Cliente sin registro';
+  const prepOrderNotes = extractOrderNotes(task.order ?? undefined);
+  const orderCode =
+    task.order?.ticketCode ??
+    task.order?.orderNumber ??
+    task.order?.shortCode ??
+    task.order?.id ??
+    task.id;
 
   return (
     <div className="space-y-4 text-base">
@@ -4778,7 +5711,7 @@ const PrepTaskDetailContent = ({
       </div>
       <header>
         <p className="text-xs uppercase tracking-[0.35em] text-primary-400 font-bold underline">
-          {task.order?.orderNumber ?? task.order?.id ?? task.id}
+          {orderCode}
         </p>
         <h3 className="text-2xl font-semibold text-primary-700 dark:text-primary-100">Pedido en barra</h3>
         <p className="text-sm font-semibold text-primary-900 dark:text-white">
@@ -4825,6 +5758,7 @@ const PrepTaskDetailContent = ({
             }
           />
       </div>
+      {prepOrderNotes && <OrderNotesCard note={prepOrderNotes} label="Comentarios del pedido" />}
       {detailItems.length > 0 && (
         <div className="space-y-4">
           <ConsumptionSummary items={detailItems} />
@@ -6971,6 +7905,14 @@ const ScannedCustomerContent = ({
   });
   const [editingField, setEditingField] = useState<'beverage' | 'food' | null>(null);
   const [draftPreference, setDraftPreference] = useState('');
+  useEffect(() => {
+    setPreferences({
+      beverage: customer.beverage ?? '',
+      food: customer.food ?? '',
+    });
+    setEditingField(null);
+    setDraftPreference('');
+  }, [customer.id, customer.beverage, customer.food]);
 
   const startEditing = (field: 'beverage' | 'food') => {
     setEditingField(field);
@@ -6982,6 +7924,9 @@ const ScannedCustomerContent = ({
     setPreferences((prev) => ({ ...prev, [editingField]: draftPreference }));
     setEditingField(null);
   };
+  const firstName = (customer.firstName ?? '').trim();
+  const lastName = (customer.lastName ?? '').trim();
+  const fallbackName = [firstName, lastName].filter(Boolean).join(' ') || 'Cliente';
 
   return (
     <div className="space-y-4 text-sm">
@@ -6990,7 +7935,14 @@ const ScannedCustomerContent = ({
           {customer.id}
         </p>
         <h3 className="text-2xl font-semibold text-primary-700 dark:text-primary-100">
-          {`${customer.firstName ?? ''} ${customer.lastName ?? ''}`.trim() || 'Cliente'}
+          {firstName ? (
+            <>
+              <span className="underline decoration-primary-500 underline-offset-4">{firstName}</span>
+              {lastName ? <> {lastName}</> : null}
+            </>
+          ) : (
+            fallbackName
+          )}
         </h3>
         <p className="text-xs text-[var(--brand-muted)]">
           {customer.email ?? 'Correo no registrado'}
@@ -7107,7 +8059,7 @@ const PreferenceField = ({
   </div>
 );
 
-const SmartScannerPanel = ({
+const WalletScannerOverlay = ({
   onPayload,
   onClose,
   feedback,
@@ -7115,12 +8067,117 @@ const SmartScannerPanel = ({
   onPayload: (value: string) => void;
   onClose: () => void;
   feedback?: string | null;
+}) => (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-8 backdrop-blur-sm">
+    <div className="relative w-full max-w-3xl rounded-3xl bg-[#1b1612] p-6 text-white shadow-2xl">
+      <button
+        type="button"
+        onClick={onClose}
+        className="absolute right-5 top-5 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 hover:text-white"
+      >
+        Cerrar
+      </button>
+      <SmartScannerPanel mode="wallet" onPayload={onPayload} onClose={onClose} feedback={feedback} />
+    </div>
+  </div>
+);
+
+const PresetPaymentQrOverlay = ({
+  preset,
+  onClose,
+}: {
+  preset: { type: 'evm' | 'lightning'; value: string };
+  onClose: () => void;
+}) => {
+  const [copied, setCopied] = useState(false);
+  const title =
+    preset.type === 'evm'
+      ? 'Wallet EVM para pagos cripto'
+      : 'Lightning address para pagos instantáneos';
+  const hint =
+    preset.type === 'evm'
+      ? 'Usa cualquier wallet compatible con la red EVM; escanea el QR para rellenar la dirección.'
+      : 'Compatible con wallets Lightning (LNURL / correo Lightning). Escanea para enviar.';
+  const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(preset.value)}`;
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard?.writeText(preset.value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 px-4 py-8 backdrop-blur-sm">
+      <div className="relative w-full max-w-md rounded-3xl bg-[#1b1612] p-6 text-white shadow-2xl">
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-5 top-5 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 hover:text-white"
+        >
+          Cerrar
+        </button>
+        <p className="text-xs uppercase tracking-[0.3em] text-amber-300">Escanea y paga</p>
+        <h3 className="mt-1 text-2xl font-semibold">{title}</h3>
+        <p className="mt-1 text-sm text-white/80">{hint}</p>
+        <div className="mt-5 rounded-3xl bg-white/95 p-4 text-center text-primary-900">
+          <Image
+            src={qrSrc}
+            alt={`QR ${preset.type}`}
+            width={256}
+            height={256}
+            className="mx-auto h-64 w-64 rounded-2xl border border-primary-100 object-contain"
+            priority
+          />
+        </div>
+        <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-sm">
+          <p className="font-semibold uppercase tracking-[0.3em] text-white/70">Dirección</p>
+          <p className="mt-1 break-all font-mono text-sm">{preset.value}</p>
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="mt-3 w-full rounded-2xl border border-white/30 px-3 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white hover:bg-white/10"
+          >
+            {copied ? 'Copiado' : 'Copiar dirección'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const SmartScannerPanel = ({
+  onPayload,
+  onClose,
+  feedback,
+  mode = 'general',
+}: {
+  onPayload: (value: string) => void;
+  onClose: () => void;
+  feedback?: string | null;
+  mode?: 'general' | 'wallet';
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [manualValue, setManualValue] = useState('');
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [isDetectorSupported, setIsDetectorSupported] = useState(true);
+  const eyebrow =
+    mode === 'wallet' ? 'Lector cripto' : 'Lector inteligente';
+  const heading =
+    mode === 'wallet' ? 'Escanear referencia de pago' : 'Escanear pedidos, reservas o clientes';
+  const description =
+    mode === 'wallet'
+      ? 'Captura una wallet ENS/EVM o factura Lightning y llenaremos la referencia automáticamente.'
+      : 'Apunta a cualquier QR generado por el POS, o ingresa el código manualmente.';
+  const manualLabel = mode === 'wallet' ? 'Referencia manual' : 'Código manual';
+  const manualPlaceholder =
+    mode === 'wallet' ? 'ENS, 0x..., lnbc...' : 'Ej. ticket POS, folio o ID cliente';
+  const footerNote =
+    mode === 'wallet'
+      ? 'Solo para referencias ENS/EVM o Lightning. Se cerrará al capturar la wallet.'
+      : 'Compatible con pedidos, reservas, clientes y wallets ENS/EVM o Lightning.';
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -7140,7 +8197,11 @@ const SmartScannerPanel = ({
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          await videoRef.current.play();
+          try {
+            await videoRef.current.play();
+          } catch (playError) {
+            console.warn('No se pudo iniciar el stream de la cámara', playError);
+          }
           setIsCameraReady(true);
         }
 
@@ -7240,13 +8301,9 @@ const SmartScannerPanel = ({
   return (
     <div className="space-y-4 text-sm">
       <header className="space-y-1">
-        <p className="text-xs uppercase tracking-[0.35em] text-primary-500">Lector inteligente</p>
-        <h3 className="text-2xl font-semibold text-primary-700 dark:text-primary-100">
-          Escanear pedidos, reservas o clientes
-        </h3>
-        <p className="text-xs text-[var(--brand-muted)]">
-          Apunta a cualquier QR generado por el POS, o ingresa el código manualmente.
-        </p>
+        <p className="text-xs uppercase tracking-[0.35em] text-primary-500">{eyebrow}</p>
+        <h3 className="text-2xl font-semibold text-primary-700 dark:text-primary-100">{heading}</h3>
+        <p className="text-xs text-[var(--brand-muted)]">{description}</p>
       </header>
       <div className="rounded-2xl border border-dashed border-primary-200/60 bg-black/80 p-4 text-center text-white dark:border-white/20">
         <video
@@ -7271,13 +8328,13 @@ const SmartScannerPanel = ({
       </div>
       <form onSubmit={handleManualSubmit} className="space-y-2">
         <label className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--brand-muted)]">
-          Código manual
+          {manualLabel}
         </label>
         <div className="flex flex-col gap-2 sm:flex-row">
           <input
             value={manualValue}
             onChange={(event) => setManualValue(event.target.value)}
-            placeholder="Ej. ticket POS, folio o ID cliente"
+            placeholder={manualPlaceholder}
             className="flex-1 rounded-xl border border-primary-100/70 px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white"
           />
           <button type="submit" className="brand-button text-xs">
@@ -7289,7 +8346,7 @@ const SmartScannerPanel = ({
         <p className="text-xs font-semibold text-amber-600 dark:text-amber-300">{feedback}</p>
       )}
       <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-[var(--brand-muted)]">
-        <span>Compatible con pedidos, reservas y clientes.</span>
+        <span>{footerNote}</span>
         <button type="button" onClick={onClose} className="text-primary-500 hover:underline">
           Detener lector
         </button>

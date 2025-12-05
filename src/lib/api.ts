@@ -1,3 +1,31 @@
+/*
+ * --------------------------------------------------------------------
+ *  Xoco POS — Point of Sale System
+ *  Software Property of Xoco Café
+ *  Copyright (c) 2025 Xoco Café
+ *  Principal Developer: Donovan Riaño
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at:
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *  --------------------------------------------------------------------
+ *  PROPIEDAD DEL SOFTWARE — XOCO CAFÉ.
+ *  Sistema Xoco POS — Punto de Venta.
+ *  Desarrollador Principal: Donovan Riaño.
+ *
+ *  Este archivo está licenciado bajo Apache License 2.0.
+ *  Consulta el archivo LICENSE en la raíz del proyecto para más detalles.
+ * --------------------------------------------------------------------
+ */
+
 export type OrderStatus = 'pending' | 'completed' | 'past';
 export type ReservationStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled';
 
@@ -56,6 +84,12 @@ export interface Order {
   queuedPaymentMethod?: string | null;
   tipAmount?: number | null;
   tipPercent?: number | null;
+  metadata?: Record<string, unknown> | string | null;
+  notes?: string | null;
+  queuedByStaffId?: string | null;
+  queuedByStaffName?: string | null;
+  queuedPaymentReference?: string | null;
+  queuedPaymentReferenceType?: string | null;
 }
 
 export interface Reservation {
@@ -79,6 +113,8 @@ export interface Reservation {
 export interface PrepOrder {
   id?: string | null;
   orderNumber?: string | null;
+  ticketCode?: string | null;
+  shortCode?: string | null;
   status?: string | null;
   total?: number | null;
   currency?: string | null;
@@ -86,6 +122,8 @@ export interface PrepOrder {
   clientId?: string | null;
   createdAt?: string | null;
   items?: OrderItemSummary[] | null;
+  metadata?: Record<string, unknown> | string | null;
+  notes?: string | null;
 }
 
 export interface PrepOrderItem {
@@ -606,11 +644,17 @@ export async function fetchPrepQueue(status?: PrepStatus): Promise<PrepTask[]> {
 
 export async function enqueueOrder(
   orderId: string,
-  params?: { staffId?: string | null; staffName?: string | null; paymentMethod?: string | null }
+  params?: {
+    staffId?: string | null;
+    staffName?: string | null;
+    paymentMethod?: string | null;
+    paymentReference?: string | null;
+  }
 ): Promise<void> {
   const staffId = params?.staffId?.trim() ? params.staffId.trim() : null;
   const staffName = params?.staffName?.trim() ? params.staffName.trim() : null;
   const paymentMethod = params?.paymentMethod?.trim() ? params.paymentMethod.trim() : null;
+  const paymentReference = params?.paymentReference?.trim() ? params.paymentReference.trim() : null;
   const url = buildApiUrl(`/api/orders/${orderId}/queue`, staffId ? { staffId } : undefined);
   const headers: Record<string, string> = {};
   if (staffId) {
@@ -623,11 +667,19 @@ export async function enqueueOrder(
   if (paymentMethod) {
     headers['X-XOCO-Payment-Method'] = paymentMethod;
   }
+  if (paymentReference) {
+    headers['X-XOCO-Payment-Reference'] = paymentReference;
+  }
 
   const response = await fetch(url, {
     method: 'POST',
     headers: Object.keys(headers).length ? headers : undefined,
-    body: staffId ? JSON.stringify({ staffId }) : undefined,
+    body: staffId
+      ? JSON.stringify({
+          staffId,
+          paymentReference: paymentReference ?? undefined,
+        })
+      : undefined,
   });
 
   if (!response.ok) {
@@ -892,6 +944,10 @@ export interface TicketDetail {
     tipPercent?: number | null;
     currency?: string | null;
     createdAt?: string | null;
+    paymentReference?: string | null;
+    paymentReferenceType?: string | null;
+    handledByStaffId?: string | null;
+    handledByStaffName?: string | null;
   };
   order: {
     id: string;
@@ -900,6 +956,15 @@ export interface TicketDetail {
     currency?: string | null;
     createdAt?: string | null;
     userId?: string | null;
+    metadata?: Record<string, unknown> | string | null;
+    notes?: string | null;
+    message?: string | null;
+    instructions?: string | null;
+    queuedPaymentMethod?: string | null;
+    queuedPaymentReference?: string | null;
+    queuedPaymentReferenceType?: string | null;
+    queuedByStaffId?: string | null;
+    queuedByStaffName?: string | null;
   };
   customer: {
     id?: string | null;

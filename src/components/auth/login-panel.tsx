@@ -1,6 +1,35 @@
+/*
+ * --------------------------------------------------------------------
+ *  Xoco POS — Point of Sale System
+ *  Software Property of Xoco Café
+ *  Copyright (c) 2025 Xoco Café
+ *  Principal Developer: Donovan Riaño
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at:
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *  --------------------------------------------------------------------
+ *  PROPIEDAD DEL SOFTWARE — XOCO CAFÉ.
+ *  Sistema Xoco POS — Punto de Venta.
+ *  Desarrollador Principal: Donovan Riaño.
+ *
+ *  Este archivo está licenciado bajo Apache License 2.0.
+ *  Consulta el archivo LICENSE en la raíz del proyecto para más detalles.
+ * --------------------------------------------------------------------
+ */
+
 'use client';
 
 import Image from 'next/image';
+import Link from 'next/link';
 import { useState } from 'react';
 import { useAuth } from '@/providers/auth-provider';
 
@@ -91,6 +120,9 @@ export function LoginPanel() {
           <button type="submit" className="brand-button w-full py-3" disabled={isAuthenticating}>
             {isAuthenticating ? 'Verificando…' : 'Ingresar'}
           </button>
+          <Link href="/reset-password" className="block text-center text-sm font-semibold text-primary-500">
+            ¿Olvidaste tu contraseña?
+          </Link>
           <div className="rounded-2xl border border-primary-100/70 bg-white/60 px-4 py-3 text-center text-xs text-[var(--brand-text)] shadow-sm dark:border-white/10 dark:bg-white/5 dark:text-white">
             <p className="text-[var(--brand-muted)]">Demo cliente</p>
             <p className="font-semibold">{CLIENT_CREDENTIALS.email}</p>

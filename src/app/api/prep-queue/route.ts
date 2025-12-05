@@ -1,3 +1,31 @@
+/*
+ * --------------------------------------------------------------------
+ *  Xoco POS — Point of Sale System
+ *  Software Property of Xoco Café
+ *  Copyright (c) 2025 Xoco Café
+ *  Principal Developer: Donovan Riaño
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at:
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *  --------------------------------------------------------------------
+ *  PROPIEDAD DEL SOFTWARE — XOCO CAFÉ.
+ *  Sistema Xoco POS — Punto de Venta.
+ *  Desarrollador Principal: Donovan Riaño.
+ *
+ *  Este archivo está licenciado bajo Apache License 2.0.
+ *  Consulta el archivo LICENSE en la raíz del proyecto para más detalles.
+ * --------------------------------------------------------------------
+ */
+
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-server';
 
@@ -10,6 +38,7 @@ const ORDERS_TABLE = process.env.SUPABASE_ORDERS_TABLE ?? 'orders';
 const PRODUCTS_TABLE = process.env.SUPABASE_PRODUCTS_TABLE ?? 'products';
 const STAFF_TABLE = process.env.SUPABASE_STAFF_TABLE ?? 'staff_users';
 const USERS_TABLE = process.env.SUPABASE_USERS_TABLE ?? 'users';
+const TICKETS_TABLE = process.env.SUPABASE_TICKETS_TABLE ?? 'tickets';
 const ORDER_CLIENT_ID_COLUMN =
   process.env.SUPABASE_ORDERS_CLIENT_ID_COLUMN?.trim() || null;
 const MAX_RESULTS = Number(process.env.PREP_QUEUE_LIMIT ?? 100);
@@ -196,29 +225,39 @@ export async function GET(request: Request) {
       '"userId"',
       '"createdAt"',
       '"items"',
+      '"metadata"',
     ];
     if (ORDER_CLIENT_ID_COLUMN) {
       orderSelectFields.push(`clientId:${ORDER_CLIENT_ID_COLUMN}`);
     }
 
-    const [{ data: orders, error: ordersError }, { data: products, error: productsError }] =
-      await Promise.all([
-        orderIds.length
-          ? supabaseAdmin.from(ORDERS_TABLE).select(orderSelectFields.join(',')).in('id', orderIds)
-          : { data: [], error: null },
-        productIds.length
-          ? supabaseAdmin
-              .from(PRODUCTS_TABLE)
-              .select('id,name,category,subcategory')
-              .in('id', productIds)
-          : { data: [], error: null },
-      ]);
+    const [
+      { data: orders, error: ordersError },
+      { data: products, error: productsError },
+      { data: tickets, error: ticketsError },
+    ] = await Promise.all([
+      orderIds.length
+        ? supabaseAdmin.from(ORDERS_TABLE).select(orderSelectFields.join(',')).in('id', orderIds)
+        : { data: [], error: null },
+      productIds.length
+        ? supabaseAdmin
+            .from(PRODUCTS_TABLE)
+            .select('id,name,category,subcategory')
+            .in('id', productIds)
+        : { data: [], error: null },
+      orderIds.length
+        ? supabaseAdmin.from(TICKETS_TABLE).select('"orderId","ticketCode"').in('orderId', orderIds)
+        : { data: [], error: null },
+    ]);
 
     if (ordersError) {
       console.error('Error fetching orders for prep queue:', ordersError);
     }
     if (productsError) {
       console.error('Error fetching products for prep queue:', productsError);
+    }
+    if (ticketsError) {
+      console.error('Error fetching tickets for prep queue:', ticketsError);
     }
 
     const userIds = Array.from(
@@ -264,10 +303,26 @@ export async function GET(request: Request) {
     }
 
     const orderItemMap = new Map((orderItems ?? []).map((item) => [item.id, item]));
+    const normalizedTickets =
+      Array.isArray(tickets)
+        ? (tickets as Array<{ orderId?: string | null; ticketCode?: string | null }>)
+            .filter((entry) => Boolean(entry?.orderId))
+            .map((entry) => [String(entry?.orderId), entry?.ticketCode ?? null] as const)
+        : [];
+    const ticketMap = new Map(normalizedTickets);
     const orderMap = new Map(
       ((orders ?? []) as unknown as Array<{ id?: string | number | null } & Record<string, unknown>>)
         .filter((order) => Boolean(order?.id))
-        .map((order) => [String(order.id), order] as const)
+        .map((order) => {
+          const resolvedId = String(order.id);
+          return [
+            resolvedId,
+            {
+              ...order,
+              ticketCode: ticketMap.get(resolvedId) ?? null,
+            },
+          ] as const;
+        })
     );
     const productMap = new Map(
       ((products ?? []) as Array<{ id?: string | null }>)

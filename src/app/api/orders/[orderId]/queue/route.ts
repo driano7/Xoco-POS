@@ -1,3 +1,31 @@
+/*
+ * --------------------------------------------------------------------
+ *  Xoco POS — Point of Sale System
+ *  Software Property of Xoco Café
+ *  Copyright (c) 2025 Xoco Café
+ *  Principal Developer: Donovan Riaño
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at:
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *  --------------------------------------------------------------------
+ *  PROPIEDAD DEL SOFTWARE — XOCO CAFÉ.
+ *  Sistema Xoco POS — Punto de Venta.
+ *  Desarrollador Principal: Donovan Riaño.
+ *
+ *  Este archivo está licenciado bajo Apache License 2.0.
+ *  Consulta el archivo LICENSE en la raíz del proyecto para más detalles.
+ * --------------------------------------------------------------------
+ */
+
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-server';
 import { revertLoyaltyCoffee } from '../../loyalty-utils';
@@ -9,6 +37,78 @@ const ORDERS_TABLE = process.env.SUPABASE_ORDERS_TABLE ?? 'orders';
 const normalizeNumber = (value: unknown) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const sanitizeStaffName = (value?: string | null) => {
+  if (!value) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.slice(0, 80);
+};
+
+const sanitizePaymentReference = (value?: string | null) => {
+  if (!value) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const normalized = trimmed.replace(/^lightning:/i, '');
+  return normalized.slice(0, 140);
+};
+
+const isEvmAddress = (value: string) => /^0x[a-fA-F0-9]{40}$/.test(value.trim());
+const isEnsName = (value: string) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.(eth|xyz|luxe)$/i.test(value.trim());
+const isLightningInvoice = (value: string) => {
+  const normalized = value.trim().toLowerCase().replace(/^lightning:/, '');
+  return (
+    normalized.startsWith('lnbc') ||
+    normalized.startsWith('lntb') ||
+    normalized.startsWith('lnbcrt') ||
+    normalized.startsWith('lnurl')
+  );
+};
+
+const detectPaymentReferenceType = (reference: string | null) => {
+  if (!reference) {
+    return null;
+  }
+  const trimmed = reference.trim();
+  if (isEvmAddress(trimmed)) {
+    return 'evm_address';
+  }
+  if (isEnsName(trimmed)) {
+    return 'ens_name';
+  }
+  if (isLightningInvoice(trimmed)) {
+    return 'lightning_invoice';
+  }
+  if (/^\d{6,}$/.test(trimmed)) {
+    return 'transaction_id';
+  }
+  return 'text';
+};
+
+const coerceMetadataObject = (value: unknown): Record<string, unknown> => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return { ...(value as Record<string, unknown>) };
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { ...(parsed as Record<string, unknown>) };
+      }
+    } catch {
+      return {};
+    }
+  }
+  return {};
 };
 
 export async function POST(request: Request, context: { params: { orderId?: string } }) {
@@ -29,19 +129,29 @@ export async function POST(request: Request, context: { params: { orderId?: stri
 
     const { searchParams } = new URL(request.url);
     let assignedStaffId: string | null = sanitizeStaffId(searchParams.get('staffId'));
+    type QueuePayload = {
+      staffId?: string | null;
+      paymentReference?: string | null;
+      staffName?: string | null;
+      paymentMethod?: string | null;
+    };
+    let parsedBody: QueuePayload | null = null;
     try {
-      const body = (await request.json()) as { staffId?: string | null } | null;
-      if (body && typeof body.staffId === 'string') {
-        assignedStaffId = sanitizeStaffId(body.staffId);
-      }
+      parsedBody = (await request.json()) as QueuePayload;
     } catch {
-      assignedStaffId = null;
+      parsedBody = null;
+    }
+    if (parsedBody?.staffId) {
+      assignedStaffId = sanitizeStaffId(parsedBody.staffId);
     }
 
     if (!assignedStaffId) {
       const staffHeader = request.headers.get('x-xoco-staff-id') ?? request.headers.get('x-xoco-staffid');
       assignedStaffId = sanitizeStaffId(staffHeader);
     }
+    const assignedStaffName =
+      sanitizeStaffName(request.headers.get('x-xoco-staff-name')) ??
+      sanitizeStaffName(parsedBody?.staffName ?? null);
 
     const sanitizePaymentMethod = (value?: string | null) => {
       if (!value) {
@@ -56,7 +166,14 @@ export async function POST(request: Request, context: { params: { orderId?: stri
     };
 
     const paymentMethodHeader = request.headers.get('x-xoco-payment-method');
-    const trackedPaymentMethod = sanitizePaymentMethod(paymentMethodHeader);
+    const trackedPaymentMethod =
+      sanitizePaymentMethod(paymentMethodHeader) ??
+      sanitizePaymentMethod(parsedBody?.paymentMethod ?? null);
+    const paymentReferenceHeader = request.headers.get('x-xoco-payment-reference');
+    const sanitizedPaymentReference =
+      sanitizePaymentReference(paymentReferenceHeader) ??
+      sanitizePaymentReference(parsedBody?.paymentReference ?? null);
+    const paymentReferenceType = detectPaymentReferenceType(sanitizedPaymentReference);
 
     const ensureOrderItemsSnapshot = async () => {
       const {
@@ -131,6 +248,19 @@ export async function POST(request: Request, context: { params: { orderId?: stri
     }
 
     const orderItemIds = orderItems.map((item) => item.id).filter((id): id is string => Boolean(id));
+
+    const {
+      data: existingOrderRecord,
+      error: existingOrderError,
+    } = await supabaseAdmin
+      .from(ORDERS_TABLE)
+      .select('metadata')
+      .eq('id', orderId)
+      .maybeSingle();
+
+    if (existingOrderError) {
+      console.warn('No se pudo recuperar metadatos del pedido:', existingOrderError);
+    }
 
     let tasksToCreate = orderItemIds;
 
@@ -239,6 +369,56 @@ export async function POST(request: Request, context: { params: { orderId?: stri
     };
     if (trackedPaymentMethod) {
       orderUpdatePayload.queuedPaymentMethod = trackedPaymentMethod;
+    }
+    if (assignedStaffId) {
+      orderUpdatePayload.queuedByStaffId = assignedStaffId;
+    }
+    if (assignedStaffName) {
+      orderUpdatePayload.queuedByStaffName = assignedStaffName;
+    }
+    if (sanitizedPaymentReference) {
+      orderUpdatePayload.queuedPaymentReference = sanitizedPaymentReference;
+      orderUpdatePayload.queuedPaymentReferenceType = paymentReferenceType ?? null;
+    }
+
+    const metadataDraft = coerceMetadataObject(existingOrderRecord?.metadata ?? null);
+    let metadataChanged = false;
+    if (assignedStaffId || assignedStaffName) {
+      const previousAssignment =
+        metadataDraft.prepAssignment && typeof metadataDraft.prepAssignment === 'object'
+          ? (metadataDraft.prepAssignment as Record<string, unknown>)
+          : {};
+      const previousStaffId =
+        typeof previousAssignment.staffId === 'string' ? previousAssignment.staffId : null;
+      const previousStaffName =
+        typeof previousAssignment.staffName === 'string' ? previousAssignment.staffName : null;
+      metadataDraft.prepAssignment = {
+        ...previousAssignment,
+        staffId: assignedStaffId ?? previousStaffId ?? null,
+        staffName: assignedStaffName ?? previousStaffName ?? null,
+        assignedAt: now,
+      };
+      metadataChanged = true;
+    }
+
+    if (trackedPaymentMethod || sanitizedPaymentReference) {
+      const previousPayment =
+        metadataDraft.payment && typeof metadataDraft.payment === 'object'
+          ? (metadataDraft.payment as Record<string, unknown>)
+          : {};
+      const previousMethod =
+        typeof previousPayment.method === 'string' ? previousPayment.method : null;
+      metadataDraft.payment = {
+        ...previousPayment,
+        method: trackedPaymentMethod ?? previousMethod ?? null,
+        reference: sanitizedPaymentReference ?? previousPayment.reference ?? null,
+        referenceType: paymentReferenceType ?? previousPayment.referenceType ?? null,
+      };
+      metadataChanged = true;
+    }
+
+    if (metadataChanged) {
+      orderUpdatePayload.metadata = metadataDraft;
     }
     const { error: updateError } = await supabaseAdmin
       .from(ORDERS_TABLE)

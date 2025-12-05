@@ -1,9 +1,38 @@
+/*
+ * --------------------------------------------------------------------
+ *  Xoco POS — Point of Sale System
+ *  Software Property of Xoco Café
+ *  Copyright (c) 2025 Xoco Café
+ *  Principal Developer: Donovan Riaño
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at:
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *  --------------------------------------------------------------------
+ *  PROPIEDAD DEL SOFTWARE — XOCO CAFÉ.
+ *  Sistema Xoco POS — Punto de Venta.
+ *  Desarrollador Principal: Donovan Riaño.
+ *
+ *  Este archivo está licenciado bajo Apache License 2.0.
+ *  Consulta el archivo LICENSE en la raíz del proyecto para más detalles.
+ * --------------------------------------------------------------------
+ */
+
 'use client';
 
-import { useState, useEffect, useMemo, type FormEvent } from 'react';
+import { useState, useEffect, useMemo, useCallback, type FormEvent } from 'react';
 import { SearchableDropdown } from '@/components/searchable-dropdown';
 import { useMenuOptions } from '@/hooks/use-menu-options';
-import { useCartStore } from '@/hooks/use-cart-store';
+import { useCartStore, type CartItem } from '@/hooks/use-cart-store';
+import type { LoyaltyCustomer } from '@/lib/api';
 
 const formatCurrency = (value?: number | null) =>
   new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(value ?? 0);
@@ -21,6 +50,101 @@ const generateTicketCode = () => {
   const digits = Array.from({ length: 2 }, () => DIGITS[Math.floor(Math.random() * DIGITS.length)]);
   const letters = Array.from({ length: 3 }, () => LETTERS[Math.floor(Math.random() * LETTERS.length)]);
   return `XL-${digits.join('')}${letters.join('')}`;
+};
+
+const looksLikeEvmAddress = (value: string) => /^0x[a-fA-F0-9]{40}$/.test(value.trim());
+const looksLikeEnsName = (value: string) =>
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.(eth|xyz|luxe)$/i.test(value.trim());
+const looksLikeLightningInvoice = (value: string) => {
+  const normalized = value.trim().toLowerCase().replace(/^lightning:/, '');
+  return (
+    normalized.startsWith('lnbc') ||
+    normalized.startsWith('lnurl') ||
+    normalized.startsWith('lntb') ||
+    normalized.startsWith('lnbcrt')
+  );
+};
+const normalizeLightningReference = (value: string) => value.replace(/^lightning:/i, '');
+
+const normalizeToken = (value?: string | null) =>
+  value
+    ?.normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .trim() ?? '';
+
+const BEVERAGE_DISPLAY_TOKENS = ['bebida', 'drink', 'coffee', 'cafe', 'café', 'latte', 'espresso'];
+const isLikelyBeverageDescriptor = (value?: string | null) => {
+  const normalized = normalizeToken(value);
+  if (!normalized) {
+    return false;
+  }
+  return BEVERAGE_DISPLAY_TOKENS.some((token) => normalized.includes(token));
+};
+
+const detectReferenceType = (value: string) => {
+  if (looksLikeEvmAddress(value)) {
+    return 'evm_address';
+  }
+  if (looksLikeEnsName(value)) {
+    return 'ens_name';
+  }
+  if (looksLikeLightningInvoice(value)) {
+    return 'lightning_invoice';
+  }
+  if (/^\d{6,}$/.test(value.trim())) {
+    return 'transaction_id';
+  }
+  return 'text';
+};
+const requiresPaymentReference = (method?: string | null) => Boolean(method && method !== 'efectivo');
+const PAYMENT_REFERENCE_LABELS: Record<string, string> = {
+  debito: 'ID de referencia de transacción',
+  credito: 'ID de referencia de transacción',
+  transferencia: 'ID de transferencia',
+  cripto: 'Wallet / ENS / Lightning',
+};
+const PAYMENT_REFERENCE_PLACEHOLDERS: Record<string, string> = {
+  debito: 'Folio impreso por la terminal',
+  credito: 'Folio impreso por la terminal',
+  transferencia: 'ID o folio del SPEI',
+  cripto: '0xABC..., cafecito.eth o lnbc1...',
+};
+const PAYMENT_REFERENCE_HINTS: Record<string, string> = {
+  debito: 'Captura el folio impreso por la terminal bancaria.',
+  credito: 'Captura el folio impreso por la terminal bancaria.',
+  transferencia: 'Ingresa el identificador del comprobante de transferencia.',
+  cripto: 'Aceptamos direcciones 0x, nombres ENS y facturas Lightning.',
+};
+const isValidCryptoReference = (value: string) =>
+  looksLikeEvmAddress(value) || looksLikeEnsName(value) || looksLikeLightningInvoice(value);
+const isValidReferenceForMethod = (method: string, reference: string) => {
+  const trimmed = reference.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (method === 'cripto') {
+    return isValidCryptoReference(trimmed);
+  }
+  if (method === 'transferencia') {
+    return trimmed.length >= 6;
+  }
+  return trimmed.length >= 4;
+};
+
+const isBeverageCartItem = (item: CartItem) => {
+  if (item.kind === 'beverage') {
+    return true;
+  }
+  if (item.kind && item.kind !== 'other') {
+    return false;
+  }
+  return (
+    isLikelyBeverageDescriptor(item.category) ||
+    isLikelyBeverageDescriptor(item.subcategory) ||
+    isLikelyBeverageDescriptor(item.name) ||
+    isLikelyBeverageDescriptor(item.sizeLabel)
+  );
 };
 
 const parsePositiveNumber = (value: string) => {
@@ -43,9 +167,17 @@ interface NewOrderModalProps {
   onClose: () => void;
   onSuccess?: () => Promise<void> | void;
   prefillClientId?: string | null;
+  onWalletScanRequest?: (onCapture: (value: string) => void) => void;
+  resolveLoyaltyCustomer?: (identifier: string) => LoyaltyCustomer | null;
 }
 
-export function NewOrderModal({ onClose, onSuccess, prefillClientId }: NewOrderModalProps) {
+export function NewOrderModal({
+  onClose,
+  onSuccess,
+  prefillClientId,
+  onWalletScanRequest,
+  resolveLoyaltyCustomer,
+}: NewOrderModalProps) {
   const {
     items,
     itemCount,
@@ -82,6 +214,40 @@ export function NewOrderModal({ onClose, onSuccess, prefillClientId }: NewOrderM
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPublicSale, setIsPublicSale] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<string | null>(null);
+  const [paymentReference, setPaymentReference] = useState('');
+  const [loyaltyMatch, setLoyaltyMatch] = useState<LoyaltyCustomer | null>(null);
+  const [loyaltyBaseCoffees, setLoyaltyBaseCoffees] = useState<number | null>(null);
+  const beverageOptionIds = useMemo(
+    () => new Set(beverageOptions.map((item) => item.id)),
+    [beverageOptions]
+  );
+  const foodOptionIds = useMemo(() => new Set(foodOptions.map((item) => item.id)), [foodOptions]);
+  const packageOptionIds = useMemo(
+    () => new Set(packageOptions.map((item) => item.id)),
+    [packageOptions]
+  );
+  const resolveItemKind = useCallback(
+    (menuItemId?: string | null): CartItem['kind'] => {
+      if (!menuItemId) {
+        return 'other';
+      }
+      if (beverageOptionIds.has(menuItemId)) {
+        return 'beverage';
+      }
+      if (foodOptionIds.has(menuItemId)) {
+        return 'food';
+      }
+      if (packageOptionIds.has(menuItemId)) {
+        return 'package';
+      }
+      return 'other';
+    },
+    [beverageOptionIds, foodOptionIds, packageOptionIds]
+  );
+  const getBeverageUnitsInCart = useCallback(
+    () => items.reduce((total, entry) => total + (isBeverageCartItem(entry) ? entry.quantity : 0), 0),
+    [items]
+  );
 
   useEffect(() => () => clearCart(), [clearCart]);
 
@@ -108,30 +274,104 @@ export function NewOrderModal({ onClose, onSuccess, prefillClientId }: NewOrderM
     setClientLookupError(null);
   }, [prefillClientId]);
 
+  useEffect(() => {
+    if (!resolveLoyaltyCustomer || isPublicSale) {
+      setLoyaltyMatch(null);
+      setLoyaltyBaseCoffees(null);
+      return;
+    }
+    const normalizedIdentifier = clientIdInput.trim().toLowerCase();
+    if (!normalizedIdentifier) {
+      setLoyaltyMatch(null);
+      setLoyaltyBaseCoffees(null);
+      return;
+    }
+    const match = resolveLoyaltyCustomer(normalizedIdentifier);
+    setLoyaltyMatch(match);
+    setLoyaltyBaseCoffees(
+      match && typeof match.loyaltyCoffees === 'number' ? match.loyaltyCoffees : null
+    );
+  }, [clientIdInput, resolveLoyaltyCustomer, isPublicSale]);
+
+  useEffect(() => {
+    if (paymentMethod === 'efectivo') {
+      setPaymentReference('');
+    }
+  }, [paymentMethod]);
+
   const handleQuickAdd = (productId: string) => {
     const menuItem = getMenuItemById(productId);
     if (!menuItem) {
       setFormError('No encontramos ese producto en el menú.');
       return;
     }
+    const kind = resolveItemKind(menuItem.id);
+    const beveragesAlreadyInCart = getBeverageUnitsInCart();
+    const baseCoffees = typeof loyaltyBaseCoffees === 'number' ? loyaltyBaseCoffees : null;
+    const isEligibleForReward = kind === 'beverage' && baseCoffees !== null;
+    let loyaltyReward = false;
+    let variantId = menuItem.id ?? menuItem.productId;
+    if (isEligibleForReward) {
+      const projectedTotal = baseCoffees + beveragesAlreadyInCart + 1;
+      loyaltyReward = projectedTotal % 7 === 0;
+      if (loyaltyReward) {
+        variantId = `${variantId ?? menuItem.productId}-loyalty-${Date.now()}`;
+      }
+    }
     addItem({
       productId: menuItem.productId,
-      variantId: menuItem.id,
+      variantId: variantId ?? menuItem.productId,
       name: menuItem.label,
-      price: menuItem.price ?? 0,
+      price: loyaltyReward ? 0 : menuItem.price ?? 0,
       quantity: 1,
-      category: menuItem.category,
+      category: menuItem.category ?? (kind === 'beverage' ? 'Bebida' : menuItem.category),
       subcategory: menuItem.subcategory,
       sizeId: menuItem.sizeId,
       sizeLabel: menuItem.sizeLabel,
+      kind,
+      originalPrice: menuItem.price ?? 0,
+      loyaltyReward,
     });
     setFormError(null);
   };
 
-  const canSubmit = items.length > 0 && !isSubmitting;
+  const canSubmit = items.length > 0 && !isSubmitting && Boolean(paymentMethod);
+  const showPaymentReferenceField = Boolean(paymentMethod && paymentMethod !== 'efectivo');
+  const paymentReferenceLabel =
+    (paymentMethod && PAYMENT_REFERENCE_LABELS[paymentMethod]) || 'Referencia de pago';
+  const paymentReferencePlaceholder =
+    (paymentMethod && PAYMENT_REFERENCE_PLACEHOLDERS[paymentMethod]) || 'Referencia de pago';
+  const paymentReferenceHint =
+    (paymentMethod && PAYMENT_REFERENCE_HINTS[paymentMethod]) ||
+    'Captura la referencia proporcionada por el comprobante.';
+  const walletScannerAvailable = Boolean(onWalletScanRequest);
+  const loyaltyModulo = useMemo(
+    () => (typeof loyaltyBaseCoffees === 'number' ? loyaltyBaseCoffees % 7 : null),
+    [loyaltyBaseCoffees]
+  );
+  const coffeesUntilReward = useMemo(() => {
+    if (loyaltyModulo === null) {
+      return null;
+    }
+    return loyaltyModulo === 6 ? 0 : 6 - loyaltyModulo;
+  }, [loyaltyModulo]);
 
   const parsedCustomPercent = useMemo(() => parsePositiveNumber(customTipPercent), [customTipPercent]);
   const parsedCustomAmount = useMemo(() => parsePositiveNumber(customTipAmount), [customTipAmount]);
+  const loyaltyStatusMessage = useMemo(() => {
+    if (!loyaltyMatch || typeof loyaltyBaseCoffees !== 'number') {
+      return null;
+    }
+    if (coffeesUntilReward === 0) {
+      return 'El siguiente café de este pedido se descuenta automáticamente.';
+    }
+    if (typeof coffeesUntilReward === 'number') {
+      return coffeesUntilReward === 1
+        ? 'Te falta 1 café para activar el beneficio.'
+        : `Te faltan ${coffeesUntilReward} cafés para activar el beneficio.`;
+    }
+    return null;
+  }, [coffeesUntilReward, loyaltyBaseCoffees, loyaltyMatch]);
 
   const { tipAmount, appliedPercent } = useMemo(() => {
     let percent: number | null = null;
@@ -192,6 +432,9 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
     setFormError(null);
     setIsPublicSale(false);
     setPaymentMethod(null);
+    setPaymentReference('');
+    setLoyaltyMatch(null);
+    setLoyaltyBaseCoffees(null);
   };
 
   const handleClientLookup = async () => {
@@ -228,6 +471,16 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
       );
     }
   };
+  const handleWalletScan = () => {
+    if (!onWalletScanRequest) {
+      setFormError('El lector no está disponible en este entorno.');
+      return;
+    }
+    onWalletScanRequest((value) => {
+      setPaymentReference(value);
+      setFormError(null);
+    });
+  };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -248,6 +501,26 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
       return;
     }
 
+    const needsReference = requiresPaymentReference(paymentMethod);
+    const trimmedReference = paymentReference.trim();
+    const normalizedReference = looksLikeLightningInvoice(trimmedReference)
+      ? normalizeLightningReference(trimmedReference)
+      : trimmedReference;
+    if (needsReference) {
+      if (!normalizedReference) {
+        setFormError('Captura la referencia de pago correspondiente.');
+        return;
+      }
+      if (!isValidReferenceForMethod(paymentMethod, normalizedReference)) {
+        setFormError(
+          paymentMethod === 'cripto'
+            ? 'Ingresa una wallet 0x, ENS o factura Lightning válida.'
+            : 'La referencia necesita al menos 4 caracteres.'
+        );
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     setFormError(null);
 
@@ -255,13 +528,23 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
       const ticketCode = generateTicketCode();
 
     const fallbackUserId = isUsingPublicSaleId ? PUBLIC_SALE_USER_ID : undefined;
-    const payload = {
+    const referenceType = normalizedReference ? detectReferenceType(normalizedReference) : null;
+    const metadataPayload: Record<string, unknown> = {};
+    if (normalizedReference) {
+      metadataPayload.paymentReference = {
+        value: normalizedReference,
+        method: paymentMethod,
+        type: referenceType,
+      };
+    }
+    const trimmedNotes = notes.trim();
+    const payload: Record<string, unknown> = {
       ticketCode,
       status: 'pending',
       currency: 'MXN',
-        items: items.map((item) => {
-          const metadata = item.variantId ? { variantId: item.variantId } : undefined;
-          return {
+      items: items.map((item) => {
+        const metadata = item.variantId ? { variantId: item.variantId } : undefined;
+        return {
           productId: item.productId,
           name: item.name,
           category: item.category,
@@ -272,22 +555,30 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
           sizeLabel: item.sizeLabel,
           metadata,
         };
-        }),
-        totals: {
-          subtotal,
-          tax: 0,
-          tip: tipAmount,
-          total: totalWithTip,
-        },
-        tip: {
-          amount: tipAmount,
-          percent: appliedPercent,
-        },
-        userId: validatedCustomer?.id ?? fallbackUserId ?? undefined,
-        clientId: trimmedClientId || undefined,
-        metadata: notes.trim() || undefined,
-        paymentMethod,
-      };
+      }),
+      totals: {
+        subtotal,
+        tax: 0,
+        tip: tipAmount,
+        total: totalWithTip,
+      },
+      tip: {
+        amount: tipAmount,
+        percent: appliedPercent,
+      },
+      userId: validatedCustomer?.id ?? fallbackUserId ?? undefined,
+      clientId: trimmedClientId || undefined,
+      paymentMethod,
+    };
+    if (trimmedNotes) {
+      payload.notes = trimmedNotes;
+    }
+    if (Object.keys(metadataPayload).length > 0) {
+      payload.metadata = metadataPayload;
+    }
+    if (needsReference && normalizedReference) {
+      payload.paymentReference = normalizedReference;
+    }
 
       const response = await fetch('/api/orders', {
         method: 'POST',
@@ -411,43 +702,66 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
           <ul className="mt-3 space-y-3">
             {items.map((item) => {
               const itemKey = item.variantId ?? item.productId;
+              const displayPrice = formatCurrency(item.price);
+              const originalPrice =
+                typeof item.originalPrice === 'number' && item.originalPrice > 0
+                  ? formatCurrency(item.originalPrice)
+                  : null;
               return (
-              <li
-                key={itemKey}
-                className="flex items-center justify-between rounded-xl border border-primary-100/70 bg-white/70 px-3 py-2 dark:border-white/10 dark:bg-transparent"
-              >
-                <div>
-                  <p className="font-semibold text-primary-700 dark:text-primary-50">{item.name}</p>
-                  <p className="text-xs text-[var(--brand-muted)]">
-                    {item.category ?? 'Especialidad'}
-                    {item.sizeLabel ? ` · ${item.sizeLabel}` : ''} · {formatCurrency(item.price)}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => decrement(itemKey)}
-                    className="rounded-full border border-primary-200 px-2 py-1 text-xs font-semibold text-primary-600 transition hover:border-primary-400"
-                  >
-                    −
-                  </button>
-                  <span className="w-6 text-center font-semibold">{item.quantity}</span>
-                  <button
-                    type="button"
-                    onClick={() => increment(itemKey)}
-                    className="rounded-full border border-primary-200 px-2 py-1 text-xs font-semibold text-primary-600 transition hover:border-primary-400"
-                  >
-                    +
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => removeItem(itemKey)}
-                    className="text-xs font-semibold text-danger-500"
-                  >
-                    Quitar
-                  </button>
-                </div>
-              </li>
+                <li
+                  key={itemKey}
+                  className="flex items-center justify-between rounded-xl border border-primary-100/70 bg-white/70 px-3 py-2 dark:border-white/10 dark:bg-transparent"
+                >
+                  <div>
+                    <p className="font-semibold text-primary-700 dark:text-primary-50">{item.name}</p>
+                    <p className="text-xs text-[var(--brand-muted)]">
+                      {item.category ?? 'Especialidad'}
+                      {item.sizeLabel ? ` · ${item.sizeLabel}` : ''}
+                      {' · '}
+                      {item.loyaltyReward ? (
+                        <span className="font-semibold text-emerald-600">{displayPrice}</span>
+                      ) : (
+                        displayPrice
+                      )}
+                      {item.loyaltyReward && originalPrice && (
+                        <span className="ml-2 text-[var(--brand-muted)] line-through">{originalPrice}</span>
+                      )}
+                    </p>
+                    {item.loyaltyReward && (
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.25em] text-emerald-600">
+                        Gratis por lealtad
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => decrement(itemKey)}
+                      className="rounded-full border border-primary-200 px-2 py-1 text-xs font-semibold text-primary-600 transition hover:border-primary-400 disabled:opacity-40"
+                      disabled={item.quantity <= 1 && item.loyaltyReward}
+                      title={item.loyaltyReward ? 'El beneficio aplica a un solo café.' : undefined}
+                    >
+                      −
+                    </button>
+                    <span className="w-6 text-center font-semibold">{item.quantity}</span>
+                    <button
+                      type="button"
+                      onClick={() => increment(itemKey)}
+                      className="rounded-full border border-primary-200 px-2 py-1 text-xs font-semibold text-primary-600 transition hover:border-primary-400 disabled:opacity-40"
+                      disabled={item.loyaltyReward}
+                      title={item.loyaltyReward ? 'El café gratis no se puede duplicar desde aquí.' : undefined}
+                    >
+                      +
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeItem(itemKey)}
+                      className="text-xs font-semibold text-danger-500"
+                    >
+                      Quitar
+                    </button>
+                  </div>
+                </li>
               );
             })}
           </ul>
@@ -628,6 +942,12 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
             {validatedCustomer.clientId ?? validatedCustomer.id}
           </div>
         ) : null}
+        {!isPublicSale && loyaltyMatch && (
+          <div className="mt-2 rounded-xl border border-primary-200/70 bg-primary-50/70 px-3 py-2 text-xs text-primary-800 dark:border-white/20 dark:bg-white/10 dark:text-white">
+            Cafés acumulados: {loyaltyMatch.loyaltyCoffees ?? 0}
+            {loyaltyStatusMessage && <span className="ml-1 text-[var(--brand-muted)]">· {loyaltyStatusMessage}</span>}
+          </div>
+        )}
         {clientLookupState === 'error' && clientLookupError && (
           <div className="mt-2 rounded-xl border border-danger-200/70 bg-danger-50/70 px-3 py-2 text-xs text-danger-700 dark:border-danger-500/30 dark:bg-danger-900/30 dark:text-danger-100">
             {clientLookupError}
@@ -667,6 +987,35 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
         </div>
         {!paymentMethod && (
           <p className="mt-2 text-xs text-danger-500">Este campo es obligatorio.</p>
+        )}
+        {showPaymentReferenceField && (
+          <div className="mt-4">
+            <label className="text-xs font-semibold uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+              {paymentReferenceLabel}
+            </label>
+            <div className="mt-2">
+              <div className="relative">
+                <input
+                  value={paymentReference}
+                  onChange={(event) => setPaymentReference(event.target.value)}
+                  placeholder={paymentReferencePlaceholder}
+                  className="w-full rounded-xl border border-primary-100/70 bg-transparent px-3 py-2 pr-12 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/5 dark:text-white"
+                />
+                {paymentMethod === 'cripto' && (
+                  <button
+                    type="button"
+                    onClick={handleWalletScan}
+                    className="absolute inset-y-0 right-3 flex items-center justify-center rounded-full border border-primary-200 bg-primary-50 px-2 text-base transition hover:border-primary-400 hover:bg-primary-100 disabled:opacity-40 dark:border-white/30 dark:bg-white/10"
+                    disabled={!walletScannerAvailable}
+                  >
+                    <span aria-hidden="true">📷</span>
+                    <span className="sr-only">Escanear referencia cripto</span>
+                  </button>
+                )}
+              </div>
+            </div>
+            <p className="mt-1 text-xs text-[var(--brand-muted)]">{paymentReferenceHint}</p>
+          </div>
         )}
       </div>
 

@@ -1,3 +1,31 @@
+/*
+ * --------------------------------------------------------------------
+ *  Xoco POS — Point of Sale System
+ *  Software Property of Xoco Café
+ *  Copyright (c) 2025 Xoco Café
+ *  Principal Developer: Donovan Riaño
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at:
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *  --------------------------------------------------------------------
+ *  PROPIEDAD DEL SOFTWARE — XOCO CAFÉ.
+ *  Sistema Xoco POS — Punto de Venta.
+ *  Desarrollador Principal: Donovan Riaño.
+ *
+ *  Este archivo está licenciado bajo Apache License 2.0.
+ *  Consulta el archivo LICENSE en la raíz del proyecto para más detalles.
+ * --------------------------------------------------------------------
+ */
+
 import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-server';
@@ -138,6 +166,23 @@ const toTrimmedString = (value: unknown) => {
   if (typeof value === 'string') {
     const trimmed = value.trim();
     return trimmed || null;
+  }
+  return null;
+};
+
+const coerceMetadataObject = (value: unknown): Record<string, unknown> | null => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return null;
+    }
   }
   return null;
 };
@@ -359,6 +404,10 @@ export async function GET(request: Request) {
     '"queuedPaymentMethod"',
     '"tipAmount"',
     '"tipPercent"',
+    '"metadata"',
+    '"notes"',
+    '"message"',
+    '"instructions"',
   ];
     if (ORDER_CLIENT_ID_COLUMN) {
       orderSelectFields.push(`clientId:${ORDER_CLIENT_ID_COLUMN}`);
@@ -433,7 +482,17 @@ export async function GET(request: Request) {
     }
 
     let enriched = ordersData.map((order) => {
-      const { order_items, items: rawStoredItems, total, user, ...rest } = order as Record<
+      const {
+        order_items,
+        items: rawStoredItems,
+        total,
+        user,
+        metadata,
+        notes,
+        message,
+        instructions,
+        ...rest
+      } = order as Record<
         string,
         unknown
       > & {
@@ -442,6 +501,10 @@ export async function GET(request: Request) {
         items?: unknown;
         total?: unknown;
         user?: Record<string, unknown> | null;
+        metadata?: unknown;
+        notes?: unknown;
+        message?: unknown;
+        instructions?: unknown;
       };
       const sourceItems =
         Array.isArray(rawStoredItems) && rawStoredItems.length
@@ -450,6 +513,13 @@ export async function GET(request: Request) {
             ? order_items
             : [];
       const items = mapOrderItems(sourceItems, productMap);
+      const metadataObject = coerceMetadataObject(metadata);
+      const prepAssignment = metadataObject?.prepAssignment
+        ? coerceMetadataObject(metadataObject.prepAssignment)
+        : null;
+      const paymentMetadata = metadataObject?.payment
+        ? coerceMetadataObject(metadataObject.payment)
+        : null;
       return {
         ...rest,
         id: rest.id ?? order.id ?? null,
@@ -457,6 +527,14 @@ export async function GET(request: Request) {
         items,
         itemsCount: countOrderItems(items),
         user: withDecryptedUserNames(user ?? null),
+        metadata: metadata ?? null,
+        notes: toTrimmedString(notes) ?? null,
+        message: toTrimmedString(message) ?? null,
+        instructions: toTrimmedString(instructions) ?? null,
+        queuedByStaffId: toTrimmedString(prepAssignment?.staffId) ?? null,
+        queuedByStaffName: toTrimmedString(prepAssignment?.staffName) ?? null,
+        queuedPaymentReference: toTrimmedString(paymentMetadata?.reference) ?? null,
+        queuedPaymentReferenceType: toTrimmedString(paymentMetadata?.referenceType) ?? null,
       };
     });
 
@@ -609,6 +687,27 @@ export async function POST(request: Request) {
     }
     if (tipPercent !== null) {
       orderRecord.tipPercent = tipPercent;
+    }
+
+    const noteValue = toTrimmedString(
+      payload.notes ??
+        payload.message ??
+        payload.instructions ??
+        (typeof payload.metadata === 'string' ? payload.metadata : null)
+    );
+    const metadataPayload =
+      payload.metadata && typeof payload.metadata === 'object'
+        ? (payload.metadata as Record<string, unknown>)
+        : null;
+
+    if (metadataPayload) {
+      orderRecord.metadata = metadataPayload;
+    } else if (typeof payload.metadata === 'string' && payload.metadata.trim()) {
+      orderRecord.metadata = payload.metadata.trim();
+    }
+
+    if (noteValue) {
+      orderRecord.notes = noteValue;
     }
 
     const { error: orderError } = await supabaseAdmin.from(ORDERS_TABLE).upsert(orderRecord);
