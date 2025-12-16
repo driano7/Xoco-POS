@@ -106,14 +106,16 @@ const buildOrderSearchTerms = (order: Order) => {
 
 interface OrdersPanelProps {
   onSelect?: (order: Order) => void;
+  onSelectPrepTask?: (task: PrepTask) => void;
   hiddenOrderIds?: ReadonlySet<string>;
-  activePrepTasks?: PrepTask[];
+  prepTasks?: PrepTask[];
 }
 
 export function OrdersPanel({
   onSelect,
+  onSelectPrepTask,
   hiddenOrderIds,
-  activePrepTasks,
+  prepTasks,
 }: OrdersPanelProps = {}) {
   const { orders, isLoading, error, refresh } = useOrders();
   const visibleOrders = useMemo(
@@ -157,69 +159,6 @@ export function OrdersPanel({
       return Number.isFinite(timestamp) && timestamp >= threshold;
     });
   }, [completedAll]);
-
-  const inProgressOrders = useMemo(() => {
-    if (!activePrepTasks?.length) {
-      return [];
-    }
-    const visibleMap = new Map<string, Order>();
-    visibleOrders.forEach((order) => {
-      if (order.id) {
-        visibleMap.set(order.id, order);
-      }
-    });
-    const seen = new Set<string>();
-    const result: Order[] = [];
-    activePrepTasks.forEach((task) => {
-      const orderId =
-        task.order?.id ??
-        task.orderItem?.orderId ??
-        task.order?.orderNumber ??
-        task.id;
-      if (!orderId || seen.has(orderId)) {
-        return;
-      }
-      seen.add(orderId);
-      const existing = visibleMap.get(orderId);
-      if (existing) {
-        if (!result.some((order) => order.id === existing.id)) {
-          result.push(existing);
-        }
-        return;
-      }
-      const handlerName =
-        task.handlerName ??
-        task.handler?.firstName ??
-        task.handler?.lastName ??
-        task.handler?.email ??
-        null;
-      const fallback: Order = {
-        id: orderId,
-        status: 'pending',
-        ticketCode: task.order?.ticketCode ?? null,
-        orderNumber: task.order?.orderNumber ?? null,
-        clientId: task.order?.clientId ?? task.customer?.clientId ?? null,
-        userId: task.order?.userId ?? task.customer?.id ?? null,
-        total: task.order?.total ?? task.amount ?? null,
-        currency: task.order?.currency ?? 'MXN',
-        createdAt: task.order?.createdAt ?? task.orderItem?.createdAt ?? null,
-        itemsCount:
-          task.order?.items?.reduce((sum, item) => sum + (item.quantity ?? 0), 0) ??
-          task.orderItem?.quantity ??
-          null,
-        user: {
-          firstName: task.customer?.name ?? null,
-          clientId: task.customer?.clientId ?? null,
-          email: task.customer?.email ?? null,
-        },
-        metadata: task.order?.metadata ?? null,
-        queuedByStaffName: handlerName,
-        queuedByStaffId: task.handledByStaffId ?? task.handler?.id ?? null,
-      };
-      result.push(fallback);
-    });
-    return result;
-  }, [activePrepTasks, visibleOrders]);
 
   return (
     <section className="card space-y-6 p-6 text-sm">
@@ -314,11 +253,11 @@ export function OrdersPanel({
             highlight="text-primary-400"
             onSelect={onSelect}
           />
-          <OrdersColumn
+          <PrepTasksColumn
             title="En preparación"
-            orders={inProgressOrders}
+            tasks={prepTasks ?? []}
             highlight="text-amber-500"
-            onSelect={onSelect}
+            onSelect={onSelectPrepTask}
           />
           <OrdersColumn
             title="Completadas"
@@ -442,6 +381,126 @@ function OrdersColumn({
           onNext={pagination.next}
         />
       )}
+    </div>
+  );
+}
+
+function PrepTasksColumn({
+  title,
+  tasks,
+  highlight,
+  onSelect,
+}: {
+  title: string;
+  tasks: PrepTask[];
+  highlight: string;
+  onSelect?: (task: PrepTask) => void;
+}) {
+  const pagination = usePagination(tasks, ITEMS_PER_PAGE);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <h4 className={`text-lg font-semibold ${highlight}`}>{title}</h4>
+        <span className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
+          {tasks.length}
+        </span>
+      </div>
+      <div className="mt-3 space-y-2">
+        {tasks.length === 0 ? (
+          <p className="rounded-2xl border border-dashed border-primary-200/60 bg-white/70 px-4 py-3 text-sm text-[var(--brand-muted)] dark:border-white/10 dark:bg-white/5">
+            Sin artículos en barra.
+          </p>
+        ) : (
+          pagination.items.map((task) => {
+            const productName =
+              task.product?.name ??
+              task.orderItem?.productId ??
+              task.order?.items?.[0]?.name ??
+              'Producto';
+            const quantity = task.orderItem?.quantity ?? 1;
+            const orderCode =
+              task.order?.ticketCode ??
+              task.order?.orderNumber ??
+              task.order?.id ??
+              task.id;
+            const customerLabel = task.order
+              ? formatOrderCustomer(task.order as Order)
+              : task.customer?.name ??
+                task.customer?.clientId ??
+                task.customer?.email ??
+                'Cliente';
+            const totals = task.order?.totals;
+            const totalAmount =
+              typeof task.order?.total === 'number'
+                ? task.order.total
+                : typeof totals?.total === 'number'
+                  ? totals.total
+                  : typeof totals?.totalAmount === 'number'
+                    ? totals.totalAmount
+                    : task.amount ?? null;
+            const taxAmount =
+              typeof task.order?.vatAmount === 'number'
+                ? task.order.vatAmount
+                : typeof totals?.tax === 'number'
+                  ? totals.tax
+                  : null;
+            const subtotalAmount =
+              typeof task.order?.subtotal === 'number'
+                ? task.order.subtotal
+                : typeof totals?.subtotal === 'number'
+                  ? totals.subtotal
+                  : totalAmount !== null && taxAmount !== null
+                    ? Math.max(totalAmount - taxAmount, 0)
+                    : null;
+            return (
+              <button
+                type="button"
+                key={task.id}
+                onClick={() => onSelect?.(task)}
+                className="w-full text-left rounded-2xl border border-amber-200/70 bg-white/80 px-4 py-3 text-sm shadow-sm transition hover:border-amber-400 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-amber-500 dark:border-white/10 dark:bg-white/10"
+              >
+                <header className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.35em] text-amber-500 font-bold underline">
+                      {orderCode}
+                    </p>
+                    <p className="text-base font-semibold">
+                      {quantity} × {productName}
+                    </p>
+                  </div>
+                  <p className="text-xs font-semibold text-[var(--brand-muted)]">
+                    {task.createdAt ? formatDate(task.createdAt) : '—'}
+                  </p>
+                </header>
+                <p className="text-xs text-[var(--brand-muted)]">Cliente: {customerLabel}</p>
+                <p className="text-xs text-[var(--brand-muted)]">
+                  Barista: {task.handlerName ?? task.handler?.firstName ?? task.handledByStaffId ?? 'Sin asignar'}
+                </p>
+                <p className="text-xs text-[var(--brand-muted)]">
+                  Total:{' '}
+                  <span className="font-semibold text-primary-900 dark:text-white">
+                    {formatCurrency(totalAmount ?? task.amount ?? 0)}
+                  </span>
+                  {taxAmount !== null && (
+                    <span className="ml-2">
+                      IVA <span className="font-semibold">{formatCurrency(taxAmount)}</span>
+                    </span>
+                  )}
+                </p>
+                {subtotalAmount !== null && (
+                  <p className="text-xs text-[var(--brand-muted)]">
+                    Subtotal:{' '}
+                    <span className="font-semibold text-[var(--brand-text)] dark:text-white">
+                      {formatCurrency(subtotalAmount)}
+                    </span>
+                  </p>
+                )}
+              </button>
+            );
+          })
+        )}
+      </div>
     </div>
   );
 }

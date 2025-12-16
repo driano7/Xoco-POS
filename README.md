@@ -85,6 +85,14 @@ Todo el código del sistema POS ha sido **reimplementado**, reestructurado o ada
 
 ---
 
+# 📚 Documentación técnica
+
+- [Guía para sincronizar tablas Supabase ↔ SQLite](docs/sync-guide.md) — pasos para extender el dataset offline del POS y consumirlo desde los endpoints.
+- `docs/client-ticket-prompt.md`, `docs/pos-address-prompt.md` — prompts técnicos listos para integraciones específicas de la app cliente.
+- `schema.sqlite.sql` — copia lista del esquema simplificado (SQLite) para regenerar `local.db` desde este repo.
+
+---
+
 # ✒️ Créditos  
 
 ## Equipo Fundador  

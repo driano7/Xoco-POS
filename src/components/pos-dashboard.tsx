@@ -1653,12 +1653,7 @@ export function PosDashboard() {
     error: loyaltyError,
     refresh: refreshLoyalty,
   } = useLoyalty();
-  const {
-    tasks: prepTasks,
-    isLoading: prepLoading,
-    error: prepError,
-    refresh: refreshPrep,
-  } = usePrepQueue();
+  const { tasks: prepTasks, refresh: refreshPrep } = usePrepQueue();
   const {
     payments,
     isLoading: paymentsLoading,
@@ -1912,25 +1907,6 @@ export function PosDashboard() {
     { id: 'sup-001', email: 'nuevo.socio@xoco.local', role: 'socio', status: 'pending' },
   ]);
   const [secureSnapshot, setSecureSnapshot] = useState<Record<string, string>>({});
-  const hiddenQueueOrderIds = useMemo(() => {
-    const ids = new Set<string>();
-    prepTasks
-      .filter((task) => task.status === 'pending' || task.status === 'in_progress')
-      .forEach((task) => {
-        if (task.order?.id) {
-          ids.add(task.order.id);
-        }
-      });
-    return ids;
-  }, [prepTasks]);
-  const visibleOrders = useMemo(
-    () =>
-      orders.filter(
-        (order) =>
-          !order.isHidden && !(order.status !== 'completed' && hiddenQueueOrderIds.has(order.id))
-      ),
-    [orders, hiddenQueueOrderIds]
-  );
   const visibleReservations = useMemo(
     () => reservations.filter((reservation) => !reservation.isHidden),
     [reservations]
@@ -1943,6 +1919,115 @@ export function PosDashboard() {
           : reservation
       ),
     [reservationOverrides, visibleReservations]
+  );
+  const {
+    pending: basePendingReservations,
+    past: basePastReservations,
+    completed: baseCompletedReservations,
+  } = useMemo(() => groupReservations(reservationsWithOverrides), [reservationsWithOverrides]);
+  const [reservationFilter, setReservationFilter] = useState('');
+  const filteredReservations = useMemo(() => {
+    if (!reservationFilter.trim()) {
+      return {
+        pending: basePendingReservations,
+        past: basePastReservations,
+        completed: baseCompletedReservations,
+      };
+    }
+    const term = reservationFilter.trim().toLowerCase();
+    const matches = (value?: string | null) => value?.toLowerCase().includes(term) ?? false;
+    const filterList = (list: Reservation[]) =>
+      list.filter((reservation) => buildReservationSearchTerms(reservation).some(matches));
+    return {
+      pending: filterList(basePendingReservations),
+      past: filterList(basePastReservations),
+      completed: filterList(baseCompletedReservations),
+    };
+  }, [baseCompletedReservations, basePastReservations, basePendingReservations, reservationFilter]);
+  const pendingReservations = filteredReservations.pending;
+  const pastReservations = filteredReservations.past;
+  const completedReservations = filteredReservations.completed;
+  const completedReservationsLastWeek = useMemo(() => {
+    const threshold = Date.now() - WEEK_MS;
+    return baseCompletedReservations.filter((reservation) => {
+      const timestamp =
+        (reservation.updatedAt && Date.parse(reservation.updatedAt)) ||
+        (reservation.reservationDate && parseReservationDate(reservation)?.getTime()) ||
+        (reservation.createdAt && Date.parse(reservation.createdAt)) ||
+        NaN;
+      return Number.isFinite(timestamp) && timestamp >= threshold;
+    });
+  }, [baseCompletedReservations]);
+  const reservationCounts = {
+    pending: basePendingReservations.length,
+    past: basePastReservations.length,
+    completed: baseCompletedReservations.length,
+  };
+  const [completedOptimisticOrders, setCompletedOptimisticOrders] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!completedOptimisticOrders.size) {
+      return;
+    }
+    let hasChanges = false;
+    const next = new Set(completedOptimisticOrders);
+    completedOptimisticOrders.forEach((orderId) => {
+      const stillVisible = prepTasks.some((task) => {
+        const candidate = task.order?.id ?? task.orderItem?.orderId ?? null;
+        return candidate === orderId;
+      });
+      if (!stillVisible) {
+        next.delete(orderId);
+        hasChanges = true;
+      }
+    });
+    if (hasChanges) {
+      setCompletedOptimisticOrders(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prepTasks]);
+  const baseActivePrep = useMemo(() => groupPrepTasks(prepTasks).active, [prepTasks]);
+  const visibleActivePrep = useMemo(
+    () =>
+      baseActivePrep.filter((task) => {
+        const orderId = task.order?.id ?? task.orderItem?.orderId ?? null;
+        const orderCompleted = (task.order?.status ?? '').toLowerCase() === 'completed';
+        if (orderCompleted) {
+          return false;
+        }
+        return !(orderId && completedOptimisticOrders.has(orderId));
+      }),
+    [baseActivePrep, completedOptimisticOrders]
+  );
+  const prepTasksByOrderId = useMemo(() => {
+    const map = new Map<string, PrepTask[]>();
+    visibleActivePrep.forEach((task) => {
+      const orderId = task.order?.id ?? task.orderItem?.orderId ?? null;
+      if (!orderId) {
+        return;
+      }
+      const list = map.get(orderId) ?? [];
+      list.push(task);
+      map.set(orderId, list);
+    });
+    return map;
+  }, [visibleActivePrep]);
+  const hiddenQueueOrderIds = useMemo(() => {
+    const ids = new Set<string>();
+    visibleActivePrep.forEach((task) => {
+      const orderId = task.order?.id ?? task.orderItem?.orderId ?? null;
+      if (orderId) {
+        ids.add(orderId);
+      }
+    });
+    return ids;
+  }, [visibleActivePrep]);
+  const visibleOrders = useMemo(
+    () =>
+      orders.filter(
+        (order) =>
+          !order.isHidden && !(order.status !== 'completed' && hiddenQueueOrderIds.has(order.id))
+      ),
+    [orders, hiddenQueueOrderIds]
   );
   const { pending, past: pastOrders, completed } = useMemo(
     () => groupOrders(visibleOrders),
@@ -2019,53 +2104,6 @@ export function PosDashboard() {
       tipShare,
     };
   }, [completed, monthStart]);
-  const {
-    pending: basePendingReservations,
-    past: basePastReservations,
-    completed: baseCompletedReservations,
-  } = useMemo(() => groupReservations(reservationsWithOverrides), [reservationsWithOverrides]);
-  const [reservationFilter, setReservationFilter] = useState('');
-  const filteredReservations = useMemo(() => {
-    if (!reservationFilter.trim()) {
-      return {
-        pending: basePendingReservations,
-        past: basePastReservations,
-        completed: baseCompletedReservations,
-      };
-    }
-    const term = reservationFilter.trim().toLowerCase();
-    const matches = (value?: string | null) => value?.toLowerCase().includes(term) ?? false;
-    const filterList = (list: Reservation[]) =>
-      list.filter((reservation) => buildReservationSearchTerms(reservation).some(matches));
-    return {
-      pending: filterList(basePendingReservations),
-      past: filterList(basePastReservations),
-      completed: filterList(baseCompletedReservations),
-    };
-  }, [baseCompletedReservations, basePastReservations, basePendingReservations, reservationFilter]);
-  const pendingReservations = filteredReservations.pending;
-  const pastReservations = filteredReservations.past;
-  const completedReservations = filteredReservations.completed;
-  const completedReservationsLastWeek = useMemo(() => {
-    const threshold = Date.now() - WEEK_MS;
-    return baseCompletedReservations.filter((reservation) => {
-      const timestamp =
-        (reservation.updatedAt && Date.parse(reservation.updatedAt)) ||
-        (reservation.reservationDate && parseReservationDate(reservation)?.getTime()) ||
-        (reservation.createdAt && Date.parse(reservation.createdAt)) ||
-        NaN;
-      return Number.isFinite(timestamp) && timestamp >= threshold;
-    });
-  }, [baseCompletedReservations]);
-  const reservationCounts = {
-    pending: basePendingReservations.length,
-    past: basePastReservations.length,
-    completed: baseCompletedReservations.length,
-  };
-  const { active: baseActivePrep, completed: baseCompletedPrep } = useMemo(
-    () => groupPrepTasks(prepTasks),
-    [prepTasks]
-  );
   const topCustomer = loyaltyStats?.topCustomer ?? null;
   const totalSales = payments?.totalAmount ?? 0;
   const totalTips = payments?.totalTips ?? 0;
@@ -2816,6 +2854,54 @@ export function PosDashboard() {
     [getCurrentStaffName, refresh, refreshPrep, user]
   );
 
+  const handleCompletePrepOrder = useCallback(
+    async (order: Order) => {
+      if (!order?.id) {
+        return;
+      }
+      const tasksForOrder = prepTasksByOrderId.get(order.id) ?? [];
+      setCompletedOptimisticOrders((prev) => {
+        const next = new Set(prev);
+        next.add(order.id);
+        return next;
+      });
+      setActionState({ isLoading: true, message: null, error: null });
+      try {
+        if (tasksForOrder.length) {
+          await Promise.all(tasksForOrder.map((task) => completePrepTask(task.id)));
+        }
+        await completeOrder(order.id);
+        void refresh();
+        void refreshPrep();
+        setActionState({
+          isLoading: false,
+          message: 'Pedido marcado como completado',
+          error: null,
+        });
+        setDetail(null);
+        setSnackbar('Pedido marcado como completado en barra.');
+      } catch (error) {
+        setCompletedOptimisticOrders((prev) => {
+          if (!prev.has(order.id)) {
+            return prev;
+          }
+          const next = new Set(prev);
+          next.delete(order.id);
+          return next;
+        });
+        setActionState({
+          isLoading: false,
+          message: null,
+          error:
+            error instanceof Error
+              ? error.message
+              : 'No pudimos completar el pedido. Reintenta en unos minutos.',
+        });
+      }
+    },
+    [prepTasksByOrderId, refresh, refreshPrep]
+  );
+
   const handleMarkPrepCompleted = useCallback(
     async (task: PrepTask) => {
       if (!task.order?.id) {
@@ -3399,8 +3485,9 @@ const currentMonthMetrics = useMemo(() => {
 
             <OrdersPanel
               hiddenOrderIds={hiddenQueueOrderIds}
-              activePrepTasks={baseActivePrep}
+              prepTasks={visibleActivePrep}
               onSelect={(order) => setDetail({ type: 'order', data: order })}
+              onSelectPrepTask={(task) => setDetail({ type: 'prep', data: task })}
             />
 
             <section id={reservationsSectionId} className="card space-y-6 p-6">
@@ -3531,6 +3618,7 @@ const currentMonthMetrics = useMemo(() => {
                       isInPrepQueue={
                         Boolean(detail.data?.id && hiddenQueueOrderIds.has(detail.data.id))
                       }
+                      onCompletePrepOrder={(order) => void handleCompletePrepOrder(order)}
                     />
                   )}
                   {detail.type === 'reservation' && (
@@ -4337,224 +4425,6 @@ function ReservationCard({
   );
 }
 
-const PrepQueueColumn = ({
-  title,
-  tasks,
-  highlight,
-  onSelect,
-}: {
-  title: string;
-  tasks: PrepTask[];
-  highlight: string;
-  onSelect?: (task: PrepTask) => void;
-}) => (
-  <div>
-    <div className="flex items-center justify-between">
-      <h3 className={`text-lg font-semibold ${highlight}`}>{title}</h3>
-      <span className="text-sm text-[var(--brand-muted)]">{tasks.length} items</span>
-    </div>
-    <div className="mt-4 space-y-3">
-      {tasks.length === 0 ? (
-        <p className="rounded-2xl border border-dashed border-primary-200/60 bg-white/70 px-4 py-3 text-sm text-[var(--brand-muted)] dark:border-white/10 dark:bg-white/5">
-          Nada pendiente por ahora.
-        </p>
-      ) : (
-        tasks.slice(0, 10).map((task) => (
-          <PrepTaskCard key={task.id} task={task} onSelect={onSelect} />
-        ))
-      )}
-    </div>
-  </div>
-);
-
-const PrepQueueSkeleton = () => (
-  <div className="grid gap-6 lg:grid-cols-2">
-    {Array.from({ length: 2 }).map((_, columnIndex) => (
-      <div key={`prep-skeleton-${columnIndex}`}>
-        <div className="flex items-center justify-between">
-          <div className="h-4 w-24 rounded-full bg-primary-100/60 dark:bg-white/10" />
-          <div className="h-3 w-16 rounded-full bg-primary-50/80 dark:bg-white/5" />
-        </div>
-        <div className="mt-4 space-y-3">
-          {Array.from({ length: 3 }).map((__, cardIndex) => (
-            <div
-              key={`prep-skeleton-card-${columnIndex}-${cardIndex}`}
-              className="h-28 rounded-2xl border border-primary-100/70 bg-white/40 dark:border-white/10 dark:bg-white/5"
-            >
-              <div className="h-full w-full animate-pulse rounded-2xl bg-primary-50/70 dark:bg-white/10" />
-            </div>
-          ))}
-        </div>
-      </div>
-    ))}
-  </div>
-);
-
-const PrepTaskCard = ({ task, onSelect }: { task: PrepTask; onSelect?: (task: PrepTask) => void }) => {
-  const quantity = task.orderItem?.quantity ?? 1;
-  const productName = task.product?.name ?? 'Producto';
-  const orderCode =
-    task.order?.ticketCode ??
-    task.order?.orderNumber ??
-    task.order?.shortCode ??
-    (task.order?.id ? task.order.id.slice(0, 6) : null) ??
-    'Sin código';
-  const amount = task.amount ?? 0;
-  const statusLabel =
-    task.status === 'in_progress'
-      ? 'En preparación'
-      : task.status === 'completed'
-        ? 'Listo'
-        : 'Pendiente';
-  const statusBadge =
-    task.status === 'completed'
-      ? 'bg-emerald-100 text-emerald-700'
-      : task.status === 'in_progress'
-        ? 'bg-amber-100 text-amber-800'
-        : 'bg-primary-100 text-primary-700';
-  const customerLabel =
-    task.customer?.name?.trim() ||
-    task.customer?.email?.trim() ||
-    task.customer?.clientId?.trim() ||
-    task.order?.clientId ||
-    task.order?.userId ||
-    'Cliente sin registro';
-  const handlerDisplayName = getPrepTaskHandlerShortName(task);
-
-  return (
-    <article
-      role={onSelect ? 'button' : undefined}
-      tabIndex={onSelect ? 0 : undefined}
-      onClick={onSelect ? () => onSelect(task) : undefined}
-      onKeyDown={
-        onSelect
-          ? (event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                onSelect(task);
-              }
-            }
-          : undefined
-      }
-      className="rounded-2xl border border-primary-100/70 bg-white/80 px-4 py-3 text-sm shadow-sm transition hover:border-primary-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-primary-500 dark:border-white/10 dark:bg-white/10"
-    >
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-primary-400 font-bold underline">
-            {orderCode}
-          </p>
-          <p className="text-base font-semibold">
-            {quantity} × {productName}
-          </p>
-          <p className="text-xs text-[var(--brand-muted)]">
-            Cliente:{' '}
-            <span className="font-semibold text-primary-900 dark:text-white">{customerLabel}</span>
-          </p>
-        </div>
-        <span className="text-xs font-semibold text-[var(--brand-muted)]">
-          {task.createdAt ? formatDate(task.createdAt) : '—'}
-        </span>
-      </div>
-      <div className="mt-2 flex items-center justify-between text-xs text-[var(--brand-muted)]">
-        <p>
-          {handlerDisplayName
-            ? `Asignado a ${handlerDisplayName}`
-            : task.status === 'completed'
-              ? 'Entregado'
-              : 'Sin asignar'}
-        </p>
-        <p className="font-semibold text-primary-400">{formatCurrency(amount)}</p>
-      </div>
-      <div className="mt-3 flex items-center justify-between text-xs text-[var(--brand-muted)]">
-        <span className={`rounded-full px-3 py-1 font-semibold ${statusBadge}`}>{statusLabel}</span>
-        <span className="font-semibold text-primary-500">Ver detalle ↗</span>
-      </div>
-    </article>
-  );
-};
-
-const PrepQueuePastContent = ({
-  tasks,
-  onClose,
-  onSelect,
-}: {
-  tasks: PrepTask[];
-  onClose: () => void;
-  onSelect?: (task: PrepTask) => void;
-}) => {
-  const [query, setQuery] = useState('');
-
-  const filtered = useMemo(() => {
-    if (!query.trim()) {
-      return tasks;
-    }
-    const term = query.trim().toLowerCase();
-    const matches = (value?: string | null) => value?.toLowerCase().includes(term) ?? false;
-    return tasks.filter((task) => buildPrepTaskSearchTerms(task).some(matches));
-  }, [query, tasks]);
-
-  return (
-    <div className="space-y-4 text-[var(--brand-text)] dark:text-white">
-      <div className="flex items-center justify-between">
-        <h3 className="text-2xl font-semibold">Pedidos pasados en barra</h3>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-xs font-bold uppercase tracking-[0.3em] text-[var(--brand-text)] underline dark:text-white"
-        >
-          Cerrar
-        </button>
-      </div>
-      <p className="text-sm text-[var(--brand-muted)]">
-        Pedidos que salieron de barra según el corte 23:59 y permanecieron más de 3 horas abiertos.
-        Se mantienen visibles por 48h y se depuran automáticamente al cumplirse un año.
-      </p>
-      <form
-        className="flex flex-wrap items-center gap-2 text-xs text-[var(--brand-muted)] dark:text-white/80"
-        onSubmit={(event) => event.preventDefault()}
-      >
-        <label className="flex flex-col">
-          <span className="font-semibold uppercase tracking-[0.25em]">Buscar cliente</span>
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Nombre, email o ID"
-            className="mt-1 rounded-xl border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:text-white"
-          />
-        </label>
-        <button type="submit" className="brand-button text-xs">
-          Buscar
-        </button>
-        {query && (
-          <button type="button" onClick={() => setQuery('')} className="brand-button--ghost text-xs">
-            Limpiar
-          </button>
-        )}
-      </form>
-      <p className="text-xs text-[var(--brand-muted)] dark:text-white/70">
-        Selecciona una tarjeta para abrir el detalle y marcarla como completada si aplica.
-      </p>
-      {filtered.length === 0 ? (
-        <p className="text-sm text-[var(--brand-muted)] dark:text-white/80">
-          {query ? 'No encontramos pedidos pasados con ese dato.' : 'Sin pedidos pendientes de seguimiento.'}
-        </p>
-      ) : (
-        <div className="max-h-[65vh] space-y-3 overflow-y-auto pr-2">
-          {filtered.map((task) => (
-            <PrepTaskCard
-              key={task.id}
-              task={task}
-              onSelect={(selected) => {
-                onSelect?.(selected);
-                onClose();
-              }}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
 
 type OrderItemEntry = {
   productId?: string | null;
@@ -5094,6 +4964,7 @@ const OrderDetailContent = ({
   order,
   onMoveToQueue,
   onReturnToQueue,
+  onCompletePrepOrder,
   actionState,
   prefilledPaymentReference,
   loyaltyCustomer,
@@ -5110,6 +4981,7 @@ const OrderDetailContent = ({
     order: Order,
     options?: { paymentMethod?: string | null; paymentReference?: string | null }
   ) => void;
+  onCompletePrepOrder?: (order: Order) => void;
   actionState?: DetailActionState;
   prefilledPaymentReference?: string | null;
   loyaltyCustomer?: LoyaltyCustomer | null;
@@ -5498,6 +5370,14 @@ const OrderDetailContent = ({
             actionState={actionState}
           />
         </div>
+      )}
+      {isInPrepQueue && order.status !== 'completed' && onCompletePrepOrder && (
+        <DetailActionFooter
+          label="Marcar como completado"
+          onClick={() => onCompletePrepOrder(order)}
+          disabled={actionState?.isLoading}
+          actionState={actionState}
+        />
       )}
       {order.status === 'completed' && onReturnToQueue && (
         <DetailActionFooter

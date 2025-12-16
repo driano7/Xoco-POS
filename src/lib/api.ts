@@ -74,6 +74,9 @@ export interface Order {
   type?: string | null;
   status: OrderStatus;
   total?: number | null;
+  subtotal?: number | null;
+  vatAmount?: number | null;
+  vatPercent?: number | null;
   currency?: string | null;
   items?: OrderItemSummary[] | null;
   itemsCount?: number | null;
@@ -85,9 +88,13 @@ export interface Order {
   tipAmount?: number | null;
   tipPercent?: number | null;
   totals?: {
+    subtotal?: number | null;
+    tax?: number | null;
+    tip?: number | null;
+    total?: number | null;
+    itemsCount?: number | null;
     totalAmount?: number | null;
     tipAmount?: number | null;
-    itemsCount?: number | null;
   } | null;
   metadata?: Record<string, unknown> | string | null;
   notes?: string | null;
@@ -122,11 +129,21 @@ export interface PrepOrder {
   shortCode?: string | null;
   status?: string | null;
   total?: number | null;
+  subtotal?: number | null;
+  vatAmount?: number | null;
   currency?: string | null;
   userId?: string | null;
   clientId?: string | null;
   createdAt?: string | null;
   items?: OrderItemSummary[] | null;
+  totals?: {
+    subtotal?: number | null;
+    tax?: number | null;
+    tip?: number | null;
+    total?: number | null;
+    totalAmount?: number | null;
+    tipAmount?: number | null;
+  } | null;
   metadata?: Record<string, unknown> | string | null;
   notes?: string | null;
 }

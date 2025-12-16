@@ -32,6 +32,7 @@ import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import type { Order } from '@/lib/api';
 import { fetchOrders } from '@/lib/api';
 import { applyOrderStatusRules, purgeExpiredPastOrders } from '@/lib/status-rules';
+import { getSupabaseBrowserClient } from '@/lib/supabase-browser';
 
 interface UseOrdersResult {
   orders: Order[];
@@ -71,6 +72,7 @@ const updateState = (partial: Partial<OrdersState>) => {
 };
 
 let pendingLoad: Promise<void> | null = null;
+let unsubscribeRealtime: (() => void) | null = null;
 
 const loadOrders = async () => {
   if (pendingLoad) {
@@ -99,6 +101,35 @@ const loadOrders = async () => {
   return pendingLoad;
 };
 
+const ensureRealtimeSubscription = () => {
+  if (unsubscribeRealtime || typeof window === 'undefined') {
+    return;
+  }
+  const client = getSupabaseBrowserClient();
+  if (!client) {
+    return;
+  }
+  const triggerRefresh = () => {
+    void loadOrders();
+  };
+  const channel = client
+    .channel('pos-orders-realtime')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, triggerRefresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'prep_queue' }, triggerRefresh);
+
+  channel.subscribe((status) => {
+    if (status === 'SUBSCRIBED') {
+      unsubscribeRealtime = () => {
+        client.removeChannel(channel);
+        unsubscribeRealtime = null;
+      };
+    } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+      client.removeChannel(channel);
+      unsubscribeRealtime = null;
+    }
+  });
+};
+
 const getSnapshot = () => state;
 
 export function useOrders(): UseOrdersResult {
@@ -108,6 +139,7 @@ export function useOrders(): UseOrdersResult {
     if (!snapshot.hasLoaded && !snapshot.isLoading) {
       void loadOrders();
     }
+    ensureRealtimeSubscription();
   }, [snapshot.hasLoaded, snapshot.isLoading]);
 
   const refresh = useCallback(() => loadOrders(), []);

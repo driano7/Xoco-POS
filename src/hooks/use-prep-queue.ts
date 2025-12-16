@@ -31,6 +31,7 @@
 import { useEffect, useState } from 'react';
 import type { PrepStatus, PrepTask } from '@/lib/api';
 import { fetchPrepQueue } from '@/lib/api';
+import { getSupabaseBrowserClient } from '@/lib/supabase-browser';
 
 interface UsePrepQueueResult {
   tasks: PrepTask[];
@@ -46,6 +47,7 @@ export function usePrepQueue(): UsePrepQueueResult {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<PrepStatus | undefined>(undefined);
+  const [subscriptionReady, setSubscriptionReady] = useState(false);
 
   const loadQueue = async (filter?: PrepStatus) => {
     setIsLoading(true);
@@ -63,6 +65,36 @@ export function usePrepQueue(): UsePrepQueueResult {
   useEffect(() => {
     void loadQueue();
   }, []);
+
+  useEffect(() => {
+    if (subscriptionReady) {
+      return;
+    }
+    const client = getSupabaseBrowserClient();
+    if (!client) {
+      return;
+    }
+    const channel = client
+      .channel('pos-prep-queue')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'prep_queue' },
+        () => void loadQueue(activeFilter)
+      );
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        setSubscriptionReady(true);
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        client.removeChannel(channel);
+        setSubscriptionReady(false);
+      }
+    });
+    return () => {
+      client.removeChannel(channel);
+      setSubscriptionReady(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFilter, subscriptionReady]);
 
   const filterByStatus = async (status?: PrepStatus) => {
     setActiveFilter(status);

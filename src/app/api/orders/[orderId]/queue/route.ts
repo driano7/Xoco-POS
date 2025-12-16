@@ -174,6 +174,7 @@ export async function POST(request: Request, context: { params: { orderId?: stri
       sanitizePaymentReference(paymentReferenceHeader) ??
       sanitizePaymentReference(parsedBody?.paymentReference ?? null);
     const paymentReferenceType = detectPaymentReferenceType(sanitizedPaymentReference);
+    const statusForQueue = assignedStaffId ? 'in_progress' : 'pending';
 
     const ensureOrderItemsSnapshot = async () => {
       const {
@@ -303,7 +304,7 @@ export async function POST(request: Request, context: { params: { orderId?: stri
         const { error: resetError } = await supabaseAdmin
           .from(PREP_QUEUE_TABLE)
           .update({
-            status: 'pending',
+            status: statusForQueue,
             handledByStaffId: assignedStaffId ?? null,
             updatedAt: now,
             completedAt: null,
@@ -315,12 +316,7 @@ export async function POST(request: Request, context: { params: { orderId?: stri
       }
       if (assignedStaffId) {
         const pendingTasksToAssign = existingTasks
-          .filter(
-            (task) =>
-              task.id &&
-              task.status === 'pending' &&
-              task.handledByStaffId !== assignedStaffId
-          )
+          .filter((task) => task.id && task.status === 'pending')
           .map((task) => task.id)
           .filter(Boolean);
         if (pendingTasksToAssign.length) {
@@ -329,6 +325,7 @@ export async function POST(request: Request, context: { params: { orderId?: stri
             .from(PREP_QUEUE_TABLE)
             .update({
               handledByStaffId: assignedStaffId,
+              status: 'in_progress',
               updatedAt: now,
             })
             .in('id', pendingTasksToAssign);
@@ -349,7 +346,7 @@ export async function POST(request: Request, context: { params: { orderId?: stri
 
     const payload = tasksToCreate.map((itemId) => ({
       orderItemId: itemId,
-      status: 'pending',
+      status: statusForQueue,
       handledByStaffId: assignedStaffId ?? null,
     }));
 
