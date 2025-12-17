@@ -75,3 +75,13 @@ Archivo: `../XocoCafe/scripts/sync-supabase-sqlite.mjs`.
 6. [ ] ¿La lógica write-through mantiene a Supabase como autoridad y replica los cambios locales?
 
 Sigue estos pasos para cada tabla faltante (`staff_users`, `prep_queue`, `inventory_items`, `inventory_movements`, etc.) y repite el proceso cada que se agreguen columnas nuevas para mantener los datos del POS sincronizados.
+
+## 7. Cola offline y reintentos automáticos
+
+Cuando no haya conexión con Supabase, las mutaciones se persisten en SQLite dentro de `pos_pending_queue`. No sincronices esta tabla con Supabase: es exclusiva de la app local y guarda la serie de operaciones (`upsert`, `insert`, `delete`) que deben reintentarse.
+
+- El job se dispara al inicio de cada request crítico (por ejemplo `/api/orders`) mediante `flushPendingOperations`. Se procesan hasta `POS_PENDING_SYNC_BATCH` registros por corrida (por defecto `20`).
+- Si un reintento vuelve a fallar por red, el estado se marca como offline y se respeta un intervalo (`SUPABASE_RETRY_DELAY_MS`, 30s por defecto) antes de volver a intentarlo.
+- Una vez que todas las operaciones pendientes terminan sin errores, `markSupabaseHealthy` restaura la prioridad de Supabase y las nuevas escrituras se hacen directo en la nube (los pendientes se limpian automáticamente).
+
+Esto garantiza que los pedidos creados offline no se pierdan y que Supabase retome el control apenas la red vuelva sin intervención manual.

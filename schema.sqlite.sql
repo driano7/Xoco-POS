@@ -435,6 +435,20 @@ CREATE TABLE IF NOT EXISTS reservation_failures (
 CREATE INDEX IF NOT EXISTS reservation_failures_user_idx ON reservation_failures (userId);
 CREATE INDEX IF NOT EXISTS reservation_failures_cleanup_idx ON reservation_failures (cleanupAt);
 
+CREATE TABLE IF NOT EXISTS pos_pending_queue (
+  id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  retryCount INTEGER NOT NULL DEFAULT 0,
+  lastError TEXT,
+  createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS pos_pending_queue_status_idx
+  ON pos_pending_queue (status, updatedAt);
+
 CREATE TABLE IF NOT EXISTS pos_queue_entries (
   id TEXT PRIMARY KEY,
   orderId TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,

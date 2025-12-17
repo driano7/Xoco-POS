@@ -29,6 +29,15 @@
 import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-server';
+import {
+  enqueuePendingOperations,
+  flushPendingOperations,
+  isLikelyNetworkError,
+  markSupabaseFailure,
+  markSupabaseHealthy,
+  shouldPreferSupabase,
+  type PendingOperation,
+} from '@/lib/offline-sync';
 import { withDecryptedUserNames } from '@/lib/customer-decrypt';
 
 const ORDERS_TABLE = process.env.SUPABASE_ORDERS_TABLE ?? 'orders';
@@ -330,6 +339,88 @@ const normalizeOrderItems = (rawItems: unknown): IncomingOrderItem[] => {
   return normalized;
 };
 
+const buildProductUpserts = (items: IncomingOrderItem[]): PendingOperation[] => {
+  const uniqueIds = new Set<string>();
+  const operations: PendingOperation[] = [];
+  items.forEach((item) => {
+    if (!item.productId || uniqueIds.has(item.productId)) {
+      return;
+    }
+    uniqueIds.add(item.productId);
+    const normalizedPrice =
+      typeof item.price === 'number' && Number.isFinite(item.price) ? item.price : 0;
+    operations.push({
+      type: 'upsert',
+      table: PRODUCTS_TABLE,
+      payload: {
+        id: item.productId,
+        productId: item.productId,
+        name: item.name ?? item.productId,
+        category: item.category,
+        subcategory: item.subcategory,
+        price: normalizedPrice,
+      },
+      options: { onConflict: 'id' },
+    });
+  });
+  return operations;
+};
+
+const buildPendingOrderOperations = (
+  orderRecord: Record<string, unknown>,
+  orderItemsPayload: Array<Record<string, unknown>>,
+  ticketRecord: Record<string, unknown> | null,
+  items: IncomingOrderItem[]
+): PendingOperation[] => {
+  const operations: PendingOperation[] = [];
+  operations.push(...buildProductUpserts(items));
+  operations.push({
+    type: 'upsert',
+    table: ORDERS_TABLE,
+    payload: orderRecord,
+    options: { onConflict: 'id' },
+  });
+  if (orderRecord.id) {
+    operations.push({
+      type: 'delete',
+      table: ORDER_ITEMS_TABLE,
+      match: { orderId: orderRecord.id },
+    });
+  }
+  if (orderItemsPayload.length) {
+    operations.push({
+      type: 'insert',
+      table: ORDER_ITEMS_TABLE,
+      payload: orderItemsPayload,
+    });
+  }
+  if (ticketRecord) {
+    operations.push({
+      type: 'upsert',
+      table: TICKETS_TABLE,
+      payload: ticketRecord,
+      options: { onConflict: 'orderId' },
+    });
+  }
+  return operations;
+};
+
+const queueOfflineOrder = async (
+  orderRecord: Record<string, unknown>,
+  orderItemsPayload: Array<Record<string, unknown>>,
+  ticketRecord: Record<string, unknown> | null,
+  items: IncomingOrderItem[]
+) => {
+  return enqueuePendingOperations(
+    'orders:create',
+    buildPendingOrderOperations(orderRecord, orderItemsPayload, ticketRecord, items),
+    {
+      orderId: orderRecord.id,
+      ticketCode: ticketRecord?.ticketCode ?? null,
+    }
+  );
+};
+
 const ensureProducts = async (items: IncomingOrderItem[]) => {
   const productIds = Array.from(new Set(items.map((item) => item.productId))).filter(Boolean);
   if (!productIds.length) {
@@ -388,6 +479,8 @@ const ensureProducts = async (items: IncomingOrderItem[]) => {
 
 export async function GET(request: Request) {
   try {
+    await flushPendingOperations();
+
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
 
@@ -566,11 +659,19 @@ export async function GET(request: Request) {
       }));
     }
 
+    markSupabaseHealthy();
     return NextResponse.json({
       success: true,
       data: enriched,
     });
   } catch (error) {
+    if (isLikelyNetworkError(error)) {
+      markSupabaseFailure(error);
+      return NextResponse.json(
+        { success: false, error: 'Supabase no disponible. Intentaremos sincronizar en cuanto vuelva.' },
+        { status: 503 }
+      );
+    }
     console.error('Error fetching orders:', error);
     return NextResponse.json({ success: false, error: 'Failed to fetch orders' }, { status: 500 });
   }
@@ -578,6 +679,8 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    await flushPendingOperations();
+
     const payload = await request.json().catch(() => null);
     if (!payload || typeof payload !== 'object') {
       return NextResponse.json({ success: false, error: 'Invalid payload' }, { status: 400 });
@@ -627,10 +730,6 @@ export async function POST(request: Request) {
       (normalizedClientId && normalizedPublicClient && normalizedClientId === normalizedPublicClient) ||
       (payloadUserId && normalizedPublicUserId && payloadUserId.toLowerCase() === normalizedPublicUserId);
 
-    if (isPublicSaleContext) {
-      await ensurePublicSaleUser();
-    }
-
     const items = normalizeOrderItems(payload?.items);
 
     if (!items.length) {
@@ -639,8 +738,6 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
-
-    await ensureProducts(items);
 
     const orderItemsSnapshot = items.map((item) => ({
       productId: item.productId,
@@ -710,19 +807,6 @@ export async function POST(request: Request) {
       orderRecord.notes = noteValue;
     }
 
-    const { error: orderError } = await supabaseAdmin.from(ORDERS_TABLE).upsert(orderRecord);
-    if (orderError) {
-      throw new Error(`Failed to upsert order: ${orderError.message}`);
-    }
-
-    const { error: deleteItemsError } = await supabaseAdmin
-      .from(ORDER_ITEMS_TABLE)
-      .delete()
-      .eq('orderId', orderId);
-    if (deleteItemsError) {
-      throw new Error(`Failed to clear order items: ${deleteItemsError.message}`);
-    }
-
     const orderItemsPayload = items.map((item) => ({
       orderId,
       productId: item.productId,
@@ -730,33 +814,88 @@ export async function POST(request: Request) {
       price: item.price,
     }));
 
-    const { error: insertItemsError } = await supabaseAdmin
-      .from(ORDER_ITEMS_TABLE)
-      .insert(orderItemsPayload);
-    if (insertItemsError) {
-      throw new Error(`Failed to insert order items: ${insertItemsError.message}`);
-    }
+    const ticketRecord =
+      ticketCode || paymentMethod
+        ? {
+            orderId,
+            ticketCode,
+            paymentMethod,
+          }
+        : null;
 
-    if (ticketCode || paymentMethod) {
-      const ticketRecord = {
-        orderId,
-        ticketCode,
-        paymentMethod,
-      };
-      const { error: ticketError } = await supabaseAdmin.from(TICKETS_TABLE).upsert(ticketRecord);
-      if (ticketError) {
-        throw new Error(`Failed to upsert ticket: ${ticketError.message}`);
+    const preferSupabase = shouldPreferSupabase();
+    let attemptedSupabase = false;
+
+    if (preferSupabase) {
+      try {
+        if (isPublicSaleContext) {
+          await ensurePublicSaleUser();
+        }
+
+        await ensureProducts(items);
+
+        const { error: orderError } = await supabaseAdmin.from(ORDERS_TABLE).upsert(orderRecord);
+        if (orderError) {
+          throw orderError;
+        }
+
+        const { error: deleteItemsError } = await supabaseAdmin
+          .from(ORDER_ITEMS_TABLE)
+          .delete()
+          .eq('orderId', orderId);
+        if (deleteItemsError) {
+          throw deleteItemsError;
+        }
+
+        const { error: insertItemsError } = await supabaseAdmin
+          .from(ORDER_ITEMS_TABLE)
+          .insert(orderItemsPayload);
+        if (insertItemsError) {
+          throw insertItemsError;
+        }
+
+        if (ticketRecord) {
+          const { error: ticketError } = await supabaseAdmin.from(TICKETS_TABLE).upsert(ticketRecord);
+          if (ticketError) {
+            throw ticketError;
+          }
+        }
+
+        markSupabaseHealthy();
+        return NextResponse.json({
+          success: true,
+          data: {
+            orderId,
+            ticketCode,
+            items: orderItemsPayload.length,
+            pendingSync: false,
+          },
+        });
+      } catch (error) {
+        attemptedSupabase = true;
+        if (!isLikelyNetworkError(error)) {
+          console.error('Error creating order:', error);
+          const message = error instanceof Error ? error.message : 'Failed to process order';
+          return NextResponse.json({ success: false, error: message }, { status: 500 });
+        }
+        markSupabaseFailure(error);
       }
     }
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        orderId,
-        ticketCode,
-        items: orderItemsPayload.length,
+    const queueId = await queueOfflineOrder(orderRecord, orderItemsPayload, ticketRecord, items);
+    return NextResponse.json(
+      {
+        success: true,
+        data: {
+          orderId,
+          ticketCode,
+          items: orderItemsPayload.length,
+          pendingSync: true,
+          queueId,
+        },
       },
-    });
+      { status: attemptedSupabase ? 202 : 201 }
+    );
   } catch (error) {
     console.error('Error processing order webhook:', error);
     const message = error instanceof Error ? error.message : 'Failed to process order';
