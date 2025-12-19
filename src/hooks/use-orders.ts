@@ -50,11 +50,6 @@ type OrdersState = {
 
 const listeners = new Set<() => void>();
 
-const subscribe = (listener: () => void) => {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-};
-
 let state: OrdersState = {
   orders: [],
   isLoading: false,
@@ -101,12 +96,58 @@ const loadOrders = async () => {
   return pendingLoad;
 };
 
+const parseInterval = () => {
+  const envValue = Number(process.env.NEXT_PUBLIC_ORDERS_POLL_INTERVAL_MS);
+  if (Number.isFinite(envValue) && envValue >= 1000) {
+    return envValue;
+  }
+  return 15000;
+};
+
+const POLLING_INTERVAL_MS = parseInterval();
+
+let shouldUseLocalPolling = false;
+let localPollingTimer: number | null = null;
+
+const startLocalPolling = () => {
+  shouldUseLocalPolling = true;
+  if (localPollingTimer || typeof window === 'undefined' || listeners.size === 0) {
+    return;
+  }
+  localPollingTimer = window.setInterval(() => {
+    void loadOrders();
+  }, POLLING_INTERVAL_MS);
+};
+
+const stopLocalPolling = () => {
+  shouldUseLocalPolling = false;
+  if (localPollingTimer) {
+    window.clearInterval(localPollingTimer);
+    localPollingTimer = null;
+  }
+};
+
+const subscribe = (listener: () => void) => {
+  listeners.add(listener);
+  if (shouldUseLocalPolling) {
+    startLocalPolling();
+  }
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0 && localPollingTimer) {
+      window.clearInterval(localPollingTimer);
+      localPollingTimer = null;
+    }
+  };
+};
+
 const ensureRealtimeSubscription = () => {
   if (unsubscribeRealtime || typeof window === 'undefined') {
     return;
   }
   const client = getSupabaseBrowserClient();
   if (!client) {
+    startLocalPolling();
     return;
   }
   const triggerRefresh = () => {
@@ -119,13 +160,16 @@ const ensureRealtimeSubscription = () => {
 
   channel.subscribe((status) => {
     if (status === 'SUBSCRIBED') {
+      stopLocalPolling();
       unsubscribeRealtime = () => {
         client.removeChannel(channel);
         unsubscribeRealtime = null;
+        startLocalPolling();
       };
     } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
       client.removeChannel(channel);
       unsubscribeRealtime = null;
+      startLocalPolling();
     }
   });
 };

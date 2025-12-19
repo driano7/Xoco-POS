@@ -26,11 +26,12 @@
  * --------------------------------------------------------------------
  */
 
-import { randomUUID } from 'crypto';
+import { randomUUID, timingSafeEqual } from 'crypto';
 import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '@/lib/supabase-server';
 import type { AuthenticatedStaff, ShiftType, StaffRole } from '@/providers/auth-provider';
+import { getPresetHashOverride, hashWithSalts } from '@/lib/auth/password-hash';
 
 const STAFF_TABLE = process.env.SUPABASE_STAFF_TABLE ?? 'staff_users';
 const BRANCHES_TABLE = process.env.SUPABASE_BRANCHES_TABLE ?? 'branches';
@@ -170,17 +171,34 @@ const normalizeName = (value?: string | null) => {
 
 const readStoredName = (value?: unknown) => (typeof value === 'string' ? value.trim() || null : null);
 
+const safeEqual = (a: string | null, b: string | null) => {
+  if (!a || !b) {
+    return false;
+  }
+  const bufferA = Buffer.from(a);
+  const bufferB = Buffer.from(b);
+  return bufferA.length === bufferB.length && timingSafeEqual(bufferA, bufferB);
+};
+
 const passwordMatchesDemo = (email: string, password: string) => {
   const preset = STAFF_PRESETS[email];
   if (!preset) {
     return false;
   }
-  const expected = preset.demoPassword ?? DEMO_PASSWORD;
-  if (password === expected) {
+  const candidateHash = hashWithSalts(email, password);
+  const overrideHash = getPresetHashOverride(email);
+  if (overrideHash && safeEqual(candidateHash, overrideHash)) {
     return true;
   }
-  if (preset.role === 'superuser' && password === SOCIO_DEMO_PASSWORD) {
+  const defaultDemoHash = hashWithSalts(email, preset.demoPassword ?? DEMO_PASSWORD);
+  if (safeEqual(candidateHash, defaultDemoHash)) {
     return true;
+  }
+  if (preset.role === 'superuser') {
+    const socioFallbackHash = hashWithSalts(email, SOCIO_DEMO_PASSWORD);
+    if (safeEqual(candidateHash, socioFallbackHash)) {
+      return true;
+    }
   }
   return false;
 };

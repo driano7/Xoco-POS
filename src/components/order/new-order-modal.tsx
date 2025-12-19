@@ -306,9 +306,15 @@ export function NewOrderModal({
       return;
     }
     const kind = resolveItemKind(menuItem.id);
+    const isBeverage =
+      kind === 'beverage' ||
+      isLikelyBeverageDescriptor(menuItem.category) ||
+      isLikelyBeverageDescriptor(menuItem.subcategory) ||
+      isLikelyBeverageDescriptor(menuItem.label) ||
+      isLikelyBeverageDescriptor(menuItem.sizeLabel);
     const beveragesAlreadyInCart = getBeverageUnitsInCart();
     const baseCoffees = typeof loyaltyBaseCoffees === 'number' ? loyaltyBaseCoffees : null;
-    const isEligibleForReward = kind === 'beverage' && baseCoffees !== null;
+    const isEligibleForReward = isBeverage && baseCoffees !== null;
     let loyaltyReward = false;
     let variantId = menuItem.id ?? menuItem.productId;
     if (isEligibleForReward) {
@@ -328,7 +334,7 @@ export function NewOrderModal({
       subcategory: menuItem.subcategory,
       sizeId: menuItem.sizeId,
       sizeLabel: menuItem.sizeLabel,
-      kind,
+      kind: isBeverage ? 'beverage' : kind,
       originalPrice: menuItem.price ?? 0,
       loyaltyReward,
     });

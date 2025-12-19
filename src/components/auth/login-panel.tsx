@@ -33,15 +33,15 @@ import Link from 'next/link';
 import { useState } from 'react';
 import { useAuth } from '@/providers/auth-provider';
 
-const CLIENT_CREDENTIALS = {
-  email: 'cliente.demo@xoco.local',
-  password: 'Cliente#2024',
-};
+const DEFAULT_EMAIL = process.env.NEXT_PUBLIC_POS_LOGIN_PREFILL_EMAIL ?? '';
+const DEFAULT_PASSWORD = process.env.NEXT_PUBLIC_POS_LOGIN_PREFILL_PASSWORD ?? '';
+const HINT_EMAIL = process.env.NEXT_PUBLIC_POS_LOGIN_HINT_EMAIL ?? '';
+const HINT_PASSWORD = process.env.NEXT_PUBLIC_POS_LOGIN_HINT_PASSWORD ?? '';
 
 export function LoginPanel() {
   const { login, isAuthenticating, error } = useAuth();
-  const [email, setEmail] = useState(CLIENT_CREDENTIALS.email);
-  const [password, setPassword] = useState(CLIENT_CREDENTIALS.password);
+  const [email, setEmail] = useState(DEFAULT_EMAIL);
+  const [password, setPassword] = useState(DEFAULT_PASSWORD);
   const [formError, setFormError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
 
@@ -123,11 +123,13 @@ export function LoginPanel() {
           <Link href="/reset-password" className="block text-center text-sm font-semibold text-primary-500">
             ¿Olvidaste tu contraseña?
           </Link>
-          <div className="rounded-2xl border border-primary-100/70 bg-white/60 px-4 py-3 text-center text-xs text-[var(--brand-text)] shadow-sm dark:border-white/10 dark:bg-white/5 dark:text-white">
-            <p className="text-[var(--brand-muted)]">Demo cliente</p>
-            <p className="font-semibold">{CLIENT_CREDENTIALS.email}</p>
-            <p className="font-semibold">{CLIENT_CREDENTIALS.password}</p>
-          </div>
+          {(HINT_EMAIL || HINT_PASSWORD) && (
+            <div className="rounded-2xl border border-primary-100/70 bg-white/60 px-4 py-3 text-center text-xs text-[var(--brand-text)] shadow-sm dark:border-white/10 dark:bg-white/5 dark:text-white">
+              <p className="text-[var(--brand-muted)]">Credenciales sugeridas</p>
+              {HINT_EMAIL && <p className="font-semibold">{HINT_EMAIL}</p>}
+              {HINT_PASSWORD && <p className="font-semibold">{HINT_PASSWORD}</p>}
+            </div>
+          )}
         </form>
       </div>
     </div>
