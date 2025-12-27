@@ -31,6 +31,7 @@
 import { useMemo, useCallback } from 'react';
 import { useCatalog } from '@/hooks/use-catalog';
 import type { CatalogProduct } from '@/lib/api';
+import { FALLBACK_BEVERAGES } from '@/data/fallback-beverages';
 
 export interface MenuItem {
   id: string;
@@ -366,11 +367,29 @@ export function useMenuOptions() {
     const products = catalog?.products ?? [];
     const entries = products.flatMap(mapProductToMenuItems);
     const deduped = dedupeMenuItems(entries);
-    const seenLabels = new Set(deduped.map((item) => normalize(item.label)));
+    const seenProductIds = new Set(deduped.map((item) => normalize(item.productId)));
+    const fallbackBeverages = FALLBACK_BEVERAGES.flatMap((beverage) =>
+      beverage.sizes.map((size, index) => {
+        const normalizedSize = size as { id?: string | null; label: string; price: number };
+        const sizeId = normalizedSize.id?.trim() || slugify(normalizedSize.label) || `size-${index}`;
+        return {
+          id: `${beverage.productId}::${sizeId}`,
+          productId: beverage.productId,
+          label: `${beverage.label} · ${normalizedSize.label}`,
+          category: beverage.category,
+          subcategory: beverage.subcategory,
+          price: normalizedSize.price,
+          calories: null,
+          sizeId,
+          sizeLabel: normalizedSize.label,
+        };
+      })
+    ).filter((item) => !seenProductIds.has(normalize(item.productId)));
+    const seenLabels = new Set([...deduped, ...fallbackBeverages].map((item) => normalize(item.label)));
     const fallbackPackages = FALLBACK_PACKAGES.filter(
       (pkg) => !seenLabels.has(normalize(pkg.label))
     );
-    return [...deduped, ...fallbackPackages];
+    return [...deduped, ...fallbackBeverages, ...fallbackPackages];
   }, [catalog]);
 
   const menuMap = useMemo(() => {
