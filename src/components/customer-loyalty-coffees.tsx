@@ -28,8 +28,9 @@
 
 'use client';
 
-const RAW_TARGET = Number(process.env.NEXT_PUBLIC_LOYALTY_TARGET ?? 6);
-const MAX_COFFEES = Number.isFinite(RAW_TARGET) && RAW_TARGET > 0 ? Math.floor(RAW_TARGET) : 6;
+import { LOYALTY_STAMPS_TARGET } from '@/lib/loyalty';
+
+const MAX_COFFEES = LOYALTY_STAMPS_TARGET;
 
 interface CustomerLoyaltyCoffeesProps {
   count?: number | null;
@@ -44,8 +45,11 @@ export function CustomerLoyaltyCoffees({
   statusLabel = 'Programa activo',
   subtitle = 'Cada sello representa un consumo durante la semana',
 }: CustomerLoyaltyCoffeesProps) {
-  const normalized = Math.max(0, Math.min(MAX_COFFEES, Math.floor(count ?? 0)));
-  const rewardEarned = normalized >= MAX_COFFEES;
+  const normalized = Math.max(0, Math.floor(count ?? 0));
+  const remainder = normalized % MAX_COFFEES;
+  const rewardEarned = normalized > 0 && remainder === 0;
+  const displayCount = rewardEarned ? MAX_COFFEES : remainder;
+  const remainingForReward = rewardEarned ? 0 : Math.max(0, MAX_COFFEES - displayCount);
   const displayName = customerName?.trim() || 'Cliente';
 
   return (
@@ -67,13 +71,16 @@ export function CustomerLoyaltyCoffees({
           <p className="text-xs text-white/75">{subtitle}</p>
         </div>
         <div className="rounded-full bg-white/15 px-3 py-1 text-[11px] uppercase tracking-[0.35em] text-white">
-          {normalized}/7
+          {displayCount}/{MAX_COFFEES}
         </div>
       </div>
 
-      <div className="mt-6 grid grid-cols-7 gap-3 text-base font-semibold">
+      <div
+        className="mt-6 grid gap-3 text-base font-semibold"
+        style={{ gridTemplateColumns: `repeat(${MAX_COFFEES}, minmax(0, 1fr))` }}
+      >
         {Array.from({ length: MAX_COFFEES }, (_, index) => {
-          const isFilled = index < normalized;
+          const isFilled = index < displayCount;
           return (
             <div
               key={index}
@@ -89,8 +96,8 @@ export function CustomerLoyaltyCoffees({
 
       <div className="mt-4 rounded-2xl border border-white/20 bg-black/10 px-4 py-3 text-center text-xs">
         {rewardEarned
-          ? '¡Llevan los 7 sellos! Confirma el beneficio antes de reiniciar su conteo semanal.'
-          : `Faltan ${MAX_COFFEES - normalized} sellos para el Americano en cortesía.`}
+          ? `¡Llevan los ${MAX_COFFEES} sellos! Confirma el beneficio antes de reiniciar su conteo semanal.`
+          : `Faltan ${remainingForReward} sellos para el Americano en cortesía.`}
       </div>
     </div>
   );

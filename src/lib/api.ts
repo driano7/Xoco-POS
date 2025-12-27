@@ -646,6 +646,29 @@ export async function fetchReservations(status?: ReservationStatus): Promise<Res
   return payload.data;
 }
 
+export async function fetchReservationDetail(identifier: string): Promise<Reservation | null> {
+  const trimmed = identifier.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const url = buildApiUrl(`/api/reservations/${encodeURIComponent(trimmed)}`);
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    throw new Error('No pudimos cargar la reservación solicitada');
+  }
+
+  const payload = (await response.json()) as { success: boolean; data?: Reservation | null };
+  if (!payload.success) {
+    return null;
+  }
+  return payload.data ?? null;
+}
+
 export async function fetchPrepQueue(status?: PrepStatus): Promise<PrepTask[]> {
   const url = buildApiUrl('/api/prep-queue', status ? { status } : undefined);
 
@@ -717,6 +740,43 @@ export async function completeOrder(orderId: string): Promise<void> {
   if (!response.ok) {
     throw new Error('No pudimos marcar el pedido como completado');
   }
+}
+
+export async function updateCustomerPreferences(
+  identifier: string,
+  payload: { beverage?: string | null; food?: string | null }
+): Promise<{ beverage?: string | null; food?: string | null }> {
+  const trimmed = identifier.trim();
+  if (!trimmed) {
+    throw new Error('El cliente no tiene identificador válido.');
+  }
+  const url = buildApiUrl(`/api/customers/${encodeURIComponent(trimmed)}/preferences`);
+  const response = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorPayload = await response.json().catch(() => null);
+    const message =
+      (errorPayload && typeof errorPayload.error === 'string' && errorPayload.error) ||
+      'No pudimos guardar las preferencias.';
+    throw new Error(message);
+  }
+
+  const result = (await response.json()) as {
+    success: boolean;
+    data?: { beverage?: string | null; food?: string | null };
+    error?: string;
+  };
+
+  if (!result.success || !result.data) {
+    throw new Error(result.error || 'No pudimos guardar las preferencias.');
+  }
+
+  return result.data;
 }
 
 const updateReservationStatus = async (

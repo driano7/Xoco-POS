@@ -41,6 +41,41 @@ const normalizeNumber = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const getWeekBounds = () => {
+  const now = new Date();
+  const day = now.getDay(); // 0 (Sun) - 6 (Sat)
+  const diff = day === 0 ? 6 : day - 1; // start week on Monday
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - diff);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 7);
+  return { start, end };
+};
+
+const parsePunchDate = (value?: string | null) => {
+  if (!value) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  // Support YYYY-MM-DD as well as full ISO timestamps.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const [yearStr, monthStr, dayStr] = trimmed.split('-');
+    const year = Number(yearStr);
+    const month = Number(monthStr);
+    const day = Number(dayStr);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+      return null;
+    }
+    return new Date(year, month - 1, day);
+  }
+  const timestamp = Date.parse(trimmed);
+  return Number.isFinite(timestamp) ? new Date(timestamp) : null;
+};
+
 export async function GET() {
   try {
     const [{ data: orders, error: ordersError }, { data: reservations, error: reservationsError }] =
@@ -141,6 +176,10 @@ export async function GET() {
       lastActivityAt?: string | null;
       firstNameEncrypted?: string | null;
       lastNameEncrypted?: string | null;
+      favoriteColdDrink?: string | null;
+      favoriteHotDrink?: string | null;
+      favoriteFood?: string | null;
+      weeklyCoffeeCount?: number | null;
     }> = [];
 
     let loyaltyPunches: Record<string, number> = {};
@@ -149,27 +188,49 @@ export async function GET() {
       const { data, error } = await supabaseAdmin
         .from(USERS_TABLE)
         .select(
-          'id,email,"clientId",city,country,"lastActivityAt","firstNameEncrypted","lastNameEncrypted"'
+          [
+            'id',
+            'email',
+            '"clientId"',
+            'city',
+            'country',
+            '"lastActivityAt"',
+            '"firstNameEncrypted"',
+            '"lastNameEncrypted"',
+            '"favoriteColdDrink"',
+            '"favoriteHotDrink"',
+            '"favoriteFood"',
+            '"weeklyCoffeeCount"',
+          ].join(',')
         )
         .in('id', userIds);
 
       if (error) {
         console.error('Error fetching users for loyalty stats:', error);
-      } else if (data) {
-        users = data;
+      } else if (Array.isArray(data)) {
+        users = data as unknown as typeof users;
       }
 
       const { data: punches, error: punchesError } = await supabaseAdmin
         .from(LOYALTY_PUNCHES_TABLE)
-        .select('userId')
+        .select('"userId","createdAt",points')
         .in('userId', userIds);
 
       if (punchesError) {
         console.error('Error fetching loyalty punches:', punchesError);
       } else if (punches) {
+        const { start, end } = getWeekBounds();
         loyaltyPunches = punches.reduce<Record<string, number>>((acc, punch) => {
-          if (typeof punch.userId === 'string') {
-            acc[punch.userId] = (acc[punch.userId] ?? 0) + 1;
+          if (typeof punch.userId !== 'string') {
+            return acc;
+          }
+          const punchTimestamp = parsePunchDate((punch as { createdAt?: string | null }).createdAt ?? null);
+          if (punchTimestamp && punchTimestamp >= start && punchTimestamp < end) {
+            const pointsValue =
+              typeof (punch as { points?: number }).points === 'number'
+                ? Number((punch as { points?: number }).points)
+                : 1;
+            acc[punch.userId] = (acc[punch.userId] ?? 0) + Math.max(1, pointsValue);
           }
           return acc;
         }, {});
@@ -181,6 +242,10 @@ export async function GET() {
     const customers = Array.from(statsMap.values())
       .map((record) => {
         const user = userMap.get(record.userId);
+        const favoriteBeverage = user?.favoriteColdDrink ?? user?.favoriteHotDrink ?? null;
+        const fallbackWeeklyCount = Math.max(0, Number(user?.weeklyCoffeeCount ?? 0));
+        const loyaltyCount = Math.max(fallbackWeeklyCount, loyaltyPunches[record.userId] ?? 0);
+
         return {
           userId: record.userId,
           orders: record.orders,
@@ -194,7 +259,9 @@ export async function GET() {
           country: user?.country || null,
           firstNameEncrypted: user?.firstNameEncrypted || null,
           lastNameEncrypted: user?.lastNameEncrypted || null,
-          loyaltyCoffees: loyaltyPunches[record.userId] ?? 0,
+          loyaltyCoffees: loyaltyCount,
+          favoriteBeverage,
+          favoriteFood: user?.favoriteFood ?? null,
         };
       })
       .sort((a, b) => {

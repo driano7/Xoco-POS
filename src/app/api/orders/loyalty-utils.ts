@@ -33,7 +33,6 @@ const ORDER_ITEMS_TABLE = process.env.SUPABASE_ORDER_ITEMS_TABLE ?? 'order_items
 const PRODUCTS_TABLE = process.env.SUPABASE_PRODUCTS_TABLE ?? 'products';
 const USERS_TABLE = process.env.SUPABASE_USERS_TABLE ?? 'users';
 const LOYALTY_PUNCHES_TABLE = process.env.SUPABASE_LOYALTY_PUNCHES_TABLE ?? 'loyalty_points';
-const LOYALTY_TIMEZONE = process.env.LOYALTY_TIMEZONE ?? 'America/Mexico_City';
 const MEXICAN_COFFEE_KEYWORDS = ['cafe mexicano', 'café mexicano', 'mexicano'];
 const HOT_BEVERAGE_KEYWORDS = ['bebida caliente', 'bebidas calientes', 'bebida', 'cafe', 'café', 'coffee'];
 const PACKAGE_KEYWORDS = ['paquete', 'combo', 'kit'];
@@ -75,7 +74,7 @@ const resolveNestedBooleanFlag = (source: Record<string, unknown>, containerKey:
   return null;
 };
 
-const resolveLoyaltyEnrollmentFlag = (source: Record<string, unknown>) => {
+const resolveLoyaltyEnrollmentFlag = (source: Record<string, unknown>): boolean | null => {
   for (const key of LOYALTY_FLAG_KEYS) {
     const flag = extractBooleanFlag(source, key);
     if (flag !== null) {
@@ -88,13 +87,14 @@ const resolveLoyaltyEnrollmentFlag = (source: Record<string, unknown>) => {
       return nestedFlag;
     }
   }
-  return false;
+  return null;
 };
 
 type ItemSnapshot = {
   name?: string | null;
   category?: string | null;
   subcategory?: string | null;
+  productId?: string | null;
   product?: { name?: string | null; category?: string | null; subcategory?: string | null } | null;
   metadata?: Record<string, unknown> | null;
   packageId?: string | null;
@@ -141,20 +141,13 @@ const itemContainsMexicanCoffee = (item: ItemSnapshot) => {
     normalizeText(item.subcategory),
     normalizeText(item.product?.category),
     normalizeText(item.product?.subcategory),
+    normalizeText(item.productId),
   ].join(' ');
   return MEXICAN_COFFEE_KEYWORDS.some((keyword) => haystack.includes(keyword));
 };
 
 const qualifiesForMexicanCoffee = (item: ItemSnapshot) =>
-  itemContainsMexicanCoffee(item) && isHotBeverageItem(item) && !isPackageItem(item);
-
-const formatMexicoDate = (reference = new Date()) =>
-  new Intl.DateTimeFormat('en-CA', {
-    timeZone: LOYALTY_TIMEZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(reference);
+  itemContainsMexicanCoffee(item) && !isPackageItem(item);
 
 const mapSnapshotItems = (items: unknown): ItemSnapshot[] =>
   Array.isArray(items)
@@ -164,6 +157,7 @@ const mapSnapshotItems = (items: unknown): ItemSnapshot[] =>
             name: null,
             category: null,
             subcategory: null,
+            productId: null,
             product: null,
             metadata: null,
             packageId: null,
@@ -189,6 +183,7 @@ const mapSnapshotItems = (items: unknown): ItemSnapshot[] =>
           name: typeof record.name === 'string' ? (record.name as string) : null,
           category: typeof record.category === 'string' ? (record.category as string) : null,
           subcategory: typeof record.subcategory === 'string' ? (record.subcategory as string) : null,
+          productId: typeof record.productId === 'string' ? (record.productId as string) : null,
           product: isPlainObject(record.product)
             ? (record.product as { name?: string | null; category?: string | null; subcategory?: string | null })
             : null,
@@ -233,6 +228,7 @@ const fetchItemsFromDatabase = async (orderId: string): Promise<ItemSnapshot[]> 
   return productIds.map((productId) => {
     const product = productMap.get(productId) ?? null;
     return {
+      productId,
       name: product?.name ?? null,
       category: product?.category ?? null,
       subcategory: product?.subcategory ?? null,
@@ -242,6 +238,18 @@ const fetchItemsFromDatabase = async (orderId: string): Promise<ItemSnapshot[]> 
       packageName: null,
     };
   });
+};
+
+const getWeekBounds = () => {
+  const now = new Date();
+  const day = now.getDay();
+  const diff = day === 0 ? 6 : day - 1;
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - diff);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 7);
+  return { start, end };
 };
 
 const loadOrderItems = async (orderId: string, snapshot: unknown): Promise<ItemSnapshot[]> => {
@@ -277,10 +285,11 @@ const isUserEnrolledInLoyalty = async (userId: string) => {
       return false;
     }
 
-    return resolveLoyaltyEnrollmentFlag(data as Record<string, unknown>);
+    const flag = resolveLoyaltyEnrollmentFlag(data as Record<string, unknown>);
+    return flag ?? true;
   } catch (error) {
     console.warn('Error inesperado al consultar inscripción de lealtad:', error);
-    return false;
+    return true;
   }
 };
 
@@ -304,38 +313,46 @@ export const maybeAwardDailyCoffee = async (
 
   try {
     const items = await loadOrderItems(orderId, snapshotItems);
-    if (!items.length || !items.some(qualifiesForMexicanCoffee)) {
+    const qualifyingItems = items.filter(qualifiesForMexicanCoffee);
+    if (!qualifyingItems.length) {
       return;
     }
 
-    const punchDate = formatMexicoDate();
+    await supabaseAdmin.from(LOYALTY_PUNCHES_TABLE).delete().eq('orderId', orderId);
 
-    const query = supabaseAdmin
-      .from(LOYALTY_PUNCHES_TABLE)
-      .select('id')
-      .eq('userId', userId)
-      .eq('punchDate', punchDate)
-      .limit(1);
-
-    const { data: existing, error: existingError } = await query.maybeSingle();
-
-    if (existingError && existingError.code !== 'PGRST116') {
-      console.warn('No se pudo verificar sellos previos de lealtad:', existingError);
-      return;
-    }
-
-    if (existing) {
-      return;
-    }
-
-    const { error: insertError } = await supabaseAdmin.from(LOYALTY_PUNCHES_TABLE).insert({
+    const rows = qualifyingItems.map((_, index) => ({
       orderId,
       userId,
-      punchDate,
-    });
+      points: 1,
+      reason: 'weekly_coffee',
+      createdAt: new Date(Date.now() + index).toISOString(),
+    }));
+
+    const { error: insertError } = await supabaseAdmin.from(LOYALTY_PUNCHES_TABLE).insert(rows);
 
     if (insertError) {
       console.warn('No se pudo registrar el sello de lealtad:', insertError);
+    } else {
+      const { start, end } = getWeekBounds();
+      const { data: weekPunches, error: countError } = await supabaseAdmin
+        .from(LOYALTY_PUNCHES_TABLE)
+        .select('id')
+        .eq('userId', userId)
+        .gte('createdAt', start.toISOString())
+        .lt('createdAt', end.toISOString());
+
+      if (countError) {
+        console.warn('No pudimos contar los sellos semanales:', countError);
+      } else {
+        const normalizedCount = Array.isArray(weekPunches) ? weekPunches.length : 0;
+        const { error: updateWeeklyError } = await supabaseAdmin
+          .from(USERS_TABLE)
+          .update({ weeklyCoffeeCount: normalizedCount })
+          .eq('id', userId);
+        if (updateWeeklyError) {
+          console.warn('No pudimos actualizar el contador semanal del cliente:', updateWeeklyError);
+        }
+      }
     }
   } catch (error) {
     console.warn('Error inesperado al otorgar sello de lealtad:', error);

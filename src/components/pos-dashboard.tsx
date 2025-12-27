@@ -44,6 +44,7 @@ import { CustomerLoyaltyCoffees } from '@/components/customer-loyalty-coffees';
 import { SearchableDropdown } from '@/components/searchable-dropdown';
 import { useMenuOptions, type MenuItem } from '@/hooks/use-menu-options';
 import { ThemeToggle } from '@/components/theme-toggle';
+import { isPublicSaleOrder } from '@/lib/loyalty';
 import type {
   LoyaltyCustomer,
   Order,
@@ -68,6 +69,8 @@ import {
   completeReservation,
   cancelReservation,
   fetchTicketDetail,
+  updateCustomerPreferences,
+  fetchReservationDetail,
 } from '@/lib/api';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode, WheelEvent } from 'react';
@@ -669,6 +672,116 @@ const parseCompactTicketPayload = (root: Record<string, unknown>): ScannedTicket
   };
 };
 
+const readStringField = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed || null;
+};
+
+const resolveTicketIdentifier = (root: Record<string, unknown>): string | null => {
+  const candidateKeys = [
+    'ticketId',
+    'ticket',
+    'ticketCode',
+    'ticket_number',
+    'ticket_code',
+    't',
+    'orderId',
+    'order',
+    'o',
+  ];
+  for (const key of candidateKeys) {
+    const value = root[key];
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+    }
+  }
+  return null;
+};
+
+const resolveReservationIdentifiers = (root: Record<string, unknown>) => {
+  const idCandidates = [
+    root.reservationId,
+    root.reservationID,
+    root.reservation_id,
+    root.reservationCode,
+    root.reservation_code,
+    root.code,
+    root.reservation,
+    (root as Record<string, unknown>)['reservation-code'],
+    (root as Record<string, unknown>)['reservation_code'],
+    (root as Record<string, unknown>)['Id reserva'],
+    (root as Record<string, unknown>)['ID reserva'],
+    (root as Record<string, unknown>)['idReserva'],
+    (root as Record<string, unknown>)['reservaId'],
+  ];
+  const codeCandidates = [
+    root.reservationCode,
+    root.reservation_code,
+    root.code,
+    (root as Record<string, unknown>)['reservation-code'],
+    (root as Record<string, unknown>)['reservation_code'],
+    (root as Record<string, unknown>)['Id reserva'],
+  ];
+  const reservationId =
+    idCandidates
+      .map((candidate) => readStringField(candidate))
+      .find((candidate): candidate is string => Boolean(candidate)) ?? null;
+  const reservationCode =
+    codeCandidates
+      .map((candidate) => readStringField(candidate))
+      .find((candidate): candidate is string => Boolean(candidate)) ?? null;
+  return { reservationId, reservationCode };
+};
+
+const extractReservationIdentifierFromPayload = (payload: string): string | null => {
+  try {
+    const parsed = JSON.parse(payload);
+    if (isPlainObject(parsed)) {
+      const { reservationId, reservationCode } = resolveReservationIdentifiers(parsed);
+      return reservationId ?? reservationCode ?? null;
+    }
+  } catch {
+    // ignore
+  }
+  const codeMatch = payload.match(/"reservationCode"\s*:\s*"([^"]+)"/i);
+  if (codeMatch?.[1]) {
+    return codeMatch[1];
+  }
+  const idMatch = payload.match(/"reservationId"\s*:\s*"([^"]+)"/i);
+  if (idMatch?.[1]) {
+    return idMatch[1];
+  }
+  return null;
+};
+
+const extractTicketIdentifierFromPayload = (payload: string): string | null => {
+  try {
+    const parsed = JSON.parse(payload);
+    if (isPlainObject(parsed)) {
+      return resolveTicketIdentifier(parsed);
+    }
+  } catch {
+    // ignore
+  }
+  const ticketMatch = payload.match(
+    /"(ticketCode|ticketId|ticket_number|ticket_code)"\s*:\s*"([^"]+)"/i
+  );
+  if (ticketMatch?.[2]) {
+    return ticketMatch[2];
+  }
+  const shortCodeMatch = payload.match(/\b[C|R]-[A-Z0-9]{4,}\b/i);
+  if (shortCodeMatch?.[0]) {
+    return shortCodeMatch[0];
+  }
+  return null;
+};
+
 const parseScannedPayload = (payload: string): ScanResult | null => {
   try {
     const trimmedPayload = payload.trim();
@@ -707,7 +820,8 @@ const parseScannedPayload = (payload: string): ScanResult | null => {
       return { type: 'ticket', data: compactTicket };
     }
 
-    if (typeof parsed.ticketId === 'string') {
+    const resolvedTicketId = resolveTicketIdentifier(parsed);
+    if (resolvedTicketId) {
       const rawLineItems = Array.isArray(parsed.items)
         ? parsed.items
         : Array.isArray(parsed.lineItems)
@@ -813,7 +927,7 @@ const parseScannedPayload = (payload: string): ScanResult | null => {
       return {
         type: 'ticket',
         data: {
-          ticketId: parsed.ticketId,
+          ticketId: resolvedTicketId,
           clientEmail: typeof parsed.clientEmail === 'string' ? parsed.clientEmail : null,
           issuedAt: typeof parsed.issuedAt === 'string' ? parsed.issuedAt : null,
           orders: entries,
@@ -836,7 +950,9 @@ const parseScannedPayload = (payload: string): ScanResult | null => {
         },
       };
     }
-    if (typeof parsed.reservationId === 'string' || typeof parsed.code === 'string') {
+    const { reservationId, reservationCode } = resolveReservationIdentifiers(parsed);
+    if (reservationId || reservationCode) {
+      const resolvedId = reservationId ?? reservationCode ?? '';
       const reservationClientId =
         typeof parsed.clientId === 'string'
           ? parsed.clientId
@@ -844,12 +960,14 @@ const parseScannedPayload = (payload: string): ScanResult | null => {
             ? parsed.customerId
             : typeof parsed['Id cliente'] === 'string'
               ? (parsed['Id cliente'] as string)
-              : null;
+              : typeof parsed.userId === 'string'
+                ? (parsed.userId as string)
+                : null;
       return {
         type: 'reservation',
         data: {
-          id: (parsed.reservationId as string) ?? (parsed.code as string),
-          code: typeof parsed.code === 'string' ? parsed.code : null,
+          id: resolvedId,
+          code: reservationCode,
           user: typeof parsed.user === 'string' ? parsed.user : null,
           date: typeof parsed.date === 'string' ? parsed.date : null,
           time: typeof parsed.time === 'string' ? parsed.time : null,
@@ -1102,13 +1220,8 @@ const formatReservationCustomer = (reservation: Reservation) =>
 const STAFF_ID_DISPLAY_OVERRIDES: Record<string, string> = {
   'barista-demo': 'Demo Barista',
   'manager-demo': 'Demo Gerente',
-  'socio-demo': 'Socio socio.demo',
-  'socio-cots': 'Socio cots.21d',
-  'socio-ale': 'Socio aleisgales99',
-  'socio-jhon': 'Socio garcia.aragon.jhon23',
-  'super-criptec': 'Super donovan',
-  'super-demo': 'Super demo',
-  'socio-donovan': 'Socio donovanriano',
+  'socio-demo': 'Socio Demo',
+  'super-demo': 'Super Demo',
 };
 
 const firstToken = (value?: string | null) => {
@@ -1357,11 +1470,52 @@ type ScannedCustomer = {
   food?: string | null;
   phone?: string | null;
   email?: string | null;
+  loyaltyCoffees?: number | null;
 };
 
 type ScannedPayment = {
   reference: string;
   format: 'evm_address' | 'ens_name' | 'lightning_invoice';
+};
+
+const mapReservationToScanned = (reservation: Reservation): ScannedReservation => ({
+  id: reservation.id,
+  code: reservation.reservationCode ?? null,
+  user: formatCustomerDisplay(reservation.user, reservation.userId),
+  date: reservation.reservationDate ?? null,
+  time: reservation.reservationTime ?? null,
+  people: reservation.peopleCount ?? null,
+  branch: reservation.branchId ?? null,
+  branchNumber: reservation.branchNumber ?? null,
+  message: reservation.message ?? null,
+  clientId: reservation.user?.clientId ?? null,
+  email: reservation.user?.email ?? null,
+  phone: reservation.user?.phone ?? null,
+});
+
+const mergeScannedReservations = (
+  primary: ScannedReservation,
+  fallback?: ScannedReservation | null
+): ScannedReservation => {
+  if (!fallback) {
+    return primary;
+  }
+  return {
+    ...fallback,
+    ...primary,
+    id: primary.id ?? fallback.id ?? null,
+    code: primary.code ?? fallback.code ?? null,
+    user: primary.user ?? fallback.user ?? null,
+    date: primary.date ?? fallback.date ?? null,
+    time: primary.time ?? fallback.time ?? null,
+    people: primary.people ?? fallback.people ?? null,
+    branch: primary.branch ?? fallback.branch ?? null,
+    branchNumber: primary.branchNumber ?? fallback.branchNumber ?? null,
+    message: primary.message ?? fallback.message ?? null,
+    clientId: primary.clientId ?? fallback.clientId ?? null,
+    email: primary.email ?? fallback.email ?? null,
+    phone: primary.phone ?? fallback.phone ?? null,
+  };
 };
 
 type ScanResult =
@@ -1499,9 +1653,19 @@ const DISPOSABLE_SUPPLIES = [
 const MAX_DYNAMIC_SUPPLIES = 8;
 const FOOD_MENU_PREFIX = 'food-menu';
 const BEVERAGE_MENU_PREFIX = 'bev-menu';
-const PRIMARY_SUPER_USERS = new Set(['donovan@criptec.io']);
-const SUPER_USER_EMAILS = new Set(['donovan@criptec.io', 'super.demo@xoco.local']);
-const GOVERNANCE_REVIEWERS = PRIMARY_SUPER_USERS;
+const parseEmailList = (value?: string) =>
+  (value ?? '')
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+const defaultSuperUsers = ['super.demo@xoco.local'];
+const envSuperUsers = parseEmailList(process.env.NEXT_PUBLIC_POS_SUPERUSERS);
+const SUPER_USER_EMAILS = new Set(envSuperUsers.length ? envSuperUsers : defaultSuperUsers);
+const PRIMARY_SUPER_USERS = SUPER_USER_EMAILS;
+const envGovernanceReviewers = parseEmailList(process.env.NEXT_PUBLIC_POS_GOVERNANCE_REVIEWERS);
+const GOVERNANCE_REVIEWERS = new Set(
+  envGovernanceReviewers.length ? envGovernanceReviewers : ['governance@xoco.local']
+);
 const SOCIO_REVIEW_DEADLINE_DAYS = 5;
 
 type ManagerSalaryDraft = {
@@ -1640,7 +1804,7 @@ type SalesHistoryEntry = {
 };
 
 export function PosDashboard() {
-  const { orders, refresh } = useOrders();
+  const { orders, isLoading: ordersLoading, refresh } = useOrders();
   const {
     reservations,
     isLoading: reservationsLoading,
@@ -1702,6 +1866,13 @@ export function PosDashboard() {
     Record<string, 'completed' | 'cancelled'>
   >({});
   const [snackbar, setSnackbar] = useState<string | null>(null);
+  const enqueueSnackbar = useCallback((message: string | null | undefined) => {
+    const trimmed = typeof message === 'string' ? message.trim() : null;
+    if (!trimmed) {
+      return;
+    }
+    setSnackbar(trimmed);
+  }, []);
   const [showNewOrderForm, setShowNewOrderForm] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [walletScanResolver, setWalletScanResolver] = useState<((value: string) => void) | null>(
@@ -1854,6 +2025,8 @@ export function PosDashboard() {
     user?.role === 'superuser' || (user?.email && SUPER_USER_EMAILS.has(user.email.toLowerCase()))
   );
   const isSocio = Boolean(user?.role === 'socio' || isSuperUser);
+  const governanceWatcherList =
+    GOVERNANCE_REVIEWERS.size > 0 ? Array.from(GOVERNANCE_REVIEWERS) : ['governance@xoco.local'];
   const [governanceRequests, setGovernanceRequests] = useState<GovernanceRequest[]>([
     {
       id: 'gov-001',
@@ -1863,11 +2036,11 @@ export function PosDashboard() {
       createdBy: 'gerente.demo@xoco.local',
       createdAt: new Date().toISOString(),
       status: 'pending',
-      watchers: ['cots.21d@gmail.com', 'aleisgales99@gmail.com', 'garcia.aragon.jhon23@gmail.com'],
-      approvals: [
-        { reviewer: 'cots.21d@gmail.com', decision: 'pending' },
-        { reviewer: 'aleisgales99@gmail.com', decision: 'pending' },
-      ],
+      watchers: governanceWatcherList,
+      approvals: governanceWatcherList.slice(0, 2).map((reviewer) => ({
+        reviewer,
+        decision: 'pending',
+      })),
       comments: [],
     },
   ]);
@@ -2021,6 +2194,10 @@ export function PosDashboard() {
     });
     return ids;
   }, [visibleActivePrep]);
+  const orderStatusSnapshotRef = useRef(new Map<string, Order['status']>());
+  const hasSeededOrderSnapshot = useRef(false);
+  const prepQueueSnapshotRef = useRef(new Set<string>());
+  const hasSeededPrepSnapshot = useRef(false);
   const visibleOrders = useMemo(
     () =>
       orders.filter(
@@ -2029,6 +2206,13 @@ export function PosDashboard() {
       ),
     [orders, hiddenQueueOrderIds]
   );
+  const orderMap = useMemo(() => {
+    const map = new Map<string, Order>();
+    orders.forEach((order) => {
+      map.set(order.id, order);
+    });
+    return map;
+  }, [orders]);
   const { pending, past: pastOrders, completed } = useMemo(
     () => groupOrders(visibleOrders),
     [visibleOrders]
@@ -2124,15 +2308,84 @@ export function PosDashboard() {
         return;
       }
       if (order.status === 'completed') {
-        setSnackbar('Este pedido ya se entregó.');
+        enqueueSnackbar('Este pedido ya se entregó.');
         return;
       }
       if (order.id && hiddenQueueOrderIds.has(order.id)) {
-        setSnackbar('Este pedido ya está en preparación.');
+        enqueueSnackbar('Este pedido ya está en preparación.');
       }
     },
-    [hiddenQueueOrderIds]
+    [enqueueSnackbar, hiddenQueueOrderIds]
   );
+  useEffect(() => {
+    const statusMap = orderStatusSnapshotRef.current;
+    const seenIds = new Set<string>();
+    const notices: string[] = [];
+
+    if (!hasSeededOrderSnapshot.current) {
+      orders.forEach((order) => {
+        statusMap.set(order.id, order.status ?? 'pending');
+        seenIds.add(order.id);
+      });
+      if (!ordersLoading) {
+        hasSeededOrderSnapshot.current = true;
+      }
+    } else {
+      orders.forEach((order) => {
+        const nextStatus = order.status ?? 'pending';
+        const prevStatus = statusMap.get(order.id);
+        seenIds.add(order.id);
+        if (prevStatus === undefined) {
+          notices.push(`Pedido ${getOrderDisplayCode(order)} registrado correctamente.`);
+        } else if (prevStatus !== nextStatus) {
+          if (nextStatus === 'completed') {
+            notices.push(`Pedido ${getOrderDisplayCode(order)} marcado como completado.`);
+          } else if (nextStatus === 'past') {
+            notices.push(`Pedido ${getOrderDisplayCode(order)} movido a históricos.`);
+          }
+        }
+        statusMap.set(order.id, nextStatus);
+      });
+    }
+
+    statusMap.forEach((_, id) => {
+      if (!seenIds.has(id)) {
+        statusMap.delete(id);
+      }
+    });
+
+    if (notices.length) {
+      const latestMessage = notices[notices.length - 1];
+      enqueueSnackbar(latestMessage);
+    }
+  }, [orders, ordersLoading, enqueueSnackbar]);
+  useEffect(() => {
+    const nextSnapshot = new Set(hiddenQueueOrderIds);
+    if (!hasSeededPrepSnapshot.current) {
+      prepQueueSnapshotRef.current = nextSnapshot;
+      hasSeededPrepSnapshot.current = true;
+      return;
+    }
+    const previousSnapshot = prepQueueSnapshotRef.current;
+    const additions: string[] = [];
+    nextSnapshot.forEach((orderId) => {
+      if (!previousSnapshot.has(orderId)) {
+        additions.push(orderId);
+      }
+    });
+    prepQueueSnapshotRef.current = nextSnapshot;
+    if (!additions.length) {
+      return;
+    }
+    if (additions.length) {
+      const latestOrderId = additions[additions.length - 1];
+      const order = orderMap.get(latestOrderId);
+      const displayMessage = order
+        ? `Pedido ${getOrderDisplayCode(order)} pasó a En preparación.`
+        : `Un pedido entró a preparación (${latestOrderId.slice(0, 6)}).`;
+      enqueueSnackbar(displayMessage);
+    }
+  }, [enqueueSnackbar, hiddenQueueOrderIds, orderMap]);
   const [scannerFeedback, setScannerFeedback] = useState<string | null>(null);
   const [customerQuery, setCustomerQuery] = useState('');
   const [customerFilter, setCustomerFilter] = useState('');
@@ -2173,6 +2426,9 @@ export function PosDashboard() {
   }, [loyaltyCustomers]);
   const findLoyaltyCustomerForOrder = useCallback(
     (order: Order) => {
+      if (isPublicSaleOrder(order)) {
+        return null;
+      }
       const identifiers = [
         order.clientId,
         order.user?.clientId,
@@ -2203,6 +2459,42 @@ export function PosDashboard() {
     },
     [loyaltyLookup]
   );
+  const resolveLoyaltyRecordFromScanned = useCallback(
+    (customer: ScannedCustomer) =>
+      resolveLoyaltyCustomerByIdentifier(customer.id) ??
+      resolveLoyaltyCustomerByIdentifier(customer.email ?? null),
+    [resolveLoyaltyCustomerByIdentifier]
+  );
+
+  const enrichScannedCustomer = useCallback(
+    (customer: ScannedCustomer): ScannedCustomer => {
+      const loyaltyRecord = resolveLoyaltyRecordFromScanned(customer);
+      if (!loyaltyRecord) {
+        return customer;
+      }
+      return {
+        ...customer,
+        beverage: customer.beverage ?? loyaltyRecord.favoriteBeverage ?? '',
+        food: customer.food ?? loyaltyRecord.favoriteFood ?? '',
+        loyaltyCoffees: loyaltyRecord.loyaltyCoffees ?? null,
+        email: customer.email ?? loyaltyRecord.email ?? null,
+      };
+    },
+    [resolveLoyaltyRecordFromScanned]
+  );
+  const fetchReservationSnapshot = useCallback(async (identifier?: string | null) => {
+    const trimmed = identifier?.trim();
+    if (!trimmed) {
+      return null;
+    }
+    try {
+      const reservation = await fetchReservationDetail(trimmed);
+      return reservation ? mapReservationToScanned(reservation) : null;
+    } catch (error) {
+      console.warn('Reservation lookup failed:', error);
+      return null;
+    }
+  }, []);
 
   const notificationsFeed = useMemo(() => {
     const feed: { id: string; message: string; timestamp: string }[] = [];
@@ -2564,7 +2856,7 @@ export function PosDashboard() {
                 error instanceof Error
                   ? error.message
                   : 'No encontramos el ticket en la base de datos.';
-              setSnackbar(message);
+              enqueueSnackbar(message);
             }
           }
           const fallbackOrder = buildOrderFromTicketPayload(parsed.data);
@@ -2592,22 +2884,92 @@ export function PosDashboard() {
           return;
         }
         if (parsed.type === 'reservation') {
-          setDetail({ type: 'scan-reservation', data: parsed.data });
-          rememberClientId(parsed.data.clientId ?? null);
+          const identifier = parsed.data.id ?? parsed.data.code ?? null;
+          const fetchedReservation = await fetchReservationSnapshot(identifier);
+          const resolvedReservation = mergeScannedReservations(parsed.data, fetchedReservation);
+          setDetail({ type: 'scan-reservation', data: resolvedReservation });
+          rememberClientId(resolvedReservation.clientId ?? null);
           tryCloseScanner();
           return;
         }
         if (parsed.type === 'customer') {
-          setDetail({ type: 'scan-customer', data: parsed.data });
-          rememberClientId(parsed.data.id);
+          const embeddedReservationCode = extractReservationIdentifierFromPayload(trimmed);
+          if (embeddedReservationCode) {
+            const fallbackReservation = await fetchReservationSnapshot(embeddedReservationCode);
+            if (fallbackReservation) {
+              setDetail({ type: 'scan-reservation', data: fallbackReservation });
+              rememberClientId(fallbackReservation.clientId ?? null);
+              tryCloseScanner();
+              return;
+            }
+          }
+          const embeddedTicketId = extractTicketIdentifierFromPayload(trimmed);
+          if (embeddedTicketId) {
+            try {
+              const detail = await fetchTicketDetail(embeddedTicketId);
+              const orderFromDetail = buildOrderFromTicketDetail(detail);
+              setDetail({ type: 'order', data: orderFromDetail });
+              notifyOrderScanState(orderFromDetail);
+              rememberClientId(
+                orderFromDetail.clientId ??
+                  orderFromDetail.user?.clientId ??
+                  detail.customer?.clientId ??
+                  null
+              );
+              tryCloseScanner();
+              return;
+            } catch (error) {
+              console.warn('Embedded ticket lookup failed:', error);
+            }
+          }
+          const loyaltyRecord = resolveLoyaltyRecordFromScanned(parsed.data);
+          if (loyaltyRecord) {
+            setDetail({ type: 'customer', data: loyaltyRecord });
+            rememberClientId(loyaltyRecord.clientId ?? loyaltyRecord.userId ?? null);
+          } else {
+            const enrichedCustomer = enrichScannedCustomer(parsed.data);
+            setDetail({ type: 'scan-customer', data: enrichedCustomer });
+            rememberClientId(enrichedCustomer.id);
+          }
           tryCloseScanner();
           return;
         }
       }
 
+      const embeddedReservationId = extractReservationIdentifierFromPayload(trimmed);
+      if (embeddedReservationId) {
+        const remoteReservation = await fetchReservationSnapshot(embeddedReservationId);
+        if (remoteReservation) {
+          setDetail({ type: 'scan-reservation', data: remoteReservation });
+          rememberClientId(remoteReservation.clientId ?? null);
+          tryCloseScanner();
+          return;
+        }
+      }
+
+      const embeddedTicketId = extractTicketIdentifierFromPayload(trimmed);
+      if (embeddedTicketId) {
+        try {
+          const detail = await fetchTicketDetail(embeddedTicketId);
+          const orderFromDetail = buildOrderFromTicketDetail(detail);
+          setDetail({ type: 'order', data: orderFromDetail });
+          notifyOrderScanState(orderFromDetail);
+          rememberClientId(
+            orderFromDetail.clientId ??
+              orderFromDetail.user?.clientId ??
+              detail.customer?.clientId ??
+              null
+          );
+          tryCloseScanner();
+          return;
+        } catch (error) {
+          console.warn('Embedded ticket lookup fallback failed:', error);
+        }
+      }
+
       const normalized = normalizeCode(trimmed);
       if (!normalized) {
-        setSnackbar('No encontramos un registro con ese código.');
+        enqueueSnackbar('No encontramos un registro con ese código.');
         return;
       }
 
@@ -2646,6 +3008,16 @@ export function PosDashboard() {
         rememberClientId(reservationMatch.user?.clientId ?? null);
         return;
       }
+      if (trimmed) {
+        const remoteReservation = await fetchReservationSnapshot(trimmed);
+        if (remoteReservation) {
+          setDetail({ type: 'scan-reservation', data: remoteReservation });
+          setScannerFeedback(null);
+          tryCloseScanner();
+          rememberClientId(remoteReservation.clientId ?? null);
+          return;
+        }
+      }
 
       const customerMatch = tryMatchCustomer(normalized);
       if (customerMatch) {
@@ -2656,9 +3028,19 @@ export function PosDashboard() {
         return;
       }
 
-      setSnackbar('No encontramos un registro con ese código.');
+      enqueueSnackbar('No encontramos un registro con ese código.');
     },
-    [notifyOrderScanState, rememberClientId, tryMatchCustomer, tryMatchOrder, tryMatchReservation]
+    [
+      enrichScannedCustomer,
+      fetchReservationSnapshot,
+      enqueueSnackbar,
+      notifyOrderScanState,
+      rememberClientId,
+      tryMatchCustomer,
+      resolveLoyaltyRecordFromScanned,
+      tryMatchOrder,
+      tryMatchReservation,
+    ]
   );
 
   useEffect(() => {
@@ -2672,10 +3054,27 @@ export function PosDashboard() {
   }, [showScanner]);
 
   useEffect(() => {
+    setDetail((previous) => {
+      if (!previous || previous.type !== 'scan-customer') {
+        return previous;
+      }
+      const loyaltyRecord = resolveLoyaltyRecordFromScanned(previous.data);
+      if (loyaltyRecord) {
+        return { type: 'customer', data: loyaltyRecord };
+      }
+      const enriched = enrichScannedCustomer(previous.data);
+      if (enriched === previous.data) {
+        return previous;
+      }
+      return { ...previous, data: enriched };
+    });
+  }, [enrichScannedCustomer, resolveLoyaltyRecordFromScanned]);
+
+  useEffect(() => {
     if (!snackbar) {
       return;
     }
-    const timer = setTimeout(() => setSnackbar(null), 4000);
+    const timer = setTimeout(() => setSnackbar(null), 3000);
     return () => clearTimeout(timer);
   }, [snackbar]);
 
@@ -2839,7 +3238,7 @@ export function PosDashboard() {
           error: null,
         });
         setDetail(null);
-        setSnackbar('El ticket regresó a En preparación.');
+        enqueueSnackbar('El ticket regresó a En preparación.');
       } catch (error) {
         setActionState({
           isLoading: false,
@@ -2851,7 +3250,7 @@ export function PosDashboard() {
         });
       }
     },
-    [getCurrentStaffName, refresh, refreshPrep, user]
+    [enqueueSnackbar, getCurrentStaffName, refresh, refreshPrep, user]
   );
 
   const handleCompletePrepOrder = useCallback(
@@ -2867,19 +3266,19 @@ export function PosDashboard() {
       });
       setActionState({ isLoading: true, message: null, error: null });
       try {
-        if (tasksForOrder.length) {
-          await Promise.all(tasksForOrder.map((task) => completePrepTask(task.id)));
-        }
-        await completeOrder(order.id);
+        const completions = tasksForOrder.map((task) => completePrepTask(task.id));
+        completions.push(completeOrder(order.id));
+        await Promise.all(completions);
         void refresh();
         void refreshPrep();
+        void refreshLoyalty();
         setActionState({
           isLoading: false,
           message: 'Pedido marcado como completado',
           error: null,
         });
         setDetail(null);
-        setSnackbar('Pedido marcado como completado en barra.');
+        enqueueSnackbar('Pedido marcado como completado en barra.');
       } catch (error) {
         setCompletedOptimisticOrders((prev) => {
           if (!prev.has(order.id)) {
@@ -2899,7 +3298,7 @@ export function PosDashboard() {
         });
       }
     },
-    [prepTasksByOrderId, refresh, refreshPrep]
+    [enqueueSnackbar, prepTasksByOrderId, refresh, refreshPrep, refreshLoyalty]
   );
 
   const handleMarkPrepCompleted = useCallback(
@@ -2915,17 +3314,17 @@ export function PosDashboard() {
 
       setActionState({ isLoading: true, message: null, error: null });
       try {
-        await completePrepTask(task.id);
-        await completeOrder(task.order.id);
+        await Promise.all([completePrepTask(task.id), completeOrder(task.order.id)]);
         void refresh();
         void refreshPrep();
+        void refreshLoyalty();
         setActionState({
           isLoading: false,
           message: 'Pedido marcado como completado',
           error: null,
         });
         setDetail(null);
-        setSnackbar('Pedido marcado como completado en barra.');
+        enqueueSnackbar('Pedido marcado como completado en barra.');
       } catch (error) {
         setActionState({
           isLoading: false,
@@ -2939,7 +3338,7 @@ export function PosDashboard() {
         console.error(error);
       }
     },
-    [refresh, refreshPrep]
+    [enqueueSnackbar, refresh, refreshPrep, refreshLoyalty]
   );
 
   const [scannerInput, setScannerInput] = useState('');
@@ -3206,7 +3605,7 @@ const currentMonthMetrics = useMemo(() => {
         message: 'Reservación confirmada y movida a completadas',
         error: null,
       });
-      setSnackbar('Reservación confirmada y movida a completadas.');
+      enqueueSnackbar('Reservación confirmada y movida a completadas.');
       setDetail(null);
     } catch (error) {
       setActionState({
@@ -3217,7 +3616,7 @@ const currentMonthMetrics = useMemo(() => {
             ? error.message
             : 'No pudimos confirmar la reservación. Intenta más tarde.',
       });
-      setSnackbar(
+      enqueueSnackbar(
         error instanceof Error
           ? error.message
           : 'No pudimos confirmar la reservación. Intenta más tarde.'
@@ -3236,7 +3635,7 @@ const currentMonthMetrics = useMemo(() => {
         message: 'Reservación cancelada correctamente',
         error: null,
       });
-      setSnackbar('Reservación cancelada.');
+      enqueueSnackbar('Reservación cancelada.');
       setDetail(null);
     } catch (error) {
       const message =
@@ -3244,13 +3643,13 @@ const currentMonthMetrics = useMemo(() => {
           ? error.message
           : 'No pudimos cancelar la reservación. Intenta más tarde.';
       setActionState({ isLoading: false, message: null, error: message });
-      setSnackbar(message);
+      enqueueSnackbar(message);
     }
   };
 
   const handleScannedReservationConfirm = async (reservation: ScannedReservation) => {
     if (!reservation.id) {
-      setSnackbar('El QR no incluye un ID de reservación válido.');
+      enqueueSnackbar('El QR no incluye un ID de reservación válido.');
       return;
     }
     setActionState({ isLoading: true, message: null, error: null });
@@ -3262,7 +3661,7 @@ const currentMonthMetrics = useMemo(() => {
         message: 'Reservación confirmada desde QR',
         error: null,
       });
-      setSnackbar('Reservación confirmada desde QR.');
+      enqueueSnackbar('Reservación confirmada desde QR.');
       setDetail(null);
     } catch (error) {
       const message =
@@ -3270,7 +3669,7 @@ const currentMonthMetrics = useMemo(() => {
           ? error.message
           : 'No pudimos confirmar la reservación del QR. Intenta más tarde.';
       setActionState({ isLoading: false, message: null, error: message });
-      setSnackbar(message);
+      enqueueSnackbar(message);
     }
   };
 
@@ -3456,7 +3855,7 @@ const currentMonthMetrics = useMemo(() => {
                   resolveLoyaltyCustomer={resolveLoyaltyCustomerByIdentifier}
                   onSuccess={async () => {
                     await refresh();
-                    setSnackbar('Nuevo pedido creado manualmente.');
+                    enqueueSnackbar('Nuevo pedido creado manualmente.');
                     handleCloseNewOrder();
                   }}
                 />
@@ -3643,6 +4042,7 @@ const currentMonthMetrics = useMemo(() => {
                     foodOptions={foodOptions}
                     isMenuLoading={menuLoading}
                     onClose={() => setDetail(null)}
+                    onRefreshLoyalty={refreshLoyalty}
                   />
                 )}
                   {detail.type === 'scan-reservation' && (
@@ -4033,7 +4433,7 @@ const currentMonthMetrics = useMemo(() => {
                 <p className="badge">Centro de notificaciones</p>
                 <p className="text-sm text-[var(--brand-muted)]">Alertas de reportes, preparaciones y actividad reciente.</p>
               </div>
-              <button type="button" onClick={() => setSnackbar('Centro actualizado.')} className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline">
+              <button type="button" onClick={() => enqueueSnackbar('Centro actualizado.')} className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline">
                 Registrar lectura
               </button>
             </div>
@@ -5105,6 +5505,8 @@ const OrderDetailContent = ({
   const loyaltyDisplayName = loyaltyCustomer ? getCustomerDisplayName(loyaltyCustomer) : null;
   const loyaltyCoffees = loyaltyCustomer?.loyaltyCoffees ?? null;
   const showPaymentSections = !isInPrepQueue && order.status !== 'completed';
+  const isPublicSale = isPublicSaleOrder(order);
+  const shouldShowLoyaltyPanel = showPaymentSections && !isPublicSale;
   const totalAmount = typeof order.total === 'number' ? order.total : null;
   const tipAmountValue = typeof tipValue === 'number' ? tipValue : 0;
   const showTipDetails = showPaymentSections && tipAmountValue > 0;
@@ -5243,7 +5645,7 @@ const OrderDetailContent = ({
             }
           />
         )}
-        {showPaymentSections &&
+        {shouldShowLoyaltyPanel &&
           (loyaltyCustomer ? (
             <div className="rounded-2xl border border-primary-100/80 bg-white/80 p-3 text-sm dark:border-white/10 dark:bg-white/5">
               <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
@@ -5624,12 +6026,14 @@ const CustomerDetailContent = ({
   foodOptions,
   isMenuLoading,
   onClose,
+  onRefreshLoyalty,
 }: {
   customer: LoyaltyCustomer;
   beverageOptions: MenuItem[];
   foodOptions: MenuItem[];
   isMenuLoading?: boolean;
   onClose?: () => void;
+  onRefreshLoyalty?: () => Promise<void> | void;
 }) => {
   const name = getCustomerDisplayName(customer);
   const coffees = customer.loyaltyCoffees ?? customer.orders ?? 0;
@@ -5640,20 +6044,66 @@ const CustomerDetailContent = ({
   const [editingField, setEditingField] = useState<'beverage' | 'food' | null>(null);
   const [draftPreference, setDraftPreference] = useState('');
   const [preferenceMessage, setPreferenceMessage] = useState<string | null>(null);
+  const [preferenceStatus, setPreferenceStatus] = useState<'success' | 'error' | null>(null);
+  const [isSavingPreference, setIsSavingPreference] = useState(false);
+  const preferenceIdentifier =
+    customer.clientId ??
+    customer.userId ??
+    customer.email?.trim() ??
+    null;
 
   const startEditing = (field: 'beverage' | 'food') => {
     setEditingField(field);
     setDraftPreference(preferences[field] ?? '');
+    setPreferenceMessage(null);
+    setPreferenceStatus(null);
   };
 
-  const savePreference = () => {
+  const savePreference = async () => {
     if (!editingField) {
       return;
     }
-    setPreferences((prev) => ({ ...prev, [editingField]: draftPreference }));
-    setEditingField(null);
-    setPreferenceMessage('Preferencia actualizada (solo vista previa).');
+    if (!preferenceIdentifier) {
+      setPreferenceMessage('No podemos guardar la preferencia porque falta el ID del cliente.');
+      setPreferenceStatus('error');
+      return;
+    }
+    setPreferenceMessage(null);
+    setPreferenceStatus(null);
+    setIsSavingPreference(true);
+    try {
+      const payload =
+        editingField === 'beverage'
+          ? { beverage: draftPreference }
+          : { food: draftPreference };
+      const updated = await updateCustomerPreferences(preferenceIdentifier, payload);
+      setPreferences((prev) => ({
+        ...prev,
+        [editingField]:
+          editingField === 'beverage'
+            ? updated.beverage ?? ''
+            : updated.food ?? '',
+      }));
+      setPreferenceMessage('Preferencia guardada correctamente.');
+      setPreferenceStatus('success');
+      setEditingField(null);
+      await onRefreshLoyalty?.();
+    } catch (error) {
+      setPreferenceMessage(
+        error instanceof Error
+          ? error.message
+          : 'No pudimos guardar la preferencia. Intenta más tarde.'
+      );
+      setPreferenceStatus('error');
+    } finally {
+      setIsSavingPreference(false);
+    }
   };
+
+  const preferenceMessageClass =
+    preferenceStatus === 'error'
+      ? 'text-xs font-semibold text-rose-600'
+      : 'text-xs font-semibold text-emerald-600';
 
   return (
     <div className="space-y-4 text-sm">
@@ -5677,9 +6127,7 @@ const CustomerDetailContent = ({
           </button>
         )}
       </header>
-      {preferenceMessage && (
-        <p className="text-xs font-semibold text-emerald-600">{preferenceMessage}</p>
-      )}
+      {preferenceMessage && <p className={preferenceMessageClass}>{preferenceMessage}</p>}
       <CustomerLoyaltyCoffees
         count={coffees}
         customerName={name}
@@ -5710,6 +6158,7 @@ const CustomerDetailContent = ({
           onChange={setDraftPreference}
           onSave={savePreference}
           isLoading={isMenuLoading}
+          isSaving={isSavingPreference && editingField === 'beverage'}
         />
         <PreferenceField
           id="customer-preference-food"
@@ -5723,6 +6172,7 @@ const CustomerDetailContent = ({
           onChange={setDraftPreference}
           onSave={savePreference}
           isLoading={isMenuLoading}
+          isSaving={isSavingPreference && editingField === 'food'}
         />
       </div>
     </div>
@@ -7746,6 +8196,11 @@ const ScannedCustomerContent = ({
   });
   const [editingField, setEditingField] = useState<'beverage' | 'food' | null>(null);
   const [draftPreference, setDraftPreference] = useState('');
+  const [preferenceMessage, setPreferenceMessage] = useState<string | null>(null);
+  const [preferenceStatus, setPreferenceStatus] = useState<'success' | 'error' | null>(null);
+  const [isSavingPreference, setIsSavingPreference] = useState(false);
+  const preferenceIdentifier =
+    customer.id?.trim() ?? customer.email?.trim() ?? customer.phone?.trim() ?? null;
   useEffect(() => {
     setPreferences({
       beverage: customer.beverage ?? '',
@@ -7753,6 +8208,8 @@ const ScannedCustomerContent = ({
     });
     setEditingField(null);
     setDraftPreference('');
+    setPreferenceMessage(null);
+    setPreferenceStatus(null);
   }, [customer.id, customer.beverage, customer.food]);
 
   const startEditing = (field: 'beverage' | 'food') => {
@@ -7760,14 +8217,49 @@ const ScannedCustomerContent = ({
     setDraftPreference(preferences[field] ?? '');
   };
 
-  const savePreference = () => {
-    if (!editingField) return;
-    setPreferences((prev) => ({ ...prev, [editingField]: draftPreference }));
-    setEditingField(null);
+  const savePreference = async () => {
+    if (!editingField) {
+      return;
+    }
+    if (!preferenceIdentifier) {
+      setPreferenceMessage('No tenemos el ID del cliente para guardar la preferencia.');
+      setPreferenceStatus('error');
+      return;
+    }
+    setIsSavingPreference(true);
+    setPreferenceMessage(null);
+    setPreferenceStatus(null);
+    try {
+      const payload =
+        editingField === 'beverage' ? { beverage: draftPreference } : { food: draftPreference };
+      const updated = await updateCustomerPreferences(preferenceIdentifier, payload);
+      setPreferences((prev) => ({
+        ...prev,
+        [editingField]:
+          editingField === 'beverage' ? updated.beverage ?? '' : updated.food ?? '',
+      }));
+      setPreferenceMessage('Preferencia guardada correctamente.');
+      setPreferenceStatus('success');
+      setEditingField(null);
+    } catch (error) {
+      setPreferenceMessage(
+        error instanceof Error
+          ? error.message
+          : 'No pudimos guardar la preferencia. Intenta nuevamente.'
+      );
+      setPreferenceStatus('error');
+    } finally {
+      setIsSavingPreference(false);
+    }
   };
   const firstName = (customer.firstName ?? '').trim();
   const lastName = (customer.lastName ?? '').trim();
   const fallbackName = [firstName, lastName].filter(Boolean).join(' ') || 'Cliente';
+  const loyaltyCount = typeof customer.loyaltyCoffees === 'number' ? customer.loyaltyCoffees : 0;
+  const preferenceMessageClass =
+    preferenceStatus === 'error'
+      ? 'text-xs font-semibold text-rose-600'
+      : 'text-xs font-semibold text-emerald-600';
 
   return (
     <div className="space-y-4 text-sm">
@@ -7789,6 +8281,13 @@ const ScannedCustomerContent = ({
           {customer.email ?? 'Correo no registrado'}
         </p>
       </header>
+      {preferenceMessage && <p className={preferenceMessageClass}>{preferenceMessage}</p>}
+      <CustomerLoyaltyCoffees
+        count={loyaltyCount}
+        customerName={fallbackName}
+        statusLabel="Programa semanal"
+        subtitle="Sello por cada bebida registrada en POS"
+      />
       <div className="grid gap-3 rounded-2xl border border-primary-100/70 bg-primary-50/60 p-4 text-sm dark:border-white/10 dark:bg-white/5">
         <DetailRow label="Teléfono" value={customer.phone ?? 'No registrado'} />
         <DetailRow label="Email" value={customer.email ?? 'No registrado'} />
@@ -7807,6 +8306,7 @@ const ScannedCustomerContent = ({
           onChange={setDraftPreference}
           onSave={savePreference}
           isLoading={isMenuLoading}
+          isSaving={isSavingPreference && editingField === 'beverage'}
         />
         <PreferenceField
           id="scan-customer-food"
@@ -7820,6 +8320,7 @@ const ScannedCustomerContent = ({
           onChange={setDraftPreference}
           onSave={savePreference}
           isLoading={isMenuLoading}
+          isSaving={isSavingPreference && editingField === 'food'}
         />
       </div>
     </div>
@@ -7838,6 +8339,7 @@ const PreferenceField = ({
   onChange,
   onSave,
   isLoading,
+  isSaving,
 }: {
   id: string;
   label: string;
@@ -7850,6 +8352,7 @@ const PreferenceField = ({
   onChange: (value: string) => void;
   onSave: () => void;
   isLoading?: boolean;
+  isSaving?: boolean;
 }) => (
   <div className="mt-2 border-t border-dashed border-primary-100/60 pt-3 first:mt-0 first:border-t-0 first:pt-0">
     <div className="flex items-center justify-between">
@@ -7866,8 +8369,13 @@ const PreferenceField = ({
         </button>
       ) : (
         <div className="flex items-center gap-2">
-          <button type="button" onClick={onSave} className="brand-button text-xs">
-            Guardar
+          <button
+            type="button"
+            onClick={onSave}
+            className="brand-button text-xs"
+            disabled={isSaving}
+          >
+            {isSaving ? 'Guardando…' : 'Guardar'}
           </button>
           <button type="button" onClick={onCancel} className="brand-button--ghost text-xs">
             Cancelar
@@ -8197,8 +8705,8 @@ const SmartScannerPanel = ({
 };
 
 const Snackbar = ({ message, onClose }: { message: string; onClose: () => void }) => (
-  <div className="fixed inset-x-0 bottom-4 z-50 flex justify-center px-4">
-    <div className="flex items-center gap-3 rounded-2xl bg-primary-900/90 px-4 py-2 text-sm text-white shadow-lg">
+  <div className="fixed inset-x-0 top-4 z-50 flex justify-center px-4">
+    <div className="flex items-center gap-3 rounded-2xl bg-primary-900/95 px-4 py-2 text-sm text-white shadow-2xl">
       <span>{message}</span>
       <button type="button" onClick={onClose} className="text-xs uppercase tracking-[0.3em]">
         Cerrar

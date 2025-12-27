@@ -30,9 +30,15 @@
 
 import { useState, useEffect, useMemo, useCallback, type FormEvent } from 'react';
 import { SearchableDropdown } from '@/components/searchable-dropdown';
-import { useMenuOptions } from '@/hooks/use-menu-options';
+import { useMenuOptions, type MenuItem } from '@/hooks/use-menu-options';
 import { useCartStore, type CartItem } from '@/hooks/use-cart-store';
 import type { LoyaltyCustomer } from '@/lib/api';
+import {
+  LOYALTY_STAMPS_TARGET,
+  PUBLIC_SALE_CLIENT_ID,
+  PUBLIC_SALE_USER_ID,
+  isPublicSaleIdentifier,
+} from '@/lib/loyalty';
 
 const formatCurrency = (value?: number | null) =>
   new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(value ?? 0);
@@ -40,10 +46,6 @@ const formatCurrency = (value?: number | null) =>
 const TIP_PRESETS = [5, 10, 15, 20];
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const DIGITS = '0123456789';
-const PUBLIC_SALE_CLIENT_ID = (process.env.NEXT_PUBLIC_PUBLIC_SALE_CLIENT_ID ?? 'AAA-1111').trim();
-const PUBLIC_SALE_USER_ID =
-  (process.env.NEXT_PUBLIC_PUBLIC_SALE_USER_ID ?? process.env.NEXT_PUBLIC_PUBLIC_SALE_CLIENT_ID)?.trim() ??
-  'AAA-1111';
 const PUBLIC_SALE_CLIENT_ID_LOWER = PUBLIC_SALE_CLIENT_ID.toLowerCase();
 
 const generateTicketCode = () => {
@@ -147,6 +149,13 @@ const isBeverageCartItem = (item: CartItem) => {
   );
 };
 
+const isMenuItemBeverage = (menuItem: MenuItem, resolvedKind: CartItem['kind']) =>
+  resolvedKind === 'beverage' ||
+  isLikelyBeverageDescriptor(menuItem.category) ||
+  isLikelyBeverageDescriptor(menuItem.subcategory) ||
+  isLikelyBeverageDescriptor(menuItem.label) ||
+  isLikelyBeverageDescriptor(menuItem.sizeLabel);
+
 const parsePositiveNumber = (value: string) => {
   if (!value.trim()) {
     return null;
@@ -193,6 +202,7 @@ export function NewOrderModal({
     foodOptions,
     packageOptions,
     getMenuItemById,
+    allMenuItems,
     isLoading: menuLoading,
     error: menuError,
   } = useMenuOptions();
@@ -217,6 +227,11 @@ export function NewOrderModal({
   const [paymentReference, setPaymentReference] = useState('');
   const [loyaltyMatch, setLoyaltyMatch] = useState<LoyaltyCustomer | null>(null);
   const [loyaltyBaseCoffees, setLoyaltyBaseCoffees] = useState<number | null>(null);
+  const [pendingSizeSelection, setPendingSizeSelection] = useState<{
+    productId: string;
+    label: string;
+    options: MenuItem[];
+  } | null>(null);
   const beverageOptionIds = useMemo(
     () => new Set(beverageOptions.map((item) => item.id)),
     [beverageOptions]
@@ -248,6 +263,10 @@ export function NewOrderModal({
     () => items.reduce((total, entry) => total + (isBeverageCartItem(entry) ? entry.quantity : 0), 0),
     [items]
   );
+  const normalizedClientIdValue = clientIdInput.trim();
+  const normalizedClientIdLower = normalizedClientIdValue.toLowerCase();
+  const isPublicSaleInput = isPublicSaleIdentifier(normalizedClientIdValue);
+  const isPublicSaleContext = isPublicSale || isPublicSaleInput;
 
   useEffect(() => () => clearCart(), [clearCart]);
 
@@ -257,7 +276,7 @@ export function NewOrderModal({
       setIsPublicSale(false);
       return;
     }
-    if (trimmed.toLowerCase() === PUBLIC_SALE_CLIENT_ID_LOWER) {
+    if (isPublicSaleIdentifier(trimmed)) {
       setIsPublicSale(true);
       setClientIdInput(PUBLIC_SALE_CLIENT_ID);
       setValidatedCustomer(null);
@@ -275,23 +294,22 @@ export function NewOrderModal({
   }, [prefillClientId]);
 
   useEffect(() => {
-    if (!resolveLoyaltyCustomer || isPublicSale) {
+    if (!resolveLoyaltyCustomer || isPublicSaleContext) {
       setLoyaltyMatch(null);
       setLoyaltyBaseCoffees(null);
       return;
     }
-    const normalizedIdentifier = clientIdInput.trim().toLowerCase();
-    if (!normalizedIdentifier) {
+    if (!normalizedClientIdLower) {
       setLoyaltyMatch(null);
       setLoyaltyBaseCoffees(null);
       return;
     }
-    const match = resolveLoyaltyCustomer(normalizedIdentifier);
+    const match = resolveLoyaltyCustomer(normalizedClientIdLower);
     setLoyaltyMatch(match);
     setLoyaltyBaseCoffees(
       match && typeof match.loyaltyCoffees === 'number' ? match.loyaltyCoffees : null
     );
-  }, [clientIdInput, resolveLoyaltyCustomer, isPublicSale]);
+  }, [normalizedClientIdLower, resolveLoyaltyCustomer, isPublicSaleContext]);
 
   useEffect(() => {
     if (paymentMethod === 'efectivo') {
@@ -299,46 +317,112 @@ export function NewOrderModal({
     }
   }, [paymentMethod]);
 
+  const gatherVariantsForProduct = useCallback(
+    (menuItem: MenuItem) => {
+      if (!menuItem?.productId) {
+        return [];
+      }
+      return allMenuItems
+        .filter((candidate) => candidate.productId === menuItem.productId)
+        .sort((a, b) => (a.sizeLabel ?? '').localeCompare(b.sizeLabel ?? '', 'es-MX'));
+    },
+    [allMenuItems]
+  );
+
+  const addMenuItemToCart = useCallback(
+    (menuItem: MenuItem) => {
+      if (!menuItem) {
+        setFormError('No encontramos ese producto en el menú.');
+        return;
+      }
+      const kind = resolveItemKind(menuItem.id);
+      const isBeverage = isMenuItemBeverage(menuItem, kind);
+      const beveragesAlreadyInCart = getBeverageUnitsInCart();
+      const baseCoffees =
+        !isPublicSaleContext && typeof loyaltyBaseCoffees === 'number'
+          ? loyaltyBaseCoffees
+          : null;
+      const isEligibleForReward = isBeverage && baseCoffees !== null;
+      let loyaltyReward = false;
+      let variantId = menuItem.id ?? menuItem.productId;
+      if (isEligibleForReward) {
+        const projectedTotal = baseCoffees + beveragesAlreadyInCart + 1;
+        loyaltyReward = projectedTotal % LOYALTY_STAMPS_TARGET === 0;
+        if (loyaltyReward) {
+          variantId = `${variantId ?? menuItem.productId}-loyalty-${Date.now()}`;
+        }
+      }
+      addItem({
+        productId: menuItem.productId,
+        variantId: variantId ?? menuItem.productId,
+        name: menuItem.label,
+        price: loyaltyReward ? 0 : menuItem.price ?? 0,
+        quantity: 1,
+        category: menuItem.category ?? (kind === 'beverage' ? 'Bebida' : menuItem.category),
+        subcategory: menuItem.subcategory,
+        sizeId: menuItem.sizeId,
+        sizeLabel: menuItem.sizeLabel,
+        kind: isBeverage ? 'beverage' : kind,
+        originalPrice: menuItem.price ?? 0,
+        loyaltyReward,
+      });
+      setFormError(null);
+    },
+    [addItem, getBeverageUnitsInCart, isPublicSaleContext, loyaltyBaseCoffees, resolveItemKind]
+  );
+
+  const promptSizeSelectionIfNeeded = useCallback(
+    (menuItem: MenuItem) => {
+      const resolvedKind = resolveItemKind(menuItem.id);
+      if (!isMenuItemBeverage(menuItem, resolvedKind)) {
+        return false;
+      }
+      const variants = gatherVariantsForProduct(menuItem);
+      if (variants.length <= 1) {
+        return false;
+      }
+      const uniqueSizeLabels = new Set(
+        variants.map((variant) => (variant.sizeLabel ?? '').trim()).filter(Boolean)
+      );
+      if (uniqueSizeLabels.size <= 1) {
+        return false;
+      }
+      const normalizedLabel = menuItem.label.split('·')[0]?.trim() || menuItem.label;
+      setPendingSizeSelection({
+        productId: menuItem.productId,
+        label: normalizedLabel,
+        options: variants,
+      });
+      return true;
+    },
+    [gatherVariantsForProduct, resolveItemKind]
+  );
+
   const handleQuickAdd = (productId: string) => {
     const menuItem = getMenuItemById(productId);
     if (!menuItem) {
       setFormError('No encontramos ese producto en el menú.');
       return;
     }
-    const kind = resolveItemKind(menuItem.id);
-    const isBeverage =
-      kind === 'beverage' ||
-      isLikelyBeverageDescriptor(menuItem.category) ||
-      isLikelyBeverageDescriptor(menuItem.subcategory) ||
-      isLikelyBeverageDescriptor(menuItem.label) ||
-      isLikelyBeverageDescriptor(menuItem.sizeLabel);
-    const beveragesAlreadyInCart = getBeverageUnitsInCart();
-    const baseCoffees = typeof loyaltyBaseCoffees === 'number' ? loyaltyBaseCoffees : null;
-    const isEligibleForReward = isBeverage && baseCoffees !== null;
-    let loyaltyReward = false;
-    let variantId = menuItem.id ?? menuItem.productId;
-    if (isEligibleForReward) {
-      const projectedTotal = baseCoffees + beveragesAlreadyInCart + 1;
-      loyaltyReward = projectedTotal % 7 === 0;
-      if (loyaltyReward) {
-        variantId = `${variantId ?? menuItem.productId}-loyalty-${Date.now()}`;
-      }
+    if (promptSizeSelectionIfNeeded(menuItem)) {
+      return;
     }
-    addItem({
-      productId: menuItem.productId,
-      variantId: variantId ?? menuItem.productId,
-      name: menuItem.label,
-      price: loyaltyReward ? 0 : menuItem.price ?? 0,
-      quantity: 1,
-      category: menuItem.category ?? (kind === 'beverage' ? 'Bebida' : menuItem.category),
-      subcategory: menuItem.subcategory,
-      sizeId: menuItem.sizeId,
-      sizeLabel: menuItem.sizeLabel,
-      kind: isBeverage ? 'beverage' : kind,
-      originalPrice: menuItem.price ?? 0,
-      loyaltyReward,
-    });
-    setFormError(null);
+    addMenuItemToCart(menuItem);
+  };
+
+  const handleSizeSelection = (menuItem: MenuItem) => {
+    addMenuItemToCart(menuItem);
+    setPendingSizeSelection(null);
+  };
+
+  const handleCloseSizePicker = () => setPendingSizeSelection(null);
+
+  const handleDropdownSelection = (setter: (value: string | null) => void) => (selectedId: string | null) => {
+    setter(selectedId);
+    if (selectedId) {
+      handleQuickAdd(selectedId);
+      setter(null);
+    }
   };
 
   const canSubmit = items.length > 0 && !isSubmitting && Boolean(paymentMethod);
@@ -352,7 +436,10 @@ export function NewOrderModal({
     'Captura la referencia proporcionada por el comprobante.';
   const walletScannerAvailable = Boolean(onWalletScanRequest);
   const loyaltyModulo = useMemo(
-    () => (typeof loyaltyBaseCoffees === 'number' ? loyaltyBaseCoffees % 7 : null),
+    () =>
+      typeof loyaltyBaseCoffees === 'number'
+        ? loyaltyBaseCoffees % LOYALTY_STAMPS_TARGET
+        : null,
     [loyaltyBaseCoffees]
   );
   const coffeesUntilReward = useMemo(() => {
@@ -615,6 +702,7 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
   };
 
   return (
+    <>
     <form onSubmit={handleSubmit} className="space-y-5 text-sm max-h-[75vh] overflow-y-auto pr-2">
       <header className="space-y-1">
         <p className="text-xs uppercase tracking-[0.35em] text-primary-500">Pedido manual</p>
@@ -639,13 +727,7 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
           placeholder="Busca por nombre o categoría"
           helperText="Selecciona y se agregará automáticamente al carrito"
           value={selectedBeverage}
-          onChange={(selectedId) => {
-            setSelectedBeverage(selectedId);
-            if (selectedId) {
-              handleQuickAdd(selectedId);
-              setSelectedBeverage(null);
-            }
-          }}
+          onChange={handleDropdownSelection(setSelectedBeverage)}
           allowClear
         />
         <SearchableDropdown
@@ -655,13 +737,7 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
           placeholder="Busca snacks, postres o brunch"
           helperText="Agrega panadería, postres o brunch"
           value={selectedFood}
-          onChange={(selectedId) => {
-            setSelectedFood(selectedId);
-            if (selectedId) {
-              handleQuickAdd(selectedId);
-              setSelectedFood(null);
-            }
-          }}
+          onChange={handleDropdownSelection(setSelectedFood)}
           allowClear
         />
       </div>
@@ -673,13 +749,7 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
           placeholder="Combos, kits u ofertas del menú editorial"
           helperText="Basado en xococafe.netlify.app/uses"
           value={selectedPackage}
-          onChange={(selectedId) => {
-            setSelectedPackage(selectedId);
-            if (selectedId) {
-              handleQuickAdd(selectedId);
-              setSelectedPackage(null);
-            }
-          }}
+          onChange={handleDropdownSelection(setSelectedPackage)}
           allowClear
         />
       </div>
@@ -948,7 +1018,7 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
             {validatedCustomer.clientId ?? validatedCustomer.id}
           </div>
         ) : null}
-        {!isPublicSale && loyaltyMatch && (
+        {!isPublicSaleContext && loyaltyMatch && (
           <div className="mt-2 rounded-xl border border-primary-200/70 bg-primary-50/70 px-3 py-2 text-xs text-primary-800 dark:border-white/20 dark:bg-white/10 dark:text-white">
             Cafés acumulados: {loyaltyMatch.loyaltyCoffees ?? 0}
             {loyaltyStatusMessage && <span className="ml-1 text-[var(--brand-muted)]">· {loyaltyStatusMessage}</span>}
@@ -1050,5 +1120,53 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
         </button>
       </div>
     </form>
+    {pendingSizeSelection && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 py-10">
+        <div className="w-full max-w-md space-y-4 rounded-3xl bg-white p-6 text-primary-900 shadow-2xl dark:bg-[#1b1612] dark:text-white">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.35em] text-primary-500">Selecciona tamaño</p>
+              <h3 className="text-xl font-semibold">{pendingSizeSelection.label}</h3>
+            </div>
+            <button
+              type="button"
+              className="text-xs font-semibold uppercase tracking-[0.3em] text-primary-500 hover:underline"
+              onClick={handleCloseSizePicker}
+            >
+              Cerrar
+            </button>
+          </div>
+          <p className="text-sm text-[var(--brand-muted)]">
+            Esta bebida tiene varias preparaciones. Elige el tamaño correcto antes de agregarla.
+          </p>
+          <div className="space-y-3">
+            {pendingSizeSelection.options.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => handleSizeSelection(option)}
+                className="flex w-full items-center justify-between rounded-2xl border border-primary-100/70 px-4 py-3 text-left text-sm transition hover:border-primary-400 dark:border-white/10"
+              >
+                <div>
+                  <p className="font-semibold">
+                    {option.sizeLabel ?? 'Único'}
+                  </p>
+                  <p className="text-xs text-[var(--brand-muted)]">{option.label}</p>
+                </div>
+                <span className="font-semibold">{formatCurrency(option.price)}</span>
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={handleCloseSizePicker}
+            className="brand-button--ghost w-full text-xs"
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

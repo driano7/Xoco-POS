@@ -36,12 +36,31 @@ import { getPresetHashOverride, hashWithSalts } from '@/lib/auth/password-hash';
 const STAFF_TABLE = process.env.SUPABASE_STAFF_TABLE ?? 'staff_users';
 const BRANCHES_TABLE = process.env.SUPABASE_BRANCHES_TABLE ?? 'branches';
 const DEFAULT_HOURLY_RATE = Number(process.env.POS_STAFF_HOURLY_RATE ?? 38.1);
-const DEMO_PASSWORD = process.env.POS_DEMO_PASSWORD ?? process.env.BARISTA_DEMO_PASSWORD ?? 'Barista#2024';
-const MANAGER_DEMO_PASSWORD = process.env.POS_MANAGER_DEMO_PASSWORD ?? process.env.GERENTE_DEMO_PASSWORD ?? 'Gerente#2024';
+const DEMO_PASSWORD =
+  process.env.POS_DEMO_PASSWORD ?? process.env.BARISTA_DEMO_PASSWORD ?? 'Barista#2024';
+const MANAGER_DEMO_PASSWORD =
+  process.env.POS_MANAGER_DEMO_PASSWORD ?? process.env.GERENTE_DEMO_PASSWORD ?? 'Gerente#2024';
 const SOCIO_DEMO_PASSWORD = process.env.POS_SOCIO_DEMO_PASSWORD ?? 'Socio#2024';
 const SUPERUSER_PASSWORD = process.env.POS_SUPERUSER_PASSWORD ?? 'Super#2024';
 
-const SOCIO_ACCOUNTS = [
+const parseAccountList = (value?: string | null) => {
+  if (!value) {
+    return [];
+  }
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [email, id] = entry.split(':').map((segment) => segment.trim());
+      return {
+        email: email.toLowerCase(),
+        id: (id ?? email).toLowerCase(),
+      };
+    });
+};
+
+const DEFAULT_SOCIO_ACCOUNTS = [
   { email: 'socio.demo@xoco.local', id: 'socio-demo' },
   { email: 'cots.21d@gmail.com', id: 'socio-cots' },
   { email: 'aleisgales99@gmail.com', id: 'socio-ale' },
@@ -49,10 +68,35 @@ const SOCIO_ACCOUNTS = [
   { email: 'donovanriano@gmail.com', id: 'socio-donovan' },
 ];
 
-const SUPERUSER_ACCOUNTS = [
-  { email: 'donovan@criptec.io', id: 'super-criptec', password: SUPERUSER_PASSWORD },
-  { email: 'super.demo@xoco.local', id: 'super-demo', password: SUPERUSER_PASSWORD },
+const DEFAULT_SUPERUSER_ACCOUNTS = [
+  { email: 'super.demo@xoco.local', id: 'super-demo' },
+  { email: 'donovan@criptec.io', id: 'super-criptec' },
 ];
+
+const parsedSocioAccounts = parseAccountList(process.env.POS_SOCIO_ACCOUNTS);
+const SOCIO_ACCOUNTS =
+  parsedSocioAccounts.length > 0 ? parsedSocioAccounts : DEFAULT_SOCIO_ACCOUNTS;
+
+const parsedSuperAccounts = parseAccountList(process.env.POS_SUPERUSER_ACCOUNTS);
+const SUPERUSER_ACCOUNTS = (parsedSuperAccounts.length > 0
+  ? parsedSuperAccounts
+  : DEFAULT_SUPERUSER_ACCOUNTS
+).map((account) => ({
+  ...account,
+  password: SUPERUSER_PASSWORD,
+}));
+
+const formatNameToken = (token?: string) =>
+  token ? token.charAt(0).toUpperCase() + token.slice(1) : 'Xoco';
+
+const deriveNamesFromEmail = (email: string) => {
+  const local = email.split('@')[0] ?? 'socio';
+  const [first, ...rest] = local.split('.');
+  return {
+    firstName: formatNameToken(first || 'socio'),
+    lastName: rest.length ? rest.map((piece) => formatNameToken(piece)).join(' ') : 'Xoco',
+  };
+};
 
 type StaffPreset = Partial<AuthenticatedStaff> & {
   shiftType?: ShiftType;
@@ -96,25 +140,13 @@ const STAFF_PRESETS: Record<string, StaffPreset> = {
 };
 
 SOCIO_ACCOUNTS.forEach((account) => {
-  STAFF_PRESETS[account.email.toLowerCase()] = {
+  const normalized = account.email.toLowerCase();
+  const names = deriveNamesFromEmail(normalized);
+  STAFF_PRESETS[normalized] = {
     id: account.id,
     role: 'socio',
-    firstName:
-      account.email.toLowerCase() === 'cots.21d@gmail.com'
-        ? 'Sergio'
-        : account.email.toLowerCase() === 'aleisgales99@gmail.com'
-          ? 'Alejandro'
-          : account.email.toLowerCase() === 'garcia.aragon.jhon23@gmail.com'
-            ? 'Juan'
-            : 'Socio',
-    lastName:
-      account.email.toLowerCase() === 'cots.21d@gmail.com'
-        ? 'Cortés'
-        : account.email.toLowerCase() === 'aleisgales99@gmail.com'
-          ? 'Galván'
-          : account.email.toLowerCase() === 'garcia.aragon.jhon23@gmail.com'
-            ? 'García'
-            : account.email.split('@')[0],
+    firstName: names.firstName,
+    lastName: names.lastName,
     shiftType: 'full_time',
     branchId: 'MATRIZ',
     branchName: 'Consejo Xoco',
@@ -124,17 +156,13 @@ SOCIO_ACCOUNTS.forEach((account) => {
 });
 
 SUPERUSER_ACCOUNTS.forEach((account) => {
-  STAFF_PRESETS[account.email.toLowerCase()] = {
+  const normalized = account.email.toLowerCase();
+  const names = deriveNamesFromEmail(normalized);
+  STAFF_PRESETS[normalized] = {
     id: account.id,
     role: 'superuser',
-    firstName:
-      account.email.toLowerCase() === 'donovan@criptec.io'
-        ? 'Donovan'
-        : 'Super',
-    lastName:
-      account.email.toLowerCase() === 'donovan@criptec.io'
-        ? 'Riaño'
-        : account.email.split('@')[0],
+    firstName: names.firstName,
+    lastName: names.lastName,
     shiftType: 'full_time',
     branchId: 'MATRIZ',
     branchName: 'Consejo Xoco',
@@ -266,40 +294,50 @@ export async function POST(request: Request) {
 
     const preset = STAFF_PRESETS[normalizedEmail] ?? {};
 
-    const { data: initialStaffRecord, error: staffError } = await supabaseAdmin
-      .from(STAFF_TABLE)
-      .select(
-        [
-          'id',
-          'email',
-          '"passwordHash"',
-          'role',
-          '"branchId"',
-          '"createdAt"',
-          '"firstNameEncrypted"',
-          '"lastNameEncrypted"',
-        ].join(',')
-      )
-      .ilike('email', normalizedEmail)
-      .maybeSingle<StaffDbRecord>();
+    let staffRecord: StaffDbRecord | null = null;
+    let supabaseUnavailable = false;
+    try {
+      const { data: initialStaffRecord, error: staffError } = await supabaseAdmin
+        .from(STAFF_TABLE)
+        .select(
+          [
+            'id',
+            'email',
+            '"passwordHash"',
+            'role',
+            '"branchId"',
+            '"createdAt"',
+            '"firstNameEncrypted"',
+            '"lastNameEncrypted"',
+          ].join(',')
+        )
+        .ilike('email', normalizedEmail)
+        .maybeSingle<StaffDbRecord>();
 
-    if (staffError) {
-      throw new Error(staffError.message);
+      if (staffError) {
+        throw new Error(staffError.message);
+      }
+
+      staffRecord = initialStaffRecord;
+
+      if (!staffRecord) {
+        staffRecord = await provisionStaffRecord({ email: trimmedEmail, preset });
+      }
+    } catch (error) {
+      supabaseUnavailable = true;
+      console.warn('Falling back to preset-only auth (Supabase unavailable):', error);
     }
 
-    let staffRecord: StaffDbRecord | null = initialStaffRecord;
-
-    if (!staffRecord) {
-      staffRecord = await provisionStaffRecord({ email: trimmedEmail, preset });
-    }
-
-    let passwordIsValid =
-      Boolean('passwordHash' in (staffRecord ?? {})) &&
-      Boolean((staffRecord as { passwordHash?: string | null | undefined })?.passwordHash);
-    if (passwordIsValid) {
-      const hash = (staffRecord as { passwordHash?: string | null | undefined })?.passwordHash;
-      if (hash) {
-        passwordIsValid = await bcrypt.compare(password, hash);
+    let passwordIsValid = false;
+    if (staffRecord?.passwordHash) {
+      try {
+        passwordIsValid = await bcrypt.compare(
+          password,
+          (staffRecord as { passwordHash?: string }).passwordHash ?? ''
+        );
+      } catch (error) {
+        console.warn('Password comparison failed, ignoring stored hash:', error);
+        passwordIsValid = false;
       }
     }
 
@@ -332,18 +370,24 @@ export async function POST(request: Request) {
     let branchName = presetOverride.branchName ?? null;
 
     if (!branchName && branchId) {
-      const { data: branch, error: branchError } = await supabaseAdmin
-        .from(BRANCHES_TABLE)
-        .select('id,name,code')
-        .eq('id', branchId)
-        .maybeSingle();
-      if (branchError) {
-        console.warn('No pudimos obtener la sucursal asignada:', branchError);
+      if (supabaseUnavailable) {
+        branchName = branchId;
+      } else {
+        const { data: branch, error: branchError } = await supabaseAdmin
+          .from(BRANCHES_TABLE)
+          .select('id,name,code')
+          .eq('id', branchId)
+          .maybeSingle();
+        if (branchError) {
+          console.warn('No pudimos obtener la sucursal asignada:', branchError);
+          branchName = branchId;
+        } else {
+          branchName = branch?.name ?? branch?.code ?? branchId;
+        }
       }
-      branchName = branch?.name ?? branch?.code ?? branchId;
     }
 
-    if (recordId) {
+    if (recordId && !supabaseUnavailable) {
       const desiredFirst = normalizeName(presetOverride.firstName);
       const desiredLast = normalizeName(presetOverride.lastName);
       const currentFirst = readStoredName(

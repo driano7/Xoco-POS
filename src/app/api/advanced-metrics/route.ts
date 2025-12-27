@@ -56,22 +56,35 @@ const INVENTORY_LEDGER_TABLE = process.env.SUPABASE_STOCK_LEDGER_TABLE ?? 'inven
 const INVENTORY_ITEMS_TABLE = process.env.SUPABASE_INVENTORY_ITEMS_TABLE ?? 'inventory_items';
 const INVENTORY_STOCK_TABLE = process.env.SUPABASE_INVENTORY_STOCK_TABLE ?? 'inventory_stock';
 const LOYALTY_PUNCHES_TABLE = process.env.SUPABASE_LOYALTY_PUNCHES_TABLE ?? 'loyalty_points';
-const ALWAYS_INCLUDED_STAFF_EMAILS = [
-  'barista.demo@xoco.local',
-  'gerente.demo@xoco.local',
-  'cots.21d@gmail.com',
-  'aleisgales99@gmail.com',
-  'garcia.aragon.jhon23@gmail.com',
-  'donovanriano@gmail.com',
-];
-const CLEANING_COMPLETION_COUNTS: Record<string, number> = {
-  'barista.demo@xoco.local': 9,
-  'gerente.demo@xoco.local': 4,
-  'cots.21d@gmail.com': 3,
-  'aleisgales99@gmail.com': 2,
-  'garcia.aragon.jhon23@gmail.com': 2,
-  'donovanriano@gmail.com': 1,
-};
+const parseEmailList = (value?: string | null) =>
+  (value ?? '')
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+const DEFAULT_SAMPLE_STAFF = ['barista.demo@xoco.local', 'gerente.demo@xoco.local'];
+const envIncludedStaff = parseEmailList(process.env.POS_METRICS_ALWAYS_INCLUDED_STAFF);
+const ALWAYS_INCLUDED_STAFF_EMAILS = envIncludedStaff.length ? envIncludedStaff : DEFAULT_SAMPLE_STAFF;
+const CLEANING_COMPLETION_COUNTS = (() => {
+  const raw = process.env.POS_CLEANING_COMPLETIONS;
+  if (!raw) {
+    return {
+      'barista.demo@xoco.local': 9,
+      'gerente.demo@xoco.local': 4,
+    };
+  }
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .reduce<Record<string, number>>((acc, entry) => {
+      const [email, count] = entry.split('=');
+      if (email && count) {
+        const parsed = Number(count);
+        acc[email.trim().toLowerCase()] = Number.isFinite(parsed) ? parsed : 0;
+      }
+      return acc;
+    }, {});
+})();
 const MAX_MONTH_HISTORY = 18;
 
 const buildMonthLabel = (monthKey: string) => {

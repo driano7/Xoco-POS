@@ -36,6 +36,7 @@ El sistema ha sido adaptado, rediseñado y programado específicamente para Xoco
 4. **Gestión de Usuarios.** Roles de Administrador, Barista y Cajero.  
 5. **Reportes y Métricas.** Ventas, historial y análisis de desempeño.  
 6. **Diseño Multiplataforma.** Funcionamiento en tableta, touchscreen y escritorio.  
+7. **Programa de Lealtad.** Control automático de sellos (7 cafés), canje sin costo y bloqueo de beneficios para ventas de público general (`AAA-1111`).  
 
 ---
 
@@ -251,6 +252,7 @@ The system is adapted, redesigned, and reimplemented specifically for Xoco Café
 4. **User Management.** Role-based permissions for Admin, Barista, and Cashier.  
 5. **Analytics & Reporting.** Sales metrics and historical performance data.  
 6. **Cross-Platform Interface.** Optimized for tablets, touchscreens, and desktop use.  
+7. **Loyalty Program.** Seven-stamp tracking with automatic free drink rewards and enforced exclusion for walk-in/public sales (`AAA-1111`).  
 
 ---
 

@@ -114,13 +114,8 @@ const resolveSnapshotProduct = (
 const DEMO_STAFF_NAME_OVERRIDES: Record<string, string> = {
   'barista-demo': 'Demo Barista',
   'manager-demo': 'Demo Gerente',
-  'socio-demo': 'Socio socio.demo',
-  'socio-cots': 'Socio cots.21d',
-  'socio-ale': 'Socio aleisgales99',
-  'socio-jhon': 'Socio garcia.aragon.jhon23',
-  'super-criptec': 'Super donovan',
-  'super-demo': 'Super demo',
-  'socio-donovan': 'Socio donovanriano',
+  'socio-demo': 'Socio Demo',
+  'super-demo': 'Super Demo',
 };
 
 type NormalizedStaffRecord = {
