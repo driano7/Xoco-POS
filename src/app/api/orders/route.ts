@@ -39,6 +39,7 @@ import {
   type PendingOperation,
 } from '@/lib/offline-sync';
 import { withDecryptedUserNames } from '@/lib/customer-decrypt';
+import { sqlite } from '@/lib/sqlite';
 
 const ORDERS_TABLE = process.env.SUPABASE_ORDERS_TABLE ?? 'orders';
 const TICKETS_TABLE = process.env.SUPABASE_TICKETS_TABLE ?? 'tickets';
@@ -157,6 +158,16 @@ type ProductRecord = {
   name?: string | null;
   category?: string | null;
   subcategory?: string | null;
+};
+
+type OrdersDataLoader = {
+  loadProducts: (productIds: Set<string>) => Promise<Map<string, ProductRecord>>;
+  loadTicketsAndCodes: (
+    orderIds: string[]
+  ) => Promise<{
+    ticketMap: Map<string, string | null>;
+    codeMap: Map<string, string | null>;
+  }>;
 };
 
 const collectProductIds = (rawItems: unknown, target: Set<string>) => {
@@ -421,6 +432,462 @@ const queueOfflineOrder = async (
   );
 };
 
+const mapOrdersPayload = async (
+  ordersData: Array<Record<string, unknown>>,
+  loader: OrdersDataLoader
+) => {
+  const productIds = new Set<string>();
+  ordersData.forEach((order) => {
+    collectProductIds(order?.order_items, productIds);
+    collectProductIds(order?.items, productIds);
+  });
+
+  const productMap = await loader.loadProducts(productIds);
+
+  let enriched = ordersData.map((order) => {
+    const {
+      order_items,
+      items: rawStoredItems,
+      total,
+      user,
+      metadata,
+      notes,
+      message,
+      instructions,
+      ...rest
+    } = order as Record<string, unknown> & {
+      id?: string;
+      order_items?: unknown;
+      items?: unknown;
+      total?: unknown;
+      user?: Record<string, unknown> | null;
+      metadata?: unknown;
+      notes?: unknown;
+      message?: unknown;
+      instructions?: unknown;
+    };
+    const sourceItems =
+      Array.isArray(rawStoredItems) && rawStoredItems.length
+        ? rawStoredItems
+        : Array.isArray(order_items)
+          ? order_items
+          : [];
+    const items = mapOrderItems(sourceItems, productMap);
+    const metadataObject = coerceMetadataObject(metadata);
+    const prepAssignment = metadataObject?.prepAssignment
+      ? coerceMetadataObject(metadataObject.prepAssignment)
+      : null;
+    const paymentMetadata = metadataObject?.payment
+      ? coerceMetadataObject(metadataObject.payment)
+      : null;
+    return {
+      ...rest,
+      id: rest.id ?? order.id ?? null,
+      total: normalizeNumber(total),
+      items,
+      itemsCount: countOrderItems(items),
+      user: withDecryptedUserNames(user ?? null),
+      metadata: metadata ?? null,
+      notes: toTrimmedString(notes) ?? null,
+      message: toTrimmedString(message) ?? null,
+      instructions: toTrimmedString(instructions) ?? null,
+      queuedByStaffId: toTrimmedString(prepAssignment?.staffId) ?? null,
+      queuedByStaffName: toTrimmedString(prepAssignment?.staffName) ?? null,
+      queuedPaymentReference: toTrimmedString(paymentMetadata?.reference) ?? null,
+      queuedPaymentReferenceType: toTrimmedString(paymentMetadata?.referenceType) ?? null,
+    };
+  });
+
+  if (!enriched.length) {
+    return enriched;
+  }
+
+  const orderIds = enriched
+    .map((order) => order.id)
+    .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+  const { ticketMap, codeMap } = await loader.loadTicketsAndCodes(orderIds);
+
+  enriched = enriched.map((order) => {
+    const orderId = typeof order.id === 'string' ? order.id : null;
+    return {
+      ...order,
+      ticketCode: orderId ? ticketMap.get(orderId) || null : null,
+      shortCode: orderId ? codeMap.get(orderId) || null : null,
+    };
+  });
+
+  return enriched;
+};
+
+const buildSqliteInClause = (values: string[], prefix: string) => {
+  const placeholders = values.map((_, index) => `:${prefix}${index}`);
+  const bindings: Record<string, string> = {};
+  values.forEach((value, index) => {
+    bindings[`:${prefix}${index}`] = value;
+  });
+  return { placeholders, bindings };
+};
+
+type SqliteOrderRow = {
+  id: string;
+  userId?: string | null;
+  orderNumber?: string | null;
+  status?: string | null;
+  total?: number | null;
+  currency?: string | null;
+  items?: unknown;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  queuedPaymentMethod?: string | null;
+  tipAmount?: number | null;
+  tipPercent?: number | null;
+  metadata?: unknown;
+  notes?: unknown;
+  message?: unknown;
+  instructions?: unknown;
+  user_clientId?: string | null;
+  user_email?: string | null;
+  user_firstNameEncrypted?: string | null;
+  user_firstNameIv?: string | null;
+  user_firstNameTag?: string | null;
+  user_firstNameSalt?: string | null;
+  user_lastNameEncrypted?: string | null;
+  user_lastNameIv?: string | null;
+  user_lastNameTag?: string | null;
+  user_lastNameSalt?: string | null;
+  user_phoneEncrypted?: string | null;
+  user_phoneIv?: string | null;
+  user_phoneTag?: string | null;
+  user_phoneSalt?: string | null;
+};
+
+const parseOrderItemsColumn = (value: unknown) => {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
+
+const buildLocalOrderUser = (row: SqliteOrderRow) => {
+  const userPayload = {
+    firstNameEncrypted: row.user_firstNameEncrypted ?? null,
+    firstNameIv: row.user_firstNameIv ?? null,
+    firstNameTag: row.user_firstNameTag ?? null,
+    firstNameSalt: row.user_firstNameSalt ?? null,
+    lastNameEncrypted: row.user_lastNameEncrypted ?? null,
+    lastNameIv: row.user_lastNameIv ?? null,
+    lastNameTag: row.user_lastNameTag ?? null,
+    lastNameSalt: row.user_lastNameSalt ?? null,
+    phoneEncrypted: row.user_phoneEncrypted ?? null,
+    phoneIv: row.user_phoneIv ?? null,
+    phoneTag: row.user_phoneTag ?? null,
+    phoneSalt: row.user_phoneSalt ?? null,
+    clientId: row.user_clientId ?? null,
+    email: row.user_email ?? null,
+  };
+  const hasData = Object.values(userPayload).some((value) => Boolean(value));
+  return hasData ? userPayload : null;
+};
+
+const loadLocalOrderItems = async (orderIds: string[]) => {
+  if (!orderIds.length) {
+    return new Map<string, Array<Record<string, unknown>>>();
+  }
+  const { placeholders, bindings } = buildSqliteInClause(orderIds, 'order');
+  const rows = await sqlite.all<{
+    orderId?: string | null;
+    id?: string | null;
+    productId?: string | null;
+    quantity?: number | null;
+    price?: number | null;
+  }>(
+    `SELECT orderId, id, productId, quantity, price FROM order_items WHERE orderId IN (${placeholders.join(',')})`,
+    bindings
+  );
+  const map = new Map<string, Array<Record<string, unknown>>>();
+  rows.forEach((row) => {
+    if (!row.orderId) {
+      return;
+    }
+    const normalized: Record<string, unknown> = {
+      id: row.id ?? null,
+      productId: row.productId ?? null,
+      quantity: row.quantity ?? null,
+      price: row.price ?? null,
+    };
+    const current = map.get(row.orderId) ?? [];
+    current.push(normalized);
+    map.set(row.orderId, current);
+  });
+  return map;
+};
+
+const sqliteOrdersLoader: OrdersDataLoader = {
+  loadProducts: async (productIds) => {
+    if (!productIds.size) {
+      return new Map();
+    }
+    const values = Array.from(productIds);
+    const { placeholders, bindings } = buildSqliteInClause(values, 'prod');
+    const rows = await sqlite.all<{
+      id?: string | null;
+      productId?: string | null;
+      name?: string | null;
+      category?: string | null;
+      subcategory?: string | null;
+    }>(
+      `SELECT id, productId, name, category, subcategory
+       FROM products
+       WHERE id IN (${placeholders.join(',')}) OR productId IN (${placeholders.join(',')})`,
+      bindings
+    );
+    const map = new Map<string, ProductRecord>();
+    rows.forEach((row) => {
+      const record: ProductRecord = {
+        id: row.id ?? row.productId ?? null,
+        name: row.name ?? null,
+        category: row.category ?? null,
+        subcategory: row.subcategory ?? null,
+      };
+      if (row.id) {
+        map.set(String(row.id), record);
+      }
+      if (row.productId) {
+        map.set(String(row.productId), record);
+      }
+    });
+    return map;
+  },
+  loadTicketsAndCodes: async (orderIds) => {
+    if (!orderIds.length) {
+      return { ticketMap: new Map(), codeMap: new Map() };
+    }
+    const { placeholders, bindings } = buildSqliteInClause(orderIds, 'ticket');
+    const [tickets, codes] = await Promise.all([
+      sqlite.all<{ orderId?: string | null; ticketCode?: string | null }>(
+        `SELECT orderId, ticketCode FROM tickets WHERE orderId IN (${placeholders.join(',')})`,
+        bindings
+      ),
+      sqlite.all<{ orderId?: string | null; code?: string | null }>(
+        `SELECT orderId, code FROM order_codes WHERE orderId IN (${placeholders.join(',')})`,
+        bindings
+      ),
+    ]);
+    return {
+      ticketMap: new Map(
+        tickets.filter((ticket) => ticket.orderId).map((ticket) => [String(ticket.orderId), ticket.ticketCode ?? null])
+      ),
+      codeMap: new Map(
+        codes.filter((code) => code.orderId).map((code) => [String(code.orderId), code.code ?? null])
+      ),
+    };
+  },
+};
+
+const supabaseOrdersLoader: OrdersDataLoader = {
+  loadProducts: async (productIds) => {
+    if (!productIds.size) {
+      return new Map();
+    }
+    const { data: products, error } = await supabaseAdmin
+      .from(PRODUCTS_TABLE)
+      .select('id,name,category,subcategory')
+      .in('id', Array.from(productIds));
+    if (error) {
+      console.error('Error fetching products for orders:', error);
+      return new Map();
+    }
+    return new Map(
+      (products ?? [])
+        .filter((product) => product?.id)
+        .map((product) => [String(product.id), product as ProductRecord])
+    );
+  },
+  loadTicketsAndCodes: async (orderIds) => {
+    if (!orderIds.length) {
+      return { ticketMap: new Map(), codeMap: new Map() };
+    }
+    const [{ data: tickets, error: ticketsError }, { data: codes, error: codesError }] = await Promise.all([
+      supabaseAdmin.from(TICKETS_TABLE).select('"orderId","ticketCode"').in('orderId', orderIds),
+      supabaseAdmin.from(ORDER_CODES_TABLE).select('"orderId",code').in('orderId', orderIds),
+    ]);
+
+    if (ticketsError) {
+      console.error('Error fetching tickets:', ticketsError);
+    }
+    if (codesError) {
+      console.error('Error fetching order codes:', codesError);
+    }
+
+    return {
+      ticketMap: new Map((tickets ?? []).map((ticket) => [ticket.orderId, ticket.ticketCode ?? null])),
+      codeMap: new Map((codes ?? []).map((code) => [code.orderId, code.code ?? null])),
+    };
+  },
+};
+
+const loadOrdersFromSupabase = async (status: string | null) => {
+  const orderSelectFields = [
+    'id',
+    '"userId"',
+    '"orderNumber"',
+    'status',
+    'total',
+    'currency',
+    '"items"',
+    '"createdAt"',
+    '"updatedAt"',
+    '"queuedPaymentMethod"',
+    '"tipAmount"',
+    '"tipPercent"',
+    '"metadata"',
+    '"notes"',
+    '"message"',
+    '"instructions"',
+  ];
+  if (ORDER_CLIENT_ID_COLUMN) {
+    orderSelectFields.push(`clientId:${ORDER_CLIENT_ID_COLUMN}`);
+  }
+  orderSelectFields.push(
+    [
+      'user:users(',
+      [
+        '"firstNameEncrypted"',
+        '"firstNameIv"',
+        '"firstNameTag"',
+        '"firstNameSalt"',
+        '"lastNameEncrypted"',
+        '"lastNameIv"',
+        '"lastNameTag"',
+        '"lastNameSalt"',
+        '"phoneEncrypted"',
+        '"phoneIv"',
+        '"phoneTag"',
+        '"phoneSalt"',
+        '"clientId"',
+        '"email"',
+      ].join(','),
+      ')',
+    ].join('')
+  );
+  orderSelectFields.push(`order_items:${ORDER_ITEMS_TABLE}(id,"productId",quantity,price)`);
+
+  let query = supabaseAdmin
+    .from(ORDERS_TABLE)
+    .select(orderSelectFields.join(','))
+    .order('createdAt', { ascending: false })
+    .limit(MAX_RESULTS);
+
+  if (status) {
+    query = query.eq('status', status);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const ordersData = (
+    Array.isArray(data) ? data.filter((row) => !!row && typeof row === 'object' && !('error' in row)) : []
+  ) as Array<Record<string, unknown>>;
+
+  return mapOrdersPayload(ordersData, supabaseOrdersLoader);
+};
+
+const loadOrdersFromSqlite = async (status: string | null) => {
+  const bindings: Record<string, string | number> = { ':limit': MAX_RESULTS };
+  const conditions: string[] = [];
+  if (status) {
+    conditions.push('o.status = :status');
+    bindings[':status'] = status;
+  }
+  const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const rows = await sqlite.all<SqliteOrderRow>(
+    `SELECT
+      o.id,
+      o.userId,
+      o.orderNumber,
+      o.status,
+      o.total,
+      o.currency,
+      o.items,
+      o.createdAt,
+      o.updatedAt,
+      o.queuedPaymentMethod,
+      o.tipAmount,
+      o.tipPercent,
+      o.metadata,
+      o.notes,
+      o.message,
+      o.instructions,
+      u.clientId AS user_clientId,
+      u.email AS user_email,
+      u.firstNameEncrypted AS user_firstNameEncrypted,
+      u.firstNameIv AS user_firstNameIv,
+      u.firstNameTag AS user_firstNameTag,
+      u.firstNameSalt AS user_firstNameSalt,
+      u.lastNameEncrypted AS user_lastNameEncrypted,
+      u.lastNameIv AS user_lastNameIv,
+      u.lastNameTag AS user_lastNameTag,
+      u.lastNameSalt AS user_lastNameSalt,
+      u.phoneEncrypted AS user_phoneEncrypted,
+      u.phoneIv AS user_phoneIv,
+      u.phoneTag AS user_phoneTag,
+      u.phoneSalt AS user_phoneSalt
+    FROM orders o
+    LEFT JOIN users u ON u.id = o.userId
+    ${whereClause}
+    ORDER BY o.createdAt DESC
+    LIMIT :limit`,
+    bindings
+  );
+
+  if (!rows.length) {
+    return [];
+  }
+
+  const orderIds = rows.map((row) => row.id);
+  const orderItemsMap = await loadLocalOrderItems(orderIds);
+
+  const normalizedRows = rows.map((row) => {
+    const payload: Record<string, unknown> = {
+      id: row.id,
+      userId: row.userId ?? null,
+      orderNumber: row.orderNumber ?? null,
+      status: row.status ?? null,
+      total: row.total ?? null,
+      currency: row.currency ?? null,
+      items: parseOrderItemsColumn(row.items),
+      createdAt: row.createdAt ?? null,
+      updatedAt: row.updatedAt ?? null,
+      queuedPaymentMethod: row.queuedPaymentMethod ?? null,
+      tipAmount: row.tipAmount ?? null,
+      tipPercent: row.tipPercent ?? null,
+      metadata: row.metadata ?? null,
+      notes: row.notes ?? null,
+      message: row.message ?? null,
+      instructions: row.instructions ?? null,
+      order_items: orderItemsMap.get(row.id) ?? [],
+      user: buildLocalOrderUser(row),
+    };
+    if (!payload.clientId && row.user_clientId) {
+      payload.clientId = row.user_clientId;
+    }
+    return payload;
+  });
+
+  return mapOrdersPayload(normalizedRows, sqliteOrdersLoader);
+};
+
 const ensureProducts = async (items: IncomingOrderItem[]) => {
   const productIds = Array.from(new Set(items.map((item) => item.productId))).filter(Boolean);
   if (!productIds.length) {
@@ -484,186 +951,25 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
 
-  const orderSelectFields = [
-    'id',
-    '"userId"',
-    '"orderNumber"',
-    'status',
-    'total',
-    'currency',
-    '"items"',
-    '"createdAt"',
-    '"updatedAt"',
-    '"queuedPaymentMethod"',
-    '"tipAmount"',
-    '"tipPercent"',
-    '"metadata"',
-    '"notes"',
-    '"message"',
-    '"instructions"',
-  ];
-    if (ORDER_CLIENT_ID_COLUMN) {
-      orderSelectFields.push(`clientId:${ORDER_CLIENT_ID_COLUMN}`);
-    }
-    orderSelectFields.push(
-      [
-        'user:users(',
-        [
-          '"firstNameEncrypted"',
-          '"firstNameIv"',
-          '"firstNameTag"',
-          '"firstNameSalt"',
-          '"lastNameEncrypted"',
-          '"lastNameIv"',
-          '"lastNameTag"',
-          '"lastNameSalt"',
-          '"phoneEncrypted"',
-          '"phoneIv"',
-          '"phoneTag"',
-          '"phoneSalt"',
-          '"clientId"',
-          '"email"',
-        ].join(','),
-        ')',
-      ].join('')
-    );
-    orderSelectFields.push(
-      `order_items:${ORDER_ITEMS_TABLE}(id,"productId",quantity,price)`
-    );
+    const preferSupabase = shouldPreferSupabase();
 
-    let query = supabaseAdmin
-      .from(ORDERS_TABLE)
-      .select(orderSelectFields.join(','))
-      .order('createdAt', { ascending: false })
-      .limit(MAX_RESULTS);
-
-    if (status) {
-      query = query.eq('status', status);
+    if (!preferSupabase) {
+      const localData = await loadOrdersFromSqlite(status);
+      return NextResponse.json({ success: true, data: localData });
     }
 
-    const { data, error } = await query;
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    const ordersData = (
-      Array.isArray(data) ? data.filter((row) => !!row && typeof row === 'object' && !('error' in row)) : []
-    ) as Array<Record<string, unknown>>;
-
-    const productIds = new Set<string>();
-    ordersData.forEach((order) => {
-      collectProductIds(order?.order_items, productIds);
-      collectProductIds(order?.items, productIds);
-    });
-
-    let productMap = new Map<string, ProductRecord>();
-    if (productIds.size > 0) {
-      const { data: products, error: productsError } = await supabaseAdmin
-        .from(PRODUCTS_TABLE)
-        .select('id,name,category,subcategory')
-        .in('id', Array.from(productIds));
-      if (productsError) {
-        console.error('Error fetching products for orders:', productsError);
-      } else if (products) {
-        productMap = new Map(
-          products
-            .filter((product) => product?.id)
-            .map((product) => [String(product.id), product as ProductRecord])
-        );
+    try {
+      const remoteData = await loadOrdersFromSupabase(status);
+      markSupabaseHealthy();
+      return NextResponse.json({ success: true, data: remoteData });
+    } catch (error) {
+      if (!isLikelyNetworkError(error)) {
+        throw error;
       }
+      markSupabaseFailure(error);
+      const localData = await loadOrdersFromSqlite(status);
+      return NextResponse.json({ success: true, data: localData });
     }
-
-    let enriched = ordersData.map((order) => {
-      const {
-        order_items,
-        items: rawStoredItems,
-        total,
-        user,
-        metadata,
-        notes,
-        message,
-        instructions,
-        ...rest
-      } = order as Record<
-        string,
-        unknown
-      > & {
-        id?: string;
-        order_items?: unknown;
-        items?: unknown;
-        total?: unknown;
-        user?: Record<string, unknown> | null;
-        metadata?: unknown;
-        notes?: unknown;
-        message?: unknown;
-        instructions?: unknown;
-      };
-      const sourceItems =
-        Array.isArray(rawStoredItems) && rawStoredItems.length
-          ? rawStoredItems
-          : Array.isArray(order_items)
-            ? order_items
-            : [];
-      const items = mapOrderItems(sourceItems, productMap);
-      const metadataObject = coerceMetadataObject(metadata);
-      const prepAssignment = metadataObject?.prepAssignment
-        ? coerceMetadataObject(metadataObject.prepAssignment)
-        : null;
-      const paymentMetadata = metadataObject?.payment
-        ? coerceMetadataObject(metadataObject.payment)
-        : null;
-      return {
-        ...rest,
-        id: rest.id ?? order.id ?? null,
-        total: normalizeNumber(total),
-        items,
-        itemsCount: countOrderItems(items),
-        user: withDecryptedUserNames(user ?? null),
-        metadata: metadata ?? null,
-        notes: toTrimmedString(notes) ?? null,
-        message: toTrimmedString(message) ?? null,
-        instructions: toTrimmedString(instructions) ?? null,
-        queuedByStaffId: toTrimmedString(prepAssignment?.staffId) ?? null,
-        queuedByStaffName: toTrimmedString(prepAssignment?.staffName) ?? null,
-        queuedPaymentReference: toTrimmedString(paymentMetadata?.reference) ?? null,
-        queuedPaymentReferenceType: toTrimmedString(paymentMetadata?.referenceType) ?? null,
-      };
-    });
-
-    if (enriched.length) {
-      const orderIds = enriched.map((order) => order.id);
-
-      const [{ data: tickets, error: ticketsError }, { data: codes, error: codesError }] =
-        await Promise.all([
-          supabaseAdmin.from(TICKETS_TABLE).select('"orderId","ticketCode"').in('orderId', orderIds),
-          supabaseAdmin.from(ORDER_CODES_TABLE).select('"orderId",code').in('orderId', orderIds),
-        ]);
-
-      if (ticketsError) {
-        console.error('Error fetching tickets:', ticketsError);
-      }
-      if (codesError) {
-        console.error('Error fetching order codes:', codesError);
-      }
-
-      const ticketMap = new Map(
-        (tickets ?? []).map((ticket) => [ticket.orderId, ticket.ticketCode ?? null])
-      );
-      const codeMap = new Map((codes ?? []).map((code) => [code.orderId, code.code ?? null]));
-
-      enriched = enriched.map((order) => ({
-        ...order,
-        ticketCode: ticketMap.get(order.id) || null,
-        shortCode: codeMap.get(order.id) || null,
-      }));
-    }
-
-    markSupabaseHealthy();
-    return NextResponse.json({
-      success: true,
-      data: enriched,
-    });
   } catch (error) {
     if (isLikelyNetworkError(error)) {
       markSupabaseFailure(error);
