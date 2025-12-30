@@ -53,6 +53,16 @@ const randomPackagePrice = () => {
   return rounded;
 };
 
+const normalize = (value?: string | null) => value?.trim().toLowerCase() ?? '';
+
+const slugify = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-');
+
 const FALLBACK_PACKAGES: MenuItem[] = [
   {
     id: 'pkg-1-cafe-mexicano-panqué',
@@ -100,6 +110,56 @@ const FALLBACK_PACKAGES: MenuItem[] = [
   },
 ];
 
+const buildFallbackVariantEntries = (): MenuItem[] =>
+  FALLBACK_BEVERAGES.flatMap((beverage) =>
+    beverage.sizes.map((size, index) => {
+      const normalizedSize = size as { id?: string | null; label: string; price: number };
+      const sizeId = normalizedSize.id?.trim() || slugify(normalizedSize.label) || `size-${index}`;
+      return {
+        id: `${beverage.productId}::${sizeId}`,
+        productId: beverage.productId,
+        label: `${beverage.label} · ${normalizedSize.label}`,
+        category: beverage.category,
+        subcategory: beverage.subcategory,
+        price: normalizedSize.price,
+        calories: null,
+        sizeId,
+        sizeLabel: normalizedSize.label,
+      };
+    })
+  );
+
+const FALLBACK_VARIANT_ENTRIES = buildFallbackVariantEntries();
+
+const FALLBACK_VARIANT_MAP = new Map<string, MenuItem[]>();
+FALLBACK_VARIANT_ENTRIES.forEach((entry) => {
+  const key = normalize(entry.productId);
+  const existing = FALLBACK_VARIANT_MAP.get(key);
+  if (existing) {
+    existing.push(entry);
+  } else {
+    FALLBACK_VARIANT_MAP.set(key, [entry]);
+  }
+});
+
+const FALLBACK_LABEL_MAP = new Map(
+  FALLBACK_BEVERAGES.map((beverage) => [normalize(beverage.productId), beverage.label])
+);
+
+const FALLBACK_SIZE_ORDER = new Map<string, Map<string, number>>();
+FALLBACK_BEVERAGES.forEach((beverage) => {
+  const orderMap = new Map<string, number>();
+  beverage.sizes.forEach((size, index) => {
+    if (typeof size.label === 'string') {
+      orderMap.set(normalize(size.label), index);
+    }
+  });
+  FALLBACK_SIZE_ORDER.set(normalize(beverage.productId), orderMap);
+});
+
+const buildVariantKey = (item: MenuItem) =>
+  `${normalize(item.productId)}::${normalize(item.sizeLabel ?? '')}`;
+
 const BEVERAGE_KEYWORDS = [
   'bebida',
   'drink',
@@ -135,8 +195,6 @@ const FOOD_KEYWORDS = [
   'galleta',
 ];
 const PACKAGE_KEYWORDS = ['paquete', 'paquetes', 'combo', 'kit', 'box', 'use', 'bundle', 'pack'];
-
-const normalize = (value?: string | null) => value?.trim().toLowerCase() ?? '';
 
 const parsePrice = (value: unknown): number | null => {
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -195,14 +253,6 @@ type SizeOption = {
   label: string;
   price: number | null;
 };
-
-const slugify = (value: string) =>
-  value
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-');
 
 const coerceSizeOptions = (value: unknown): SizeOption[] => {
   if (Array.isArray(value)) {
@@ -367,29 +417,40 @@ export function useMenuOptions() {
     const products = catalog?.products ?? [];
     const entries = products.flatMap(mapProductToMenuItems);
     const deduped = dedupeMenuItems(entries);
-    const seenProductIds = new Set(deduped.map((item) => normalize(item.productId)));
-    const fallbackBeverages = FALLBACK_BEVERAGES.flatMap((beverage) =>
-      beverage.sizes.map((size, index) => {
-        const normalizedSize = size as { id?: string | null; label: string; price: number };
-        const sizeId = normalizedSize.id?.trim() || slugify(normalizedSize.label) || `size-${index}`;
-        return {
-          id: `${beverage.productId}::${sizeId}`,
-          productId: beverage.productId,
-          label: `${beverage.label} · ${normalizedSize.label}`,
-          category: beverage.category,
-          subcategory: beverage.subcategory,
-          price: normalizedSize.price,
-          calories: null,
-          sizeId,
-          sizeLabel: normalizedSize.label,
-        };
-      })
-    ).filter((item) => !seenProductIds.has(normalize(item.productId)));
-    const seenLabels = new Set([...deduped, ...fallbackBeverages].map((item) => normalize(item.label)));
+    const existingVariantKeys = new Set(deduped.map((item) => buildVariantKey(item)));
+    const fallbackBeverages = FALLBACK_VARIANT_ENTRIES.filter(
+      (item) => !existingVariantKeys.has(buildVariantKey(item))
+    );
+    const augmented = [...deduped, ...fallbackBeverages];
+
+    const groupedByProduct = new Map<string, MenuItem[]>();
+    augmented.forEach((item) => {
+      const key = normalize(item.productId);
+      const group = groupedByProduct.get(key);
+      if (group) {
+        group.push(item);
+      } else {
+        groupedByProduct.set(key, [item]);
+      }
+    });
+
+    const normalizedVariants = augmented.filter((item) => {
+      const key = normalize(item.productId);
+      const group = groupedByProduct.get(key) ?? [];
+      const hasLabeledSizes = group.some((entry) =>
+        Boolean(entry.sizeLabel && entry.sizeLabel.trim())
+      );
+      if (hasLabeledSizes) {
+        return Boolean(item.sizeLabel && item.sizeLabel.trim());
+      }
+      return true;
+    });
+
+    const seenLabels = new Set(normalizedVariants.map((item) => normalize(item.label)));
     const fallbackPackages = FALLBACK_PACKAGES.filter(
       (pkg) => !seenLabels.has(normalize(pkg.label))
     );
-    return [...deduped, ...fallbackBeverages, ...fallbackPackages];
+    return [...normalizedVariants, ...fallbackPackages];
   }, [catalog]);
 
   const menuMap = useMemo(() => {
@@ -449,3 +510,24 @@ export function useMenuOptions() {
     refresh,
   };
 }
+
+export const getFallbackBeverageLabel = (productId: string) =>
+  FALLBACK_LABEL_MAP.get(normalize(productId)) ?? null;
+
+export const getFallbackSizeOrdering = (productId: string) =>
+  FALLBACK_SIZE_ORDER.get(normalize(productId)) ?? null;
+
+export const getFallbackVariantsForProduct = (productId: string) =>
+  FALLBACK_VARIANT_MAP.get(normalize(productId)) ?? null;
+
+export const getFallbackVariantById = (variantId?: string | null) => {
+  if (!variantId) {
+    return null;
+  }
+  const [productPart] = variantId.split('::');
+  const variants = FALLBACK_VARIANT_MAP.get(normalize(productPart));
+  if (!variants) {
+    return null;
+  }
+  return variants.find((variant) => variant.id === variantId) ?? null;
+};

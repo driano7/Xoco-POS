@@ -34,6 +34,7 @@ const MAX_COFFEES = LOYALTY_STAMPS_TARGET;
 
 interface CustomerLoyaltyCoffeesProps {
   count?: number | null;
+  rewardEarned?: boolean | null;
   customerName?: string | null;
   statusLabel?: string;
   subtitle?: string;
@@ -41,20 +42,21 @@ interface CustomerLoyaltyCoffeesProps {
 
 export function CustomerLoyaltyCoffees({
   count = 0,
+  rewardEarned = false,
   customerName,
   statusLabel = 'Programa activo',
   subtitle = 'Cada sello representa un consumo durante la semana',
 }: CustomerLoyaltyCoffeesProps) {
   const normalized = Math.max(0, Math.floor(count ?? 0));
-  const remainder = normalized % MAX_COFFEES;
-  const rewardEarned = normalized > 0 && remainder === 0;
-  const displayCount = rewardEarned ? MAX_COFFEES : remainder;
-  const remainingForReward = rewardEarned ? 0 : Math.max(0, MAX_COFFEES - displayCount);
+  const capped = Math.min(normalized, MAX_COFFEES);
+  const hasReward = Boolean(rewardEarned);
+  const displayCount = hasReward ? MAX_COFFEES : capped;
+  const remainingForReward = hasReward ? 0 : Math.max(0, MAX_COFFEES - capped);
   const displayName = customerName?.trim() || 'Cliente';
 
   return (
     <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#5c3025] via-[#7d4a30] to-[#b46f3c] p-6 text-sm text-white shadow-xl">
-      {rewardEarned && (
+      {hasReward && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/30">
           <div className="rounded-2xl bg-white/90 px-6 py-4 text-center text-[#5c3025] shadow-2xl">
             <p className="text-2xl">🎉</p>
@@ -95,7 +97,7 @@ export function CustomerLoyaltyCoffees({
       </div>
 
       <div className="mt-4 rounded-2xl border border-white/20 bg-black/10 px-4 py-3 text-center text-xs">
-        {rewardEarned
+        {hasReward
           ? `¡Llevan los ${MAX_COFFEES} sellos! Confirma el beneficio antes de reiniciar su conteo semanal.`
           : `Faltan ${remainingForReward} sellos para el Americano en cortesía.`}
       </div>

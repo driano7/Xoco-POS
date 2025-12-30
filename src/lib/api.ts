@@ -59,6 +59,7 @@ export interface OrderItemSummary {
   price?: number | null;
   sizeId?: string | null;
   sizeLabel?: string | null;
+  variantId?: string | null;
   packageId?: string | null;
   packageName?: string | null;
   metadata?: Record<string, unknown> | null;
@@ -211,6 +212,8 @@ export interface LoyaltyCustomer {
   favoriteBeverage?: string | null;
   favoriteFood?: string | null;
   loyaltyCoffees?: number | null;
+  rewardEarned?: boolean | null;
+  weeklyCoffeeCount?: number | null;
   lastNameEncrypted?: string | null;
 }
 

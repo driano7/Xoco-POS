@@ -32,7 +32,6 @@ import { supabaseAdmin } from '@/lib/supabase-server';
 const USERS_TABLE = process.env.SUPABASE_USERS_TABLE ?? 'users';
 const ORDERS_TABLE = process.env.SUPABASE_ORDERS_TABLE ?? 'orders';
 const RESERVATIONS_TABLE = process.env.SUPABASE_RESERVATIONS_TABLE ?? 'reservations';
-const LOYALTY_PUNCHES_TABLE = process.env.SUPABASE_LOYALTY_PUNCHES_TABLE ?? 'loyalty_points';
 
 const MAX_ROWS = Number(process.env.SUPABASE_STATS_LIMIT ?? 500);
 
@@ -51,29 +50,6 @@ const getWeekBounds = () => {
   const end = new Date(start);
   end.setDate(start.getDate() + 7);
   return { start, end };
-};
-
-const parsePunchDate = (value?: string | null) => {
-  if (!value) {
-    return null;
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-  // Support YYYY-MM-DD as well as full ISO timestamps.
-  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-    const [yearStr, monthStr, dayStr] = trimmed.split('-');
-    const year = Number(yearStr);
-    const month = Number(monthStr);
-    const day = Number(dayStr);
-    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
-      return null;
-    }
-    return new Date(year, month - 1, day);
-  }
-  const timestamp = Date.parse(trimmed);
-  return Number.isFinite(timestamp) ? new Date(timestamp) : null;
 };
 
 export async function GET() {
@@ -180,9 +156,8 @@ export async function GET() {
       favoriteHotDrink?: string | null;
       favoriteFood?: string | null;
       weeklyCoffeeCount?: number | null;
+      rewardEarned?: boolean | null;
     }> = [];
-
-    let loyaltyPunches: Record<string, number> = {};
 
     if (userIds.length) {
       const { data, error } = await supabaseAdmin
@@ -201,6 +176,7 @@ export async function GET() {
             '"favoriteHotDrink"',
             '"favoriteFood"',
             '"weeklyCoffeeCount"',
+            '"rewardEarned"',
           ].join(',')
         )
         .in('id', userIds);
@@ -211,30 +187,6 @@ export async function GET() {
         users = data as unknown as typeof users;
       }
 
-      const { data: punches, error: punchesError } = await supabaseAdmin
-        .from(LOYALTY_PUNCHES_TABLE)
-        .select('"userId","createdAt",points')
-        .in('userId', userIds);
-
-      if (punchesError) {
-        console.error('Error fetching loyalty punches:', punchesError);
-      } else if (punches) {
-        const { start, end } = getWeekBounds();
-        loyaltyPunches = punches.reduce<Record<string, number>>((acc, punch) => {
-          if (typeof punch.userId !== 'string') {
-            return acc;
-          }
-          const punchTimestamp = parsePunchDate((punch as { createdAt?: string | null }).createdAt ?? null);
-          if (punchTimestamp && punchTimestamp >= start && punchTimestamp < end) {
-            const pointsValue =
-              typeof (punch as { points?: number }).points === 'number'
-                ? Number((punch as { points?: number }).points)
-                : 1;
-            acc[punch.userId] = (acc[punch.userId] ?? 0) + Math.max(1, pointsValue);
-          }
-          return acc;
-        }, {});
-      }
     }
 
     const userMap = new Map(users.map((user) => [user.id, user]));
@@ -243,8 +195,8 @@ export async function GET() {
       .map((record) => {
         const user = userMap.get(record.userId);
         const favoriteBeverage = user?.favoriteColdDrink ?? user?.favoriteHotDrink ?? null;
-        const fallbackWeeklyCount = Math.max(0, Number(user?.weeklyCoffeeCount ?? 0));
-        const loyaltyCount = Math.max(fallbackWeeklyCount, loyaltyPunches[record.userId] ?? 0);
+        const loyaltyCount = Math.max(0, Number(user?.weeklyCoffeeCount ?? 0));
+        const rewardEarned = Boolean(user?.rewardEarned);
 
         return {
           userId: record.userId,
@@ -260,6 +212,8 @@ export async function GET() {
           firstNameEncrypted: user?.firstNameEncrypted || null,
           lastNameEncrypted: user?.lastNameEncrypted || null,
           loyaltyCoffees: loyaltyCount,
+          weeklyCoffeeCount: loyaltyCount,
+          rewardEarned,
           favoriteBeverage,
           favoriteFood: user?.favoriteFood ?? null,
         };

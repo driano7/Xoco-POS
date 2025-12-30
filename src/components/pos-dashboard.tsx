@@ -42,7 +42,11 @@ import { OrdersPanel } from '@/components/orders-panel';
 import { NewOrderModal } from '@/components/order/new-order-modal';
 import { CustomerLoyaltyCoffees } from '@/components/customer-loyalty-coffees';
 import { SearchableDropdown } from '@/components/searchable-dropdown';
-import { useMenuOptions, type MenuItem } from '@/hooks/use-menu-options';
+import {
+  useMenuOptions,
+  type MenuItem,
+  getFallbackVariantById,
+} from '@/hooks/use-menu-options';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { isPublicSaleOrder } from '@/lib/loyalty';
 import type {
@@ -1471,6 +1475,7 @@ type ScannedCustomer = {
   phone?: string | null;
   email?: string | null;
   loyaltyCoffees?: number | null;
+  rewardEarned?: boolean | null;
 };
 
 type ScannedPayment = {
@@ -2477,6 +2482,7 @@ export function PosDashboard() {
         beverage: customer.beverage ?? loyaltyRecord.favoriteBeverage ?? '',
         food: customer.food ?? loyaltyRecord.favoriteFood ?? '',
         loyaltyCoffees: loyaltyRecord.loyaltyCoffees ?? null,
+        rewardEarned: loyaltyRecord.rewardEarned ?? null,
         email: customer.email ?? loyaltyRecord.email ?? null,
       };
     },
@@ -4835,6 +4841,7 @@ type OrderItemEntry = {
   subcategory?: string | null;
   sizeId?: string | null;
   sizeLabel?: string | null;
+  variantId?: string | null;
   packageId?: string | null;
   packageName?: string | null;
   metadata?: Record<string, unknown> | null;
@@ -5270,7 +5277,19 @@ const OrderItemsSection = ({ items }: { items: OrderItemEntry[] }) => (
               toTrimmedString(record.variant)
             );
           })();
-          const resolvedSize = item.sizeLabel ?? metadataSize ?? null;
+          let resolvedSize = item.sizeLabel ?? metadataSize ?? null;
+          if (!resolvedSize) {
+            const metadataRecord = parseMetadataRecord(item.metadata);
+            const variantIdFromMetadata =
+              (metadataRecord && toTrimmedString(metadataRecord.variantId)) || null;
+            const fallbackVariant =
+              getFallbackVariantById(
+                variantIdFromMetadata ?? item.variantId ?? item.sizeId ?? null
+              ) ?? null;
+            if (!resolvedSize && fallbackVariant?.sizeLabel) {
+              resolvedSize = fallbackVariant.sizeLabel;
+            }
+          }
           const productTypeLabel = `${isBeverage ? 'Bebida' : 'Alimento'} (tipo de producto)`;
           const descriptorRole = isBeverage ? 'tipo de bebida' : 'categoría';
           const descriptorLabel = descriptor ? `${descriptor} (${descriptorRole})` : null;
@@ -5504,6 +5523,7 @@ const OrderDetailContent = ({
   const beverageSize = extractBeverageSizeFromItems(hydratedItems);
   const loyaltyDisplayName = loyaltyCustomer ? getCustomerDisplayName(loyaltyCustomer) : null;
   const loyaltyCoffees = loyaltyCustomer?.loyaltyCoffees ?? null;
+  const loyaltyRewardEarned = Boolean(loyaltyCustomer?.rewardEarned);
   const showPaymentSections = !isInPrepQueue && order.status !== 'completed';
   const isPublicSale = isPublicSaleOrder(order);
   const shouldShowLoyaltyPanel = showPaymentSections && !isPublicSale;
@@ -5653,6 +5673,7 @@ const OrderDetailContent = ({
               </p>
               <CustomerLoyaltyCoffees
                 count={loyaltyCoffees ?? 0}
+                rewardEarned={loyaltyRewardEarned}
                 customerName={loyaltyDisplayName ?? customerName ?? 'Cliente'}
                 statusLabel="Cafés acumulados"
                 subtitle="Actualizamos el sello al registrar bebidas."
@@ -6130,6 +6151,7 @@ const CustomerDetailContent = ({
       {preferenceMessage && <p className={preferenceMessageClass}>{preferenceMessage}</p>}
       <CustomerLoyaltyCoffees
         count={coffees}
+        rewardEarned={customer.rewardEarned ?? false}
         customerName={name}
         statusLabel="Programa semanal"
         subtitle="Sello por cada bebida registrada en POS"
@@ -8284,6 +8306,7 @@ const ScannedCustomerContent = ({
       {preferenceMessage && <p className={preferenceMessageClass}>{preferenceMessage}</p>}
       <CustomerLoyaltyCoffees
         count={loyaltyCount}
+        rewardEarned={customer.rewardEarned ?? false}
         customerName={fallbackName}
         statusLabel="Programa semanal"
         subtitle="Sello por cada bebida registrada en POS"

@@ -35,9 +35,19 @@ const PUBLIC_SALE_IDENTIFIERS = [resolvedPublicClientId, resolvedPublicUserId]
   .map((value) => value.trim().toLowerCase())
   .filter((value) => Boolean(value));
 
-export const LOYALTY_STAMPS_TARGET = 7;
+const parseEnvList = (value?: string | null) =>
+  (value ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => Boolean(entry));
+
+const resolvedMaxStamps =
+  Number(process.env.LOYALTY_MAX_STAMPS ?? process.env.NEXT_PUBLIC_LOYALTY_TARGET ?? 7) || 7;
+
+export const LOYALTY_STAMPS_TARGET = Math.max(1, resolvedMaxStamps);
 export const PUBLIC_SALE_CLIENT_ID = resolvedPublicClientId;
 export const PUBLIC_SALE_USER_ID = resolvedPublicUserId;
+export const LOYALTY_ELIGIBLE_PRODUCTS = parseEnvList(process.env.LOYALTY_ELIGIBLE_PRODUCTS);
 
 export const isPublicSaleIdentifier = (value?: string | null) => {
   if (!value) {
@@ -65,4 +75,52 @@ export const isPublicSaleOrder = (order: PublicSaleOrderInput) => {
   }
   const candidates = [order.clientId, order.userId, order.user?.clientId, order.user?.id];
   return candidates.some((identifier) => isPublicSaleIdentifier(identifier));
+};
+
+const normalizedEligibleProducts = new Set(
+  LOYALTY_ELIGIBLE_PRODUCTS.map((productId) => productId.toLowerCase())
+);
+
+export const isLoyaltyEligibleProduct = (productId?: string | null) => {
+  if (!productId) {
+    return false;
+  }
+  const normalized = productId.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return normalizedEligibleProducts.has(normalized);
+};
+
+export const getCurrentWeekBounds = () => {
+  const now = new Date();
+  const day = now.getDay(); // 0 (Sun) - 6 (Sat)
+  const diff = day === 0 ? 6 : day - 1;
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - diff);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 7);
+  return { start, end };
+};
+
+export const normalizeWeeklyPunches = (totalPunches: number) => {
+  const sanitized = Math.max(0, Math.floor(totalPunches));
+  if (sanitized >= LOYALTY_STAMPS_TARGET) {
+    return { weeklyCoffeeCount: 0, rewardEarned: true };
+  }
+  return { weeklyCoffeeCount: sanitized, rewardEarned: false };
+};
+
+export const addWeeklyPunches = (currentCount: number, punchesToAdd: number) => {
+  const sanitizedCurrent = Math.max(0, Math.floor(currentCount));
+  const sanitizedPunches = Math.max(0, Math.floor(punchesToAdd));
+  if (sanitizedPunches === 0) {
+    return {
+      weeklyCoffeeCount: sanitizedCurrent,
+      rewardEarned: false,
+    };
+  }
+  const total = sanitizedCurrent + sanitizedPunches;
+  return normalizeWeeklyPunches(total);
 };

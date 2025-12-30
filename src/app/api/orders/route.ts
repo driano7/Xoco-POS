@@ -262,6 +262,7 @@ const mapOrderItems = (rawItems: unknown, productMap?: Map<string, ProductRecord
       sizeLabel,
       packageId,
       packageName,
+      variantId: toTrimmedString(item?.variantId) ?? null,
       metadata,
     };
   });
@@ -287,6 +288,7 @@ type IncomingOrderItem = {
   sizeLabel: string | null;
   packageId: string | null;
   packageName: string | null;
+  variantId: string | null;
   metadata: Record<string, unknown> | null;
 };
 
@@ -330,6 +332,12 @@ const normalizeOrderItems = (rawItems: unknown): IncomingOrderItem[] => {
         item?.metadata && typeof item.metadata === 'object'
           ? (item.metadata as Record<string, unknown>)
           : null;
+      const variantId =
+        toTrimmedString(item?.variantId) ??
+        toTrimmedString(item?.variant_id) ??
+        (metadata && typeof metadata.variantId === 'string'
+          ? toTrimmedString(metadata.variantId)
+          : null);
 
       return {
         productId,
@@ -342,6 +350,7 @@ const normalizeOrderItems = (rawItems: unknown): IncomingOrderItem[] => {
         sizeLabel,
         packageId,
         packageName,
+        variantId,
         metadata,
       };
     })
@@ -1054,6 +1063,7 @@ export async function POST(request: Request) {
       price: item.price,
       sizeId: item.sizeId,
       sizeLabel: item.sizeLabel,
+      variantId: item.variantId,
       packageId: item.packageId,
       packageName: item.packageName,
       metadata: item.metadata ?? null,
@@ -1098,10 +1108,53 @@ export async function POST(request: Request) {
         payload.instructions ??
         (typeof payload.metadata === 'string' ? payload.metadata : null)
     );
-    const metadataPayload =
+    let metadataPayload =
       payload.metadata && typeof payload.metadata === 'object'
-        ? (payload.metadata as Record<string, unknown>)
+        ? { ...(payload.metadata as Record<string, unknown>) }
         : null;
+
+    const paymentMetadata =
+      metadataPayload?.payment && typeof metadataPayload.payment === 'object'
+        ? (metadataPayload.payment as Record<string, unknown>)
+        : null;
+    const legacyPaymentMetadata =
+      metadataPayload?.paymentReference && typeof metadataPayload.paymentReference === 'object'
+        ? (metadataPayload.paymentReference as Record<string, unknown>)
+        : null;
+    const paymentReference =
+      toTrimmedString(payload.paymentReference) ??
+      toTrimmedString(paymentMetadata?.reference) ??
+      toTrimmedString(legacyPaymentMetadata?.value) ??
+      toTrimmedString(legacyPaymentMetadata?.reference) ??
+      null;
+    const paymentReferenceType =
+      toTrimmedString(payload.paymentReferenceType) ??
+      toTrimmedString(paymentMetadata?.referenceType) ??
+      toTrimmedString(legacyPaymentMetadata?.type) ??
+      null;
+
+    if (paymentReference) {
+      orderRecord.queuedPaymentReference = paymentReference;
+    }
+    if (paymentReferenceType) {
+      orderRecord.queuedPaymentReferenceType = paymentReferenceType;
+    }
+
+    if (!metadataPayload && paymentReference) {
+      metadataPayload = {};
+    }
+    if (metadataPayload && paymentReference) {
+      const paymentObject = {
+        reference: paymentReference,
+        referenceType: paymentReferenceType,
+        method: paymentMethod,
+      };
+      if (metadataPayload.payment && typeof metadataPayload.payment === 'object') {
+        metadataPayload.payment = { ...(metadataPayload.payment as Record<string, unknown>), ...paymentObject };
+      } else {
+        metadataPayload.payment = paymentObject;
+      }
+    }
 
     if (metadataPayload) {
       orderRecord.metadata = metadataPayload;

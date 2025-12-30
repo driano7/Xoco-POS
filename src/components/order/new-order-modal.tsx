@@ -30,7 +30,13 @@
 
 import { useState, useEffect, useMemo, useCallback, type FormEvent } from 'react';
 import { SearchableDropdown } from '@/components/searchable-dropdown';
-import { useMenuOptions, type MenuItem } from '@/hooks/use-menu-options';
+import {
+  useMenuOptions,
+  type MenuItem,
+  getFallbackBeverageLabel,
+  getFallbackSizeOrdering,
+  getFallbackVariantsForProduct,
+} from '@/hooks/use-menu-options';
 import { useCartStore, type CartItem } from '@/hooks/use-cart-store';
 import type { LoyaltyCustomer } from '@/lib/api';
 import {
@@ -227,11 +233,8 @@ export function NewOrderModal({
   const [paymentReference, setPaymentReference] = useState('');
   const [loyaltyMatch, setLoyaltyMatch] = useState<LoyaltyCustomer | null>(null);
   const [loyaltyBaseCoffees, setLoyaltyBaseCoffees] = useState<number | null>(null);
-  const [pendingSizeSelection, setPendingSizeSelection] = useState<{
-    productId: string;
-    label: string;
-    options: MenuItem[];
-  } | null>(null);
+  const [availableBeverageSizes, setAvailableBeverageSizes] = useState<MenuItem[]>([]);
+  const [selectedBeverageSize, setSelectedBeverageSize] = useState<string | null>(null);
   const beverageOptionIds = useMemo(
     () => new Set(beverageOptions.map((item) => item.id)),
     [beverageOptions]
@@ -317,18 +320,6 @@ export function NewOrderModal({
     }
   }, [paymentMethod]);
 
-  const gatherVariantsForProduct = useCallback(
-    (menuItem: MenuItem) => {
-      if (!menuItem?.productId) {
-        return [];
-      }
-      return allMenuItems
-        .filter((candidate) => candidate.productId === menuItem.productId)
-        .sort((a, b) => (a.sizeLabel ?? '').localeCompare(b.sizeLabel ?? '', 'es-MX'));
-    },
-    [allMenuItems]
-  );
-
   const addMenuItemToCart = useCallback(
     (menuItem: MenuItem) => {
       if (!menuItem) {
@@ -371,51 +362,14 @@ export function NewOrderModal({
     [addItem, getBeverageUnitsInCart, isPublicSaleContext, loyaltyBaseCoffees, resolveItemKind]
   );
 
-  const promptSizeSelectionIfNeeded = useCallback(
-    (menuItem: MenuItem) => {
-      const resolvedKind = resolveItemKind(menuItem.id);
-      if (!isMenuItemBeverage(menuItem, resolvedKind)) {
-        return false;
-      }
-      const variants = gatherVariantsForProduct(menuItem);
-      if (variants.length <= 1) {
-        return false;
-      }
-      const uniqueSizeLabels = new Set(
-        variants.map((variant) => (variant.sizeLabel ?? '').trim()).filter(Boolean)
-      );
-      if (uniqueSizeLabels.size <= 1) {
-        return false;
-      }
-      const normalizedLabel = menuItem.label.split('·')[0]?.trim() || menuItem.label;
-      setPendingSizeSelection({
-        productId: menuItem.productId,
-        label: normalizedLabel,
-        options: variants,
-      });
-      return true;
-    },
-    [gatherVariantsForProduct, resolveItemKind]
-  );
-
   const handleQuickAdd = (productId: string) => {
     const menuItem = getMenuItemById(productId);
     if (!menuItem) {
       setFormError('No encontramos ese producto en el menú.');
       return;
     }
-    if (promptSizeSelectionIfNeeded(menuItem)) {
-      return;
-    }
     addMenuItemToCart(menuItem);
   };
-
-  const handleSizeSelection = (menuItem: MenuItem) => {
-    addMenuItemToCart(menuItem);
-    setPendingSizeSelection(null);
-  };
-
-  const handleCloseSizePicker = () => setPendingSizeSelection(null);
 
   const handleDropdownSelection = (setter: (value: string | null) => void) => (selectedId: string | null) => {
     setter(selectedId);
@@ -424,6 +378,123 @@ export function NewOrderModal({
       setter(null);
     }
   };
+
+  const beverageBaseOptions = useMemo(() => {
+    const grouped = new Map<
+      string,
+      {
+        option: MenuItem;
+        label: string;
+      }
+    >();
+    beverageOptions.forEach((option) => {
+      const fallbackLabel = getFallbackBeverageLabel(option.productId);
+      const baseLabelFromOption = option.label?.split('·')[0]?.trim() || option.label || option.productId;
+      const resolvedLabel = fallbackLabel ?? baseLabelFromOption ?? option.productId ?? 'Bebida';
+      const isPriceOnly = /^\s*\$\d/.test(resolvedLabel);
+      const displayLabel = isPriceOnly
+        ? fallbackLabel ?? option.productId ?? 'Bebida'
+        : resolvedLabel;
+      const existing = grouped.get(option.productId);
+      const shouldReplace =
+        !existing ||
+        (/^\s*\$\d/.test(existing.label ?? '') && displayLabel && !/^\s*\$\d/.test(displayLabel));
+      if (!existing || shouldReplace) {
+        grouped.set(option.productId, {
+          option,
+          label: displayLabel,
+        });
+      }
+    });
+    return Array.from(grouped.entries()).map(([productId, entry]) => ({
+      ...entry.option,
+      id: productId,
+      label: entry.label,
+      sizeId: null,
+      sizeLabel: null,
+    }));
+  }, [beverageOptions]);
+
+  const handleBeverageSelection = (productId: string | null) => {
+    setSelectedBeverage(productId);
+    setSelectedBeverageSize(null);
+    if (!productId) {
+      setAvailableBeverageSizes([]);
+      return;
+    }
+    const fallbackVariants = getFallbackVariantsForProduct(productId);
+    if (fallbackVariants && fallbackVariants.length) {
+      const normalizedFallback = fallbackVariants.map((variant) => ({ ...variant }));
+      setAvailableBeverageSizes(normalizedFallback);
+      return;
+    }
+    const orderMap = getFallbackSizeOrdering(productId);
+    const normalizeSizeLabel = (value?: string | null) =>
+      value?.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim() ?? '';
+    const variants = beverageOptions
+      .filter((item) => item.productId === productId)
+      .sort((a, b) => {
+        if (orderMap) {
+          const aOrder = orderMap.get(normalizeSizeLabel(a.sizeLabel)) ?? orderMap.size;
+          const bOrder = orderMap.get(normalizeSizeLabel(b.sizeLabel)) ?? orderMap.size;
+          if (aOrder !== bOrder) {
+            return aOrder - bOrder;
+          }
+        }
+        return (a.sizeLabel ?? '').localeCompare(b.sizeLabel ?? '', 'es-MX');
+      });
+    if (!variants.length) {
+      setAvailableBeverageSizes([]);
+      setFormError('No encontramos los tamaños disponibles para esta bebida.');
+      return;
+    }
+    const labeledVariants = variants.filter((variant) =>
+      Boolean(variant.sizeLabel && variant.sizeLabel.trim())
+    );
+    const variantsToUse = labeledVariants.length ? labeledVariants : variants;
+    const deduped = new Map<string, MenuItem>();
+    variantsToUse.forEach((variant) => {
+      const key = normalizeSizeLabel(variant.sizeLabel) || variant.id;
+      if (!key && variantsToUse.length > 1) {
+        return;
+      }
+      const existing = deduped.get(key);
+      const candidatePrice = variant.price ?? 0;
+      const existingPrice = existing?.price ?? 0;
+      const shouldReplace = !existing || candidatePrice > existingPrice;
+      if (shouldReplace) {
+        deduped.set(key, variant);
+      }
+    });
+    const normalizedVariants = Array.from(deduped.values());
+    if (normalizedVariants.length <= 1) {
+      handleQuickAdd(normalizedVariants[0].id);
+      setSelectedBeverage(null);
+      setAvailableBeverageSizes([]);
+      return;
+    }
+    setAvailableBeverageSizes(normalizedVariants);
+  };
+
+  const handleBeverageSizeSelection = (variantId: string | null) => {
+    setSelectedBeverageSize(variantId);
+    if (!variantId) {
+      return;
+    }
+    handleQuickAdd(variantId);
+    setSelectedBeverage(null);
+    setSelectedBeverageSize(null);
+    setAvailableBeverageSizes([]);
+  };
+
+  const beverageSizeDropdownOptions = useMemo(
+    () =>
+      availableBeverageSizes.map((variant) => ({
+        ...variant,
+        label: variant.sizeLabel ?? variant.label,
+      })),
+    [availableBeverageSizes]
+  );
 
   const canSubmit = items.length > 0 && !isSubmitting && Boolean(paymentMethod);
   const showPaymentReferenceField = Boolean(paymentMethod && paymentMethod !== 'efectivo');
@@ -624,10 +695,10 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
     const referenceType = normalizedReference ? detectReferenceType(normalizedReference) : null;
     const metadataPayload: Record<string, unknown> = {};
     if (normalizedReference) {
-      metadataPayload.paymentReference = {
-        value: normalizedReference,
+      metadataPayload.payment = {
+        reference: normalizedReference,
         method: paymentMethod,
-        type: referenceType,
+        referenceType,
       };
     }
     const trimmedNotes = notes.trim();
@@ -636,7 +707,15 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
       status: 'pending',
       currency: 'MXN',
       items: items.map((item) => {
-        const metadata = item.variantId ? { variantId: item.variantId } : undefined;
+        const metadata: Record<string, unknown> = {};
+        if (item.variantId) {
+          metadata.variantId = item.variantId;
+        }
+        if (item.sizeLabel) {
+          metadata.size = item.sizeLabel;
+          metadata.sizeLabel = item.sizeLabel;
+        }
+        const normalizedMetadata = Object.keys(metadata).length ? metadata : undefined;
         return {
           productId: item.productId,
           name: item.name,
@@ -646,7 +725,7 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
           price: item.price,
           sizeId: item.sizeId,
           sizeLabel: item.sizeLabel,
-          metadata,
+          metadata: normalizedMetadata,
         };
       }),
       totals: {
@@ -723,13 +802,25 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
         <SearchableDropdown
           id="new-order-beverage"
           label="Bebidas"
-          options={beverageOptions}
+          options={beverageBaseOptions}
           placeholder="Busca por nombre o categoría"
           helperText="Selecciona y se agregará automáticamente al carrito"
           value={selectedBeverage}
-          onChange={handleDropdownSelection(setSelectedBeverage)}
+          onChange={handleBeverageSelection}
           allowClear
         />
+        {availableBeverageSizes.length > 1 && (
+          <SearchableDropdown
+            id="new-order-beverage-size"
+            label="Tamaño"
+            options={beverageSizeDropdownOptions}
+            placeholder="Selecciona el tamaño para agregarlo"
+            helperText="Elige mediano, grande u otra preparación disponible."
+            value={selectedBeverageSize}
+            onChange={handleBeverageSizeSelection}
+            allowClear
+          />
+        )}
         <SearchableDropdown
           id="new-order-food"
           label="Alimentos"
@@ -1120,53 +1211,6 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
         </button>
       </div>
     </form>
-    {pendingSizeSelection && (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 py-10">
-        <div className="w-full max-w-md space-y-4 rounded-3xl bg-white p-6 text-primary-900 shadow-2xl dark:bg-[#1b1612] dark:text-white">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.35em] text-primary-500">Selecciona tamaño</p>
-              <h3 className="text-xl font-semibold">{pendingSizeSelection.label}</h3>
-            </div>
-            <button
-              type="button"
-              className="text-xs font-semibold uppercase tracking-[0.3em] text-primary-500 hover:underline"
-              onClick={handleCloseSizePicker}
-            >
-              Cerrar
-            </button>
-          </div>
-          <p className="text-sm text-[var(--brand-muted)]">
-            Esta bebida tiene varias preparaciones. Elige el tamaño correcto antes de agregarla.
-          </p>
-          <div className="space-y-3">
-            {pendingSizeSelection.options.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => handleSizeSelection(option)}
-                className="flex w-full items-center justify-between rounded-2xl border border-primary-100/70 px-4 py-3 text-left text-sm transition hover:border-primary-400 dark:border-white/10"
-              >
-                <div>
-                  <p className="font-semibold">
-                    {option.sizeLabel ?? 'Único'}
-                  </p>
-                  <p className="text-xs text-[var(--brand-muted)]">{option.label}</p>
-                </div>
-                <span className="font-semibold">{formatCurrency(option.price)}</span>
-              </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={handleCloseSizePicker}
-            className="brand-button--ghost w-full text-xs"
-          >
-            Cancelar
-          </button>
-        </div>
-      </div>
-    )}
     </>
   );
 }

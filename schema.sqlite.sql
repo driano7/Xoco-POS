@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS users (
   favoriteHotDrink TEXT,
   favoriteFood TEXT,
   weeklyCoffeeCount INTEGER NOT NULL DEFAULT 0,
+  rewardEarned INTEGER NOT NULL DEFAULT 0,
   monthlyMetrics TEXT,
   userSegment TEXT,
   acquisitionChannel TEXT,

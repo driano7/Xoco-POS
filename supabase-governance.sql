@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS public.users (
 
   -- Programa de lealtad
   "weeklyCoffeeCount" INTEGER NOT NULL DEFAULT 0,
+  "rewardEarned" BOOLEAN NOT NULL DEFAULT FALSE,
   "monthlyMetrics" JSONB,
 
   -- Segmentación

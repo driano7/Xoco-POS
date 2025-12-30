@@ -219,51 +219,67 @@ async function pushSqliteChanges(table, since) {
   }
   const updatedColumn = table.updatedColumn;
   const rows = await all(
-    `SELECT * FROM ${table.name} WHERE ${updatedColumn} IS NOT NULL AND ${updatedColumn} > ?`,
+    `SELECT * FROM ${table.name} WHERE ${updatedColumn} IS NOT NULL AND ${updatedColumn} > ?`
+      .trim(),
     [since ?? '1970-01-01']
   );
 
+  let latestSuccessfulPush = since;
   for (const row of rows) {
-    const { data: remoteRow } = await supabase
+    const { data: remoteRow, error: lookupError } = await supabase
       .from(table.name)
       .select(`${updatedColumn}`)
       .eq(table.pk, row[table.pk])
       .maybeSingle();
 
+    if (lookupError) {
+      console.warn(
+        `Failed to inspect remote ${table.name} row ${row[table.pk]}: ${lookupError.message}`
+      );
+      break;
+    }
+
     if (remoteRow && remoteRow[updatedColumn] && remoteRow[updatedColumn] >= row[updatedColumn]) {
+      latestSuccessfulPush = row[updatedColumn];
       continue; // Supabase has newer data; skip.
     }
 
     const { error } = await supabase.from(table.name).upsert(row, { onConflict: table.pk });
     if (error) {
       console.warn(`Failed to push ${table.name} row ${row[table.pk]}: ${error.message}`);
+      break;
     }
+    latestSuccessfulPush = row[updatedColumn];
   }
-  return rows.length ? rows[rows.length - 1][updatedColumn] : since;
+  return latestSuccessfulPush;
 }
 
 async function main() {
   await ensureSyncStateTable();
   for (const table of SYNC_TABLES) {
-    table.columnSet = await getColumnSet(table.name);
-    const state = await getSyncState(table.name);
     console.log(`\n⏳ Syncing ${table.name}...`);
+    try {
+      table.columnSet = await getColumnSet(table.name);
+      const state = await getSyncState(table.name);
 
-    const pulledRows = await pullFromSupabase(table, state.lastSupabasePull);
-    await upsertRows(pulledRows, table);
-    const lastSupabasePull =
-      table.fullRefresh || !table.updatedColumn || pulledRows.length === 0
-        ? state.lastSupabasePull
-        : pulledRows[pulledRows.length - 1][table.updatedColumn];
+      const pulledRows = await pullFromSupabase(table, state.lastSupabasePull);
+      await upsertRows(pulledRows, table);
+      const lastSupabasePull =
+        table.fullRefresh || !table.updatedColumn || pulledRows.length === 0
+          ? state.lastSupabasePull
+          : pulledRows[pulledRows.length - 1][table.updatedColumn];
 
-    const lastSqlitePush = await pushSqliteChanges(table, state.lastSqlitePush);
+      const lastSqlitePush = await pushSqliteChanges(table, state.lastSqlitePush);
 
-    await updateSyncState(table.name, { lastSupabasePull, lastSqlitePush });
-    console.log(
-      `✅ ${table.name} - pulled ${pulledRows.length} rows, pushed ${
-        lastSqlitePush === state.lastSqlitePush ? 0 : 'changes'
-      }`
-    );
+      await updateSyncState(table.name, { lastSupabasePull, lastSqlitePush });
+      console.log(
+        `✅ ${table.name} - pulled ${pulledRows.length} rows, pushed ${
+          lastSqlitePush === state.lastSqlitePush ? 0 : 'changes'
+        }`
+      );
+    } catch (err) {
+      console.error(`❌ ${table.name} sync failed: ${err.message}`);
+    }
   }
   sqliteDb.close();
 }
