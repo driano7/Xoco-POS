@@ -52,6 +52,9 @@
     "paths": {
       "@/*": [
         "./src/*"
+      ],
+      "@xoco/ui": [
+        "./packages/xoco-ui/src/index"
       ]
     }
   },
