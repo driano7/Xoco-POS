@@ -1,31 +1,3 @@
-/*
- * --------------------------------------------------------------------
- *  Xoco POS — Point of Sale System
- *  Software Property of Xoco Café
- *  Copyright (c) 2025 Xoco Café
- *  Principal Developer: Donovan Riaño
- *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at:
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
- *
- *  --------------------------------------------------------------------
- *  PROPIEDAD DEL SOFTWARE — XOCO CAFÉ.
- *  Sistema Xoco POS — Punto de Venta.
- *  Desarrollador Principal: Donovan Riaño.
- *
- *  Este archivo está licenciado bajo Apache License 2.0.
- *  Consulta el archivo LICENSE en la raíz del proyecto para más detalles.
- * --------------------------------------------------------------------
- */
-
 -- =====================================================================
 --  XocoCafe - Esquema base para Supabase/PostgreSQL
 --  Este script alinea la estructura de la base de datos con los modelos
@@ -113,7 +85,6 @@ CREATE TABLE IF NOT EXISTS public.users (
 
   -- Programa de lealtad
   "weeklyCoffeeCount" INTEGER NOT NULL DEFAULT 0,
-  "rewardEarned" BOOLEAN NOT NULL DEFAULT FALSE,
   "monthlyMetrics" JSONB,
 
   -- Segmentación
@@ -908,6 +879,35 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ---------------------------------------------------------------------
+-- Turnos de caja y ventas (corte NOM-251)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.turnos (
+  id SERIAL PRIMARY KEY,
+  usuario_id TEXT NOT NULL REFERENCES public.staff_users(id) ON DELETE RESTRICT,
+  fecha_apertura TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  fecha_cierre TIMESTAMPTZ,
+  saldo_inicial NUMERIC(12,2) NOT NULL DEFAULT 0,
+  total_ventas_efectivo NUMERIC(12,2) NOT NULL DEFAULT 0,
+  total_gastos_efectivo NUMERIC(12,2) NOT NULL DEFAULT 0,
+  estado TEXT NOT NULL DEFAULT 'abierto' CHECK (estado IN ('abierto','cerrado'))
+);
+
+CREATE INDEX IF NOT EXISTS turnos_usuario_idx ON public.turnos (usuario_id);
+CREATE INDEX IF NOT EXISTS turnos_estado_idx ON public.turnos (estado);
+
+CREATE TABLE IF NOT EXISTS public.ventas (
+  id SERIAL PRIMARY KEY,
+  turno_id INTEGER REFERENCES public.turnos(id) ON DELETE SET NULL,
+  total NUMERIC(12,2) NOT NULL,
+  metodo_pago TEXT NOT NULL CHECK (metodo_pago IN ('efectivo','tarjeta','transferencia')),
+  monto_recibido NUMERIC(12,2),
+  cambio_entregado NUMERIC(12,2),
+  fecha TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS ventas_turno_id_idx ON public.ventas (turno_id);
 
 DROP TRIGGER IF EXISTS trg_order_items_enqueue ON public.order_items;
 CREATE TRIGGER trg_order_items_enqueue
@@ -1728,3 +1728,169 @@ begin
     );
   end if;
 end$$;
+
+
+CREATE OR REPLACE FUNCTION public.enforce_address_limit()
+RETURNS trigger AS $$
+BEGIN
+  IF (
+    SELECT COUNT(*) FROM public.addresses WHERE "userId" = NEW."userId"
+  ) >= 3 THEN
+    RAISE EXCEPTION 'Solo puedes registrar 3 direcciones por usuario';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_addresses_limit ON public.addresses;
+CREATE TRIGGER trg_addresses_limit
+BEFORE INSERT ON public.addresses
+FOR EACH ROW EXECUTE FUNCTION public.enforce_address_limit();
+
+
+-- Datos adicionales por pedido: cliente público y contacto
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS customer_name text,
+  ADD COLUMN IF NOT EXISTS pos_customer_id text DEFAULT 'AAA-1111',
+  ADD COLUMN IF NOT EXISTS shipping_contact_phone text,
+  ADD COLUMN IF NOT EXISTS shipping_contact_is_whatsapp boolean DEFAULT false;
+
+-- Si userId era NOT NULL, permite nulos para órdenes invitadas
+ALTER TABLE public.orders
+  ALTER COLUMN "userId" DROP NOT NULL;
+
+-- Backfill de números capturados en el JSON original
+UPDATE public.orders
+SET shipping_contact_phone = items->'shipping'->>'contactPhone',
+    shipping_contact_is_whatsapp = COALESCE((items->'shipping'->>'isWhatsapp')::boolean, false)
+WHERE items ? 'shipping'
+  AND (shipping_contact_phone IS NULL OR shipping_contact_phone = '');
+
+ALTER TABLE orders
+  ADD COLUMN IF NOT EXISTS shipping_address_id text,
+  ADD COLUMN IF NOT EXISTS delivery_tip_amount numeric(10,2),
+  ADD COLUMN IF NOT EXISTS delivery_tip_percent numeric(5,2);
+
+DO $$
+BEGIN
+  ALTER TABLE orders
+    ADD CONSTRAINT orders_shipping_address_id_fkey
+    FOREIGN KEY (shipping_address_id) REFERENCES addresses(id) ON DELETE SET NULL;
+EXCEPTION
+  WHEN duplicate_object THEN
+    NULL;
+END $$;
+
+
+DO $$
+DECLARE fk_name TEXT;
+BEGIN
+  SELECT constraint_name
+  INTO fk_name
+  FROM information_schema.table_constraints
+  WHERE table_schema='public'
+    AND table_name='shipments'
+    AND constraint_type='FOREIGN KEY'
+    AND constraint_name ILIKE 'shipments%address%fkey'
+  LIMIT 1;
+
+  IF fk_name IS NOT NULL THEN
+    EXECUTE format('ALTER TABLE public.shipments DROP CONSTRAINT %I', fk_name);
+  END IF;
+END$$;
+
+
+-- Normaliza todo lo que no sea UUID
+UPDATE public.shipments
+SET "addressId" = NULL
+WHERE "addressId" IS NOT NULL
+  AND NOT (
+    trim("addressId"::text) ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  );
+
+-- (opcional) verifica si quedó algún valor inválido
+SELECT DISTINCT "addressId"
+FROM public.shipments
+WHERE "addressId" IS NOT NULL
+  AND NOT (
+    "addressId"::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  );
+
+
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS subtotal numeric(12,2),
+  ADD COLUMN IF NOT EXISTS vat_amount numeric(12,2),
+  ADD COLUMN IF NOT EXISTS vat_percent numeric(5,2);
+
+-- opcional: llena los valores existentes a partir del JSON totals
+UPDATE public.orders
+SET subtotal = COALESCE(subtotal, (totals->>'subtotal')::numeric),
+    vat_amount = COALESCE(vat_amount, (totals->>'vat')::numeric),
+    vat_percent = COALESCE(vat_percent, (totals->>'vatPercent')::numeric);
+
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS "deliveryTipAmount" numeric(12,2),
+  ADD COLUMN IF NOT EXISTS "deliveryTipPercent" numeric(5,2);
+
+-- si también quieres tenerlas accesibles en minúsculas para SQL plano
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS delivery_tip_amount numeric(12,2),
+  ADD COLUMN IF NOT EXISTS delivery_tip_percent numeric(5,2);
+
+-- opcional: sincroniza ambos pares mientras definimos cuál conservar
+UPDATE public.orders
+SET "deliveryTipAmount" = COALESCE("deliveryTipAmount", delivery_tip_amount),
+    "deliveryTipPercent" = COALESCE("deliveryTipPercent", delivery_tip_percent),
+    delivery_tip_amount = COALESCE(delivery_tip_amount, "deliveryTipAmount"),
+    delivery_tip_percent = COALESCE(delivery_tip_percent, "deliveryTipPercent");
+
+
+ALTER TABLE public.users
+  ADD COLUMN IF NOT EXISTS "loyaltyActivatedAt" timestamptz;
+
+UPDATE public.users u
+SET "loyaltyActivatedAt" = lp.created_at
+FROM (
+  SELECT "userId", MIN("createdAt") AS created_at
+  FROM public.loyalty_points
+  GROUP BY "userId"
+) lp
+WHERE u.id = lp."userId"
+  AND u."loyaltyActivatedAt" IS NULL;
+
+-- 1. Bitácora de Higiene (Baños, Cocina, Área Común)
+CREATE TABLE IF NOT EXISTS public.hygiene_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "area" TEXT NOT NULL CHECK (area IN ('BAÑO', 'COCINA', 'BARRA', 'MESAS')),
+  "staffId" TEXT REFERENCES public.staff_users(id),
+  "is_clean" BOOLEAN DEFAULT TRUE,
+  "supplies_refilled" BOOLEAN DEFAULT TRUE, -- Papel, jabón, gel
+  "observations" TEXT,
+  "createdAt" TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 2. Control de Plagas (Documentación NOM-251)
+CREATE TABLE IF NOT EXISTS public.pest_control_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "service_date" DATE NOT NULL,
+  "provider_name" TEXT,
+  "certificate_number" TEXT, -- Folio del certificado de fumigación
+  "next_service_date" DATE,
+  "staffId" TEXT REFERENCES public.staff_users(id),
+  "observations" TEXT,
+  "createdAt" TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3. Recetas (Unión Venta-Inventario)
+CREATE TABLE IF NOT EXISTS public.product_recipes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "productId" TEXT NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+  "inventoryItemId" TEXT NOT NULL REFERENCES public.inventory_items(id) ON DELETE CASCADE,
+  "quantityUsed" NUMERIC(12,3) NOT NULL, -- Gramos o ml
+  "createdAt" TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 4. Banderas de Stock para App de Clientes
+ALTER TABLE public.products 
+ADD COLUMN IF NOT EXISTS "is_low_stock" BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS "out_of_stock_reason" TEXT;

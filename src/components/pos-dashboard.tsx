@@ -42,6 +42,7 @@ import { OrdersPanel } from '@/components/orders-panel';
 import { NewOrderModal } from '@/components/order/new-order-modal';
 import { CustomerLoyaltyCoffees } from '@/components/customer-loyalty-coffees';
 import { SearchableDropdown } from '@/components/searchable-dropdown';
+import { SanitaryCompliancePanel } from '@/components/compliance/sanitary-compliance-panel';
 import {
   useMenuOptions,
   type MenuItem,
@@ -1920,6 +1921,7 @@ export function PosDashboard() {
     lastModified: null,
   });
   const [tipsInitialized, setTipsInitialized] = useState(false);
+  const [pestAlertMessage, setPestAlertMessage] = useState<string | null>(null);
 
   const refreshPublicSales = useCallback(async () => {
     setPublicSalesLoading(true);
@@ -3872,26 +3874,45 @@ const currentMonthMetrics = useMemo(() => {
               <>
                 <section className="card space-y-4 p-6">
                   <SmartScannerPanel onPayload={handleScannerPayload} onClose={handleCloseScanner} feedback={scannerFeedback} />
-                </section>
-                <div className="mt-2 flex justify-center">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleOpenPresetQr('lightning', 'howlingnote18@walletofsatoshi.com')
-                    }
-                    className="inline-flex items-center gap-3 rounded-2xl border border-primary-100/70 bg-white/80 px-5 py-3 text-sm font-semibold text-primary-700 transition hover:border-primary-300 hover:text-primary-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
-                  >
-                    <span aria-hidden="true">⚡️</span>
-                    QR Lightning (howlingnote18@walletofsatoshi.com)
-                  </button>
-                </div>
-              </>
-            )}
+            </section>
+            <div className="mt-2 flex justify-center">
+              <button
+                type="button"
+                onClick={() =>
+                  handleOpenPresetQr('lightning', 'howlingnote18@walletofsatoshi.com')
+                }
+                className="inline-flex items-center gap-3 rounded-2xl border border-primary-100/70 bg-white/80 px-5 py-3 text-sm font-semibold text-primary-700 transition hover:border-primary-300 hover:text-primary-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
+              >
+                <span aria-hidden="true">⚡️</span>
+                QR Lightning (howlingnote18@walletofsatoshi.com)
+              </button>
+            </div>
+          </>
+        )}
 
-            <OrdersPanel
-              hiddenOrderIds={hiddenQueueOrderIds}
-              prepTasks={visibleActivePrep}
-              onSelect={(order) => setDetail({ type: 'order', data: order })}
+        {pestAlertMessage && (
+          <div className="rounded-3xl border border-danger-200 bg-danger-50/70 px-4 py-3 text-sm font-semibold text-danger-700 shadow-sm dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
+            {pestAlertMessage}
+          </div>
+        )}
+
+        <section className="card space-y-6 p-6">
+          <div className="flex items-center justify-between">
+            <p className="badge">Checklist de higiene y COFEPRIS</p>
+            <p className="text-xs text-[var(--brand-muted)]">Se guarda staffId, fecha y hora automáticamente.</p>
+          </div>
+          <SanitaryCompliancePanel
+            staffId={user.id}
+            staffName={staffDisplayName}
+            branchId={user.branchId}
+            onPestAlertChange={(message) => setPestAlertMessage(message)}
+          />
+        </section>
+
+        <OrdersPanel
+          hiddenOrderIds={hiddenQueueOrderIds}
+          prepTasks={visibleActivePrep}
+          onSelect={(order) => setDetail({ type: 'order', data: order })}
               onSelectPrepTask={(task) => setDetail({ type: 'prep', data: task })}
             />
 

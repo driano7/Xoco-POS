@@ -207,8 +207,38 @@ const coerceMetadataObject = (value: unknown): Record<string, unknown> | null =>
   return null;
 };
 
+const parseStoredOrderItems = (rawItems: unknown): Array<Record<string, unknown>> => {
+  if (Array.isArray(rawItems)) {
+    return rawItems as Array<Record<string, unknown>>;
+  }
+  if (typeof rawItems === 'string') {
+    try {
+      const parsed = JSON.parse(rawItems);
+      if (Array.isArray(parsed)) {
+        return parsed as Array<Record<string, unknown>>;
+      }
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        Array.isArray((parsed as { items?: Array<Record<string, unknown>> }).items)
+      ) {
+        return (parsed as { items: Array<Record<string, unknown>> }).items;
+      }
+    } catch {
+      return [];
+    }
+  }
+  if (rawItems && typeof rawItems === 'object') {
+    const record = rawItems as { items?: unknown };
+    if (Array.isArray(record.items)) {
+      return record.items as Array<Record<string, unknown>>;
+    }
+  }
+  return [];
+};
+
 const mapOrderItems = (rawItems: unknown, productMap?: Map<string, ProductRecord>) => {
-  const items = Array.isArray(rawItems) ? rawItems : [];
+  const items = parseStoredOrderItems(rawItems);
   return items.map((item) => {
     const rawProductId = item?.productId ?? item?.product_id ?? null;
     const normalizedProductId =
@@ -217,7 +247,11 @@ const mapOrderItems = (rawItems: unknown, productMap?: Map<string, ProductRecord
         : typeof rawProductId === 'number' && Number.isFinite(rawProductId)
           ? String(rawProductId)
           : null;
-    const inlineDetails = {
+    const inlineDetails: {
+      name: string | null;
+      category: string | null;
+      subcategory: string | null;
+    } = {
       name: typeof item?.name === 'string' ? item.name : null,
       category: typeof item?.category === 'string' ? item.category : null,
       subcategory: typeof item?.subcategory === 'string' ? item.subcategory : null,
@@ -246,8 +280,18 @@ const mapOrderItems = (rawItems: unknown, productMap?: Map<string, ProductRecord
         ? (item.metadata as Record<string, unknown>)
         : null;
 
-    const productDetails =
-      item?.product ??
+    const safeProduct = item?.product && typeof item.product === 'object'
+      ? (item.product as Record<string, unknown>)
+      : null;
+
+    const productDetails: ProductRecord | null =
+      (safeProduct
+        ? ({
+            name: typeof safeProduct.name === 'string' ? safeProduct.name : null,
+            category: typeof safeProduct.category === 'string' ? safeProduct.category : null,
+            subcategory: typeof safeProduct.subcategory === 'string' ? safeProduct.subcategory : null,
+          } satisfies ProductRecord)
+        : null) ??
       (normalizedProductId ? productMap?.get(normalizedProductId) ?? null : null);
 
     return {

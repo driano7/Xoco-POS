@@ -575,6 +575,116 @@ export interface AdvancedMetricsPayload {
   marketing: MarketingInsights;
 }
 
+export type HygieneArea = 'BAÑO' | 'COCINA' | 'BARRA' | 'MESAS';
+
+export type HygieneChecklist = {
+  toilet?: boolean;
+  mirrors?: boolean;
+  dryFloor?: boolean;
+  soapRefill?: boolean;
+};
+
+export interface HygieneLogEntry {
+  id: string;
+  area: HygieneArea;
+  staffId?: string | null;
+  isClean: boolean;
+  suppliesRefilled: boolean;
+  observations?: string | null;
+  createdAt: string;
+}
+
+export interface HygieneChecklistSummary {
+  month: string;
+  entries: HygieneLogEntry[];
+  summary: {
+    total: number;
+    lastEntry: HygieneLogEntry | null;
+  };
+}
+
+export interface PestControlRecord {
+  id: string;
+  serviceDate: string;
+  providerName?: string | null;
+  certificateNumber?: string | null;
+  nextServiceDate?: string | null;
+  staffId?: string | null;
+  observations?: string | null;
+  createdAt: string;
+}
+
+export interface PestControlStatus {
+  latest: PestControlRecord | null;
+  daysSince: number | null;
+  alertMessage: string | null;
+  alert: boolean;
+}
+
+export interface PestControlPayload {
+  serviceDate: string;
+  providerName?: string;
+  certificateNumber?: string;
+  nextServiceDate?: string;
+  staffId?: string;
+  observations?: string;
+}
+
+export interface SmartInventoryEntry {
+  stockId?: string | null;
+  itemId: string;
+  name: string;
+  quantity: number;
+  minStock: number;
+  unit: string;
+  branchId: string;
+  isCritical: boolean;
+  percentAvailable: number;
+}
+
+export interface SmartInventoryStatus {
+  entries: SmartInventoryEntry[];
+  lowStock: SmartInventoryEntry[];
+  zeroStock: SmartInventoryEntry[];
+}
+
+export type SmartInventoryActionRequest =
+  | {
+      action: 'ingress';
+      itemId: string;
+      quantity: number;
+      unitSize: number;
+      branchId?: string;
+      expiresAt?: string;
+      reference?: string;
+      staffId?: string;
+    }
+  | {
+      action: 'sale';
+      branchId?: string;
+      staffId?: string;
+      saleItems: Array<{ productId: string; quantity: number }>;
+    }
+  | {
+      action: 'status';
+    };
+
+export interface WasteLogEntry {
+  id: string;
+  organicBeveragesKg: number;
+  organicFoodsKg: number;
+  inorganicKg: number;
+  trashRemoved: boolean;
+  binsWashed: boolean;
+  branchId?: string | null;
+  staffId?: string | null;
+  createdAt: string;
+}
+
+export interface WasteLogHistory {
+  logs: WasteLogEntry[];
+}
+
 const API_BASE = process.env.NEXT_PUBLIC_POS_API_URL?.trim();
 
 const buildApiUrl = (
@@ -1074,4 +1184,156 @@ export interface TicketDetail {
     packageName?: string | null;
     metadata?: Record<string, unknown> | null;
   }>;
+}
+
+export async function fetchHygieneChecklist(month?: string): Promise<HygieneChecklistSummary> {
+  const url = buildApiUrl('/api/hygiene-checklist', month ? { month } : undefined);
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
+  if (!response.ok) {
+    throw new Error('No pudimos cargar la bitácora de higiene.');
+  }
+  const payload = (await response.json()) as { success: boolean; data?: HygieneChecklistSummary };
+  if (!payload.success || !payload.data) {
+    throw new Error('Respuesta inválida del checklist de higiene.');
+  }
+  return payload.data;
+}
+
+export async function submitHygieneChecklist(payload: {
+  area: HygieneArea;
+  isClean: boolean;
+  suppliesRefilled: boolean;
+  observations?: string;
+  staffId?: string;
+}): Promise<HygieneLogEntry> {
+  const url = buildApiUrl('/api/hygiene-checklist');
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(errorPayload?.error ?? 'No pudimos guardar el registro de higiene.');
+  }
+  const result = (await response.json()) as { success: boolean; data?: HygieneLogEntry };
+  if (!result.success || !result.data) {
+    throw new Error('Respuesta inválida al guardar el checklist.');
+  }
+  return result.data;
+}
+
+export async function downloadHygieneChecklistPdf(month: string): Promise<Blob> {
+  const url = buildApiUrl('/api/hygiene-checklist', { month, format: 'pdf' });
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok) {
+    throw new Error('No pudimos generar el PDF de higiene.');
+  }
+  return await response.blob();
+}
+
+export async function fetchPestControlStatus(): Promise<PestControlStatus> {
+  const url = buildApiUrl('/api/pest-control');
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
+  if (!response.ok) {
+    throw new Error('No pudimos cargar el control de plagas.');
+  }
+  const payload = (await response.json()) as { success: boolean; data?: PestControlStatus };
+  if (!payload.success || !payload.data) {
+    throw new Error('Respuesta inválida del módulo de plagas.');
+  }
+  return payload.data;
+}
+
+export async function savePestControlRecord(payload: PestControlPayload): Promise<PestControlRecord> {
+  const url = buildApiUrl('/api/pest-control');
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(errorPayload?.error ?? 'No pudimos registrar la fumigación.');
+  }
+  const result = (await response.json()) as { success: boolean; data?: PestControlRecord };
+  if (!result.success || !result.data) {
+    throw new Error('Respuesta inválida al guardar el certificado.');
+  }
+  return result.data;
+}
+
+export async function fetchSmartInventoryStatus(): Promise<SmartInventoryStatus> {
+  const url = buildApiUrl('/api/smart-inventory');
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
+  if (!response.ok) {
+    throw new Error('No pudimos cargar el inventario inteligente.');
+  }
+  const payload = (await response.json()) as { success: boolean; data?: SmartInventoryStatus };
+  if (!payload.success || !payload.data) {
+    throw new Error('Respuesta inválida del inventario inteligente.');
+  }
+  return payload.data;
+}
+
+export async function runSmartInventoryAction(
+  payload: SmartInventoryActionRequest
+): Promise<{ status: SmartInventoryStatus; result: unknown }> {
+  const url = buildApiUrl('/api/smart-inventory');
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(errorPayload?.error ?? 'No pudimos aplicar la acción de inventario.');
+  }
+  const result = (await response.json()) as {
+    success: boolean;
+    data?: { status: SmartInventoryStatus; result: unknown };
+  };
+  if (!result.success || !result.data) {
+    throw new Error('Respuesta inválida al actualizar inventario.');
+  }
+  return result.data;
+}
+
+export async function fetchWasteLogs(): Promise<WasteLogHistory> {
+  const url = buildApiUrl('/api/waste-logs');
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
+  if (!response.ok) {
+    throw new Error('No pudimos cargar el historial de residuos.');
+  }
+  const payload = (await response.json()) as { success: boolean; data?: WasteLogHistory };
+  if (!payload.success || !payload.data) {
+    throw new Error('Respuesta inválida del historial de residuos.');
+  }
+  return payload.data;
+}
+
+export async function submitWasteLog(payload: {
+  organicBeverages: number;
+  organicFoods: number;
+  inorganic: number;
+  trashRemoved: boolean;
+  binsWashed: boolean;
+  branchId?: string;
+  staffId?: string;
+}): Promise<WasteLogEntry> {
+  const url = buildApiUrl('/api/waste-logs');
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(errorPayload?.error ?? 'No pudimos guardar el cierre sanitario.');
+  }
+  const result = (await response.json()) as { success: boolean; data?: WasteLogEntry };
+  if (!result.success || !result.data) {
+    throw new Error('Respuesta inválida al guardar el cierre de residuos.');
+  }
+  return result.data;
 }
