@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS orders (
   sourceType TEXT DEFAULT 'pos',
   customer_name TEXT,
   pos_customer_id TEXT,
+  queuedPaymentMethod TEXT,
   shipping_contact_phone TEXT,
   shipping_contact_is_whatsapp INTEGER DEFAULT 0,
   createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

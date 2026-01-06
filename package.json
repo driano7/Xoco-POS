@@ -42,6 +42,7 @@
     "@zxing/browser": "^0.1.5",
     "@zxing/library": "^0.21.3",
     "bcryptjs": "^3.0.3",
+    "html-to-image": "^1.11.13",
     "next": "14.2.5",
     "nodemailer": "^7.0.11",
     "react": "18.2.0",

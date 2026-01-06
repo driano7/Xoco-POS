@@ -28,6 +28,7 @@
 
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-server';
+import { withDecryptedUserNames, type RawUserRecord } from '@/lib/customer-decrypt';
 
 const USERS_TABLE = process.env.SUPABASE_USERS_TABLE ?? 'users';
 const ORDERS_TABLE = process.env.SUPABASE_ORDERS_TABLE ?? 'orders';
@@ -143,58 +144,97 @@ export async function GET() {
     });
 
     const userIds = Array.from(statsMap.keys());
-    let users: Array<{
-      id: string;
-      email?: string | null;
-      clientId?: string | null;
-      city?: string | null;
-      country?: string | null;
-      lastActivityAt?: string | null;
-      firstNameEncrypted?: string | null;
-      lastNameEncrypted?: string | null;
-      favoriteColdDrink?: string | null;
-      favoriteHotDrink?: string | null;
-      favoriteFood?: string | null;
-      weeklyCoffeeCount?: number | null;
-      rewardEarned?: boolean | null;
-    }> = [];
+    let users: Array<
+      RawUserRecord & {
+        favoriteColdDrink?: string | null;
+        favoriteHotDrink?: string | null;
+        favoriteFood?: string | null;
+        weeklyCoffeeCount?: number | null;
+        rewardEarned?: boolean | null;
+      }
+    > = [];
 
-    if (userIds.length) {
+    const loadUsersWithFallback = async (
+      includeRewardEarned: boolean
+    ): Promise<typeof users> => {
+      if (!userIds.length) {
+        return [];
+      }
+      const baseFields = [
+        'id',
+        'email',
+        '"clientId"',
+        'city',
+        'country',
+        '"lastActivityAt"',
+        '"firstNameEncrypted"',
+        '"lastNameEncrypted"',
+        '"favoriteColdDrink"',
+        '"favoriteHotDrink"',
+        '"favoriteFood"',
+        '"weeklyCoffeeCount"',
+      ];
+      if (includeRewardEarned) {
+        baseFields.push('"rewardEarned"');
+      }
       const { data, error } = await supabaseAdmin
         .from(USERS_TABLE)
-        .select(
-          [
-            'id',
-            'email',
-            '"clientId"',
-            'city',
-            'country',
-            '"lastActivityAt"',
-            '"firstNameEncrypted"',
-            '"lastNameEncrypted"',
-            '"favoriteColdDrink"',
-            '"favoriteHotDrink"',
-            '"favoriteFood"',
-            '"weeklyCoffeeCount"',
-            '"rewardEarned"',
-          ].join(',')
-        )
+        .select(baseFields.join(','))
         .in('id', userIds);
 
       if (error) {
-        console.error('Error fetching users for loyalty stats:', error);
-      } else if (Array.isArray(data)) {
-        users = data as unknown as typeof users;
+        const message = (error.message ?? '').toLowerCase();
+        if (
+          includeRewardEarned &&
+          (error.code === '42703' || message.includes('rewardearned'))
+        ) {
+          console.warn(
+            'users.rewardEarned column missing in Supabase; continuing without reward flag.'
+          );
+          return loadUsersWithFallback(false);
+        }
+        throw error;
       }
 
+      return Array.isArray(data) ? (data as unknown as typeof users) : [];
+    };
+
+    if (userIds.length) {
+      try {
+        users = await loadUsersWithFallback(true);
+      } catch (error) {
+        const message =
+          error && typeof error === 'object' && 'message' in error
+            ? String((error as { message?: string }).message ?? '')
+            : '';
+        const code = (error as { code?: string | number }).code;
+        if (
+          (typeof code === 'string' && code === '42703') ||
+          message.toLowerCase().includes('rewardearned')
+        ) {
+          console.warn(
+            'users.rewardEarned column unavailable in Supabase; retrying without reward flag.'
+          );
+          users = await loadUsersWithFallback(false);
+        } else {
+          console.error('Error fetching users for loyalty stats:', error);
+          users = [];
+        }
+      }
     }
 
-    const userMap = new Map(users.map((user) => [user.id, user]));
+    const userMap = new Map(
+      users.map((user) => {
+        const decrypted = withDecryptedUserNames(user as RawUserRecord);
+        return [user.id, decrypted ?? user];
+      })
+    );
 
     const customers = Array.from(statsMap.values())
       .map((record) => {
         const user = userMap.get(record.userId);
-        const favoriteBeverage = user?.favoriteColdDrink ?? user?.favoriteHotDrink ?? null;
+        const favoriteBeverage =
+          user?.favoriteColdDrink ?? user?.favoriteHotDrink ?? null;
         const loyaltyCount = Math.max(0, Number(user?.weeklyCoffeeCount ?? 0));
         const rewardEarned = Boolean(user?.rewardEarned);
 
@@ -209,8 +249,12 @@ export async function GET() {
           email: user?.email || null,
           city: user?.city || null,
           country: user?.country || null,
+          firstName: (user as RawUserRecord & { firstName?: string | null })?.firstName ?? null,
+          lastName: (user as RawUserRecord & { lastName?: string | null })?.lastName ?? null,
           firstNameEncrypted: user?.firstNameEncrypted || null,
           lastNameEncrypted: user?.lastNameEncrypted || null,
+          favoriteColdDrink: user?.favoriteColdDrink ?? null,
+          favoriteHotDrink: user?.favoriteHotDrink ?? null,
           loyaltyCoffees: loyaltyCount,
           weeklyCoffeeCount: loyaltyCount,
           rewardEarned,

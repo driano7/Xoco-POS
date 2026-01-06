@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS public.users (
 
   -- Programa de lealtad
   "weeklyCoffeeCount" INTEGER NOT NULL DEFAULT 0,
+  "rewardEarned" BOOLEAN NOT NULL DEFAULT FALSE,
   "monthlyMetrics" JSONB,
 
   -- Segmentación
@@ -1139,6 +1140,9 @@ ALTER TABLE public.users
   ADD COLUMN IF NOT EXISTS "lastNameSalt" TEXT,
   ADD COLUMN IF NOT EXISTS "phoneSalt" TEXT;
 
+ALTER TABLE public.users
+  ADD COLUMN IF NOT EXISTS "rewardEarned" BOOLEAN NOT NULL DEFAULT FALSE;
+
 ALTER TABLE public.orders
   ADD COLUMN IF NOT EXISTS items JSONB NOT NULL DEFAULT '[]'::jsonb,
   ADD COLUMN IF NOT EXISTS "totalAmount" NUMERIC(10,2) NOT NULL DEFAULT 0.00;
@@ -1365,7 +1369,8 @@ ALTER TABLE public.tickets
   ALTER COLUMN "paymentMethod" DROP NOT NULL;
 
 
---ALTER TABLE orders ADD COLUMN "queuedPaymentMethod" text;
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS "queuedPaymentMethod" TEXT;
 
 
 -- Extensiones

@@ -154,6 +154,170 @@ const normalizeQuantity = (value: unknown) => {
   return parsed <= 0 ? 1 : parsed;
 };
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const coerceString = (value: unknown): string | null => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  return null;
+};
+
+const coerceNumber = (value: unknown): number | null => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const coerceBoolean = (value: unknown): boolean | null => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'si', 'sí'].includes(normalized)) {
+      return true;
+    }
+    if (['false', '0', 'no'].includes(normalized)) {
+      return false;
+    }
+  }
+  return null;
+};
+
+const coerceRecord = (value: unknown): Record<string, unknown> | null => {
+  if (isPlainObject(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return isPlainObject(parsed) ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+};
+
+const extractAddressRecord = (value: Record<string, unknown> | null) => {
+  if (!value) {
+    return null;
+  }
+  const street =
+    coerceString(value.street) ??
+    coerceString(value.addressLine1) ??
+    coerceString((value as Record<string, unknown>).line1);
+  const city =
+    coerceString(value.city) ??
+    coerceString(value.municipality) ??
+    coerceString(value.locality);
+  const state =
+    coerceString(value.state) ??
+    coerceString(value.region) ??
+    coerceString(value.stateCode);
+  const postalCode =
+    coerceString(value.postalCode) ??
+    coerceString(value.zip) ??
+    coerceString(value.cp);
+  const reference =
+    coerceString(value.reference) ??
+    coerceString(value.references) ??
+    coerceString(value.note);
+  if (street || city || state || postalCode || reference) {
+    return {
+      street: street ?? undefined,
+      city: city ?? undefined,
+      state: state ?? undefined,
+      postalCode: postalCode ?? undefined,
+      reference: reference ?? undefined,
+    };
+  }
+  return null;
+};
+
+const parseDeliveryTipSnapshot = (value: unknown) => {
+  const record = coerceRecord(value);
+  if (record) {
+    const amount = coerceNumber(record.amount ?? record.a ?? record.value);
+    const percent = coerceNumber(record.percent ?? record.p);
+    if (amount !== null || percent !== null) {
+      return {
+        amount,
+        percent,
+      };
+    }
+    return null;
+  }
+  const amount = coerceNumber(value);
+  if (amount !== null) {
+    return { amount, percent: null };
+  }
+  return null;
+};
+
+const parseShippingSnapshot = (value: unknown) => {
+  const record = coerceRecord(value);
+  if (!record) {
+    return null;
+  }
+  const nestedAddress =
+    coerceRecord(record.address) ??
+    coerceRecord(record.location) ??
+    (record.street || record.city || record.state || record.postalCode ? record : null);
+  const address = extractAddressRecord(nestedAddress);
+  const contactPhone =
+    coerceString(record.contactPhone) ??
+    coerceString(record.contact_phone) ??
+    coerceString(record.phone) ??
+    coerceString(record.phoneNumber);
+  const isWhatsapp =
+    coerceBoolean(record.isWhatsapp) ??
+    coerceBoolean(record.whatsapp) ??
+    coerceBoolean(record.is_whatsapp);
+  const addressId =
+    coerceString(record.addressId) ??
+    coerceString(record.address_id) ??
+    coerceString(record.addr) ??
+    coerceString(record.id);
+  const deliveryTip = parseDeliveryTipSnapshot(record.deliveryTip ?? record.delivery_tip);
+  if (!address && !contactPhone && !isWhatsapp && !addressId && !deliveryTip) {
+    return null;
+  }
+  return {
+    address,
+    contactPhone: contactPhone ?? null,
+    isWhatsapp: isWhatsapp ?? null,
+    addressId: addressId ?? null,
+    deliveryTip,
+  };
+};
+
+const parseStoredItemsValue = (value: unknown) => {
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (Array.isArray(value) || isPlainObject(value)) {
+    return value;
+  }
+  return null;
+};
+
 type ProductRecord = {
   id?: string | null;
   name?: string | null;
@@ -168,6 +332,10 @@ type CashSaleRecord = {
   cambio_entregado?: number | string | null;
 };
 
+type EnrichedOrderRecord = Record<string, unknown> & {
+  paymentMethod?: string | null;
+};
+
 type OrdersDataLoader = {
   loadProducts: (productIds: Set<string>) => Promise<Map<string, ProductRecord>>;
   loadTicketsAndCodes: (
@@ -175,6 +343,7 @@ type OrdersDataLoader = {
   ) => Promise<{
     ticketMap: Map<string, string | null>;
     codeMap: Map<string, string | null>;
+    qrMap: Map<string, unknown>;
   }>;
   loadCashSales?: (orderIds: string[]) => Promise<Map<string, CashSaleRecord>>;
 };
@@ -506,10 +675,11 @@ const mapOrdersPayload = async (
 
   const productMap = await loader.loadProducts(productIds);
 
-  let enriched = ordersData.map((order) => {
+  let enriched: EnrichedOrderRecord[] = ordersData.map((order) => {
     const {
       order_items,
       items: rawStoredItems,
+      totals: rawTotals,
       total,
       user,
       metadata,
@@ -517,11 +687,19 @@ const mapOrdersPayload = async (
       message,
       instructions,
       paymentMethod,
+      customer_name,
+      pos_customer_id,
+      deliveryTipAmount,
+      deliveryTipPercent,
+      shipping_contact_phone,
+      shipping_contact_is_whatsapp,
+      shipping_address_id,
       ...rest
     } = order as Record<string, unknown> & {
       id?: string;
       order_items?: unknown;
       items?: unknown;
+      totals?: unknown;
       total?: unknown;
       user?: Record<string, unknown> | null;
       metadata?: unknown;
@@ -529,14 +707,31 @@ const mapOrdersPayload = async (
       message?: unknown;
       instructions?: unknown;
       paymentMethod?: unknown;
+      customer_name?: unknown;
+      pos_customer_id?: unknown;
+      deliveryTipAmount?: unknown;
+      deliveryTipPercent?: unknown;
+      shipping_contact_phone?: unknown;
+      shipping_contact_is_whatsapp?: unknown;
+      shipping_address_id?: unknown;
     };
+    const storedItemsValue = parseStoredItemsValue(rawStoredItems);
+    const storedItemsList =
+      Array.isArray(storedItemsValue)
+        ? storedItemsValue
+        : isPlainObject(storedItemsValue) && Array.isArray((storedItemsValue as { list?: unknown[] }).list)
+          ? (storedItemsValue as { list: unknown[] }).list
+          : null;
     const sourceItems =
-      Array.isArray(rawStoredItems) && rawStoredItems.length
-        ? rawStoredItems
+      Array.isArray(storedItemsList) && storedItemsList.length
+        ? storedItemsList
         : Array.isArray(order_items)
           ? order_items
-          : [];
+          : Array.isArray(rawStoredItems)
+            ? rawStoredItems
+            : [];
     const items = mapOrderItems(sourceItems, productMap);
+    const ticketSnapshot = storedItemsValue ?? rawStoredItems ?? null;
     const metadataObject = coerceMetadataObject(metadata);
     const prepAssignment = metadataObject?.prepAssignment
       ? coerceMetadataObject(metadataObject.prepAssignment)
@@ -544,6 +739,83 @@ const mapOrdersPayload = async (
     const paymentMetadata = metadataObject?.payment
       ? coerceMetadataObject(metadataObject.payment)
       : null;
+    const metadataDeliveryTipPayload =
+      metadataObject?.deliveryTip && isPlainObject(metadataObject.deliveryTip)
+        ? (metadataObject.deliveryTip as Record<string, unknown>)
+        : null;
+    const metadataDeliveryPayload =
+      metadataObject?.delivery && isPlainObject(metadataObject.delivery)
+        ? (metadataObject.delivery as Record<string, unknown>)
+        : null;
+    const metadataDeliveryTipAmount = coerceNumber(
+      metadataObject?.deliveryTipAmount ??
+        metadataDeliveryTipPayload?.amount ??
+        metadataDeliveryTipPayload?.a ??
+        metadataDeliveryPayload?.tipAmount
+    );
+    const metadataDeliveryTipPercent = coerceNumber(
+      metadataObject?.deliveryTipPercent ??
+        metadataDeliveryTipPayload?.percent ??
+        metadataDeliveryTipPayload?.p ??
+        metadataDeliveryPayload?.tipPercent
+    );
+    const metadataDeliveryTipSnapshot =
+      parseDeliveryTipSnapshot(metadataDeliveryTipPayload) ??
+      parseDeliveryTipSnapshot(metadataDeliveryPayload?.tip) ??
+      (metadataDeliveryTipAmount !== null || metadataDeliveryTipPercent !== null
+        ? {
+            amount: metadataDeliveryTipAmount,
+            percent: metadataDeliveryTipPercent,
+          }
+        : null);
+    const storedShippingSnapshot =
+      isPlainObject(storedItemsValue) && 'shipping' in (storedItemsValue as Record<string, unknown>)
+        ? parseShippingSnapshot((storedItemsValue as Record<string, unknown>).shipping)
+        : null;
+    const metadataShippingSnapshot =
+      metadataObject?.shipping && isPlainObject(metadataObject.shipping)
+        ? parseShippingSnapshot(metadataObject.shipping)
+        : null;
+    const metadataDeliverySnapshot =
+      metadataObject?.delivery && isPlainObject(metadataObject.delivery)
+        ? parseShippingSnapshot(metadataObject.delivery)
+        : null;
+    const shippingSnapshot =
+      storedShippingSnapshot ?? metadataShippingSnapshot ?? metadataDeliverySnapshot ?? null;
+    const resolvedContactPhone =
+      coerceString(shipping_contact_phone) ?? shippingSnapshot?.contactPhone ?? null;
+    const resolvedIsWhatsapp =
+      coerceBoolean(shipping_contact_is_whatsapp) ?? shippingSnapshot?.isWhatsapp ?? null;
+    const metadataAddressId = coerceString(metadataObject?.deliveryAddressId);
+    const shippingAddressId =
+      coerceString(shipping_address_id) ?? shippingSnapshot?.addressId ?? metadataAddressId ?? null;
+    const shippingPayload =
+      shippingSnapshot ||
+      shippingAddressId ||
+      resolvedContactPhone ||
+      resolvedIsWhatsapp !== null ||
+      metadataDeliveryTipSnapshot
+        ? {
+            address: shippingSnapshot?.address ?? undefined,
+            contactPhone: resolvedContactPhone,
+            isWhatsapp: resolvedIsWhatsapp,
+            addressId: shippingAddressId,
+            deliveryTip: shippingSnapshot?.deliveryTip ?? metadataDeliveryTipSnapshot ?? null,
+          }
+        : null;
+    const totalsSnapshot =
+      coerceRecord(rawTotals) ??
+      (isPlainObject(storedItemsValue) ? coerceRecord((storedItemsValue as Record<string, unknown>).totals) : null);
+    const normalizedCustomerName = coerceString(customer_name);
+    const normalizedPosCustomerId = coerceString(pos_customer_id);
+    const resolvedDeliveryTipAmount =
+      normalizeNumber(deliveryTipAmount ?? null) ??
+      metadataDeliveryTipAmount ??
+      (shippingPayload?.deliveryTip?.amount ?? null);
+    const resolvedDeliveryTipPercent =
+      normalizeNumber(deliveryTipPercent ?? null) ??
+      metadataDeliveryTipPercent ??
+      (shippingPayload?.deliveryTip?.percent ?? null);
     return {
       ...rest,
       id: rest.id ?? order.id ?? null,
@@ -552,9 +824,16 @@ const mapOrdersPayload = async (
       itemsCount: countOrderItems(items),
       user: withDecryptedUserNames(user ?? null),
       metadata: metadata ?? null,
+      totals: totalsSnapshot ?? null,
+      ticketSnapshot,
       notes: toTrimmedString(notes) ?? null,
       message: toTrimmedString(message) ?? null,
       instructions: toTrimmedString(instructions) ?? null,
+      customerName: normalizedCustomerName ?? null,
+      posCustomerId: normalizedPosCustomerId ?? null,
+      shipping: shippingPayload,
+      deliveryTipAmount: resolvedDeliveryTipAmount,
+      deliveryTipPercent: resolvedDeliveryTipPercent,
       queuedByStaffId: toTrimmedString(prepAssignment?.staffId) ?? null,
       queuedByStaffName: toTrimmedString(prepAssignment?.staffName) ?? null,
       queuedPaymentReference: toTrimmedString(paymentMetadata?.reference) ?? null,
@@ -570,7 +849,7 @@ const mapOrdersPayload = async (
   const orderIds = enriched
     .map((order) => order.id)
     .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
-  const { ticketMap, codeMap } = await loader.loadTicketsAndCodes(orderIds);
+  const { ticketMap, codeMap, qrMap } = await loader.loadTicketsAndCodes(orderIds);
 
   enriched = enriched.map((order) => {
     const orderId = typeof order.id === 'string' ? order.id : null;
@@ -578,6 +857,7 @@ const mapOrdersPayload = async (
       ...order,
       ticketCode: orderId ? ticketMap.get(orderId) || null : null,
       shortCode: orderId ? codeMap.get(orderId) || null : null,
+      qrPayload: orderId ? qrMap.get(orderId) ?? null : null,
     };
   });
 
@@ -627,15 +907,23 @@ type SqliteOrderRow = {
   total?: number | null;
   currency?: string | null;
   items?: unknown;
+  totals?: unknown;
   createdAt?: string | null;
   updatedAt?: string | null;
   queuedPaymentMethod?: string | null;
   tipAmount?: number | null;
   tipPercent?: number | null;
+  deliveryTipAmount?: number | null;
+  deliveryTipPercent?: number | null;
   metadata?: unknown;
   notes?: unknown;
   message?: unknown;
   instructions?: unknown;
+  customer_name?: string | null;
+  pos_customer_id?: string | null;
+  shipping_contact_phone?: string | null;
+  shipping_contact_is_whatsapp?: number | null;
+  shipping_address_id?: string | null;
   user_clientId?: string | null;
   user_email?: string | null;
   user_firstNameEncrypted?: string | null;
@@ -759,12 +1047,12 @@ const sqliteOrdersLoader: OrdersDataLoader = {
   },
   loadTicketsAndCodes: async (orderIds) => {
     if (!orderIds.length) {
-      return { ticketMap: new Map(), codeMap: new Map() };
+      return { ticketMap: new Map(), codeMap: new Map(), qrMap: new Map() };
     }
     const { placeholders, bindings } = buildSqliteInClause(orderIds, 'ticket');
     const [tickets, codes] = await Promise.all([
-      sqlite.all<{ orderId?: string | null; ticketCode?: string | null }>(
-        `SELECT orderId, ticketCode FROM tickets WHERE orderId IN (${placeholders.join(',')})`,
+      sqlite.all<{ orderId?: string | null; ticketCode?: string | null; qrPayload?: unknown }>(
+        `SELECT orderId, ticketCode, qrPayload FROM tickets WHERE orderId IN (${placeholders.join(',')})`,
         bindings
       ),
       sqlite.all<{ orderId?: string | null; code?: string | null }>(
@@ -772,13 +1060,21 @@ const sqliteOrdersLoader: OrdersDataLoader = {
         bindings
       ),
     ]);
+    const ticketMap = new Map<string, string | null>();
+    const qrMap = new Map<string, unknown>();
+    tickets
+      .filter((ticket) => ticket.orderId)
+      .forEach((ticket) => {
+        const key = String(ticket.orderId);
+        ticketMap.set(key, ticket.ticketCode ?? null);
+        qrMap.set(key, ticket.qrPayload ?? null);
+      });
     return {
-      ticketMap: new Map(
-        tickets.filter((ticket) => ticket.orderId).map((ticket) => [String(ticket.orderId), ticket.ticketCode ?? null])
-      ),
+      ticketMap,
       codeMap: new Map(
         codes.filter((code) => code.orderId).map((code) => [String(code.orderId), code.code ?? null])
       ),
+      qrMap,
     };
   },
   loadCashSales: async () => new Map<string, CashSaleRecord>(),
@@ -805,10 +1101,10 @@ const supabaseOrdersLoader: OrdersDataLoader = {
   },
   loadTicketsAndCodes: async (orderIds) => {
     if (!orderIds.length) {
-      return { ticketMap: new Map(), codeMap: new Map() };
+      return { ticketMap: new Map(), codeMap: new Map(), qrMap: new Map() };
     }
     const [{ data: tickets, error: ticketsError }, { data: codes, error: codesError }] = await Promise.all([
-      supabaseAdmin.from(TICKETS_TABLE).select('"orderId","ticketCode"').in('orderId', orderIds),
+      supabaseAdmin.from(TICKETS_TABLE).select('"orderId","ticketCode","qrPayload"').in('orderId', orderIds),
       supabaseAdmin.from(ORDER_CODES_TABLE).select('"orderId",code').in('orderId', orderIds),
     ]);
 
@@ -819,9 +1115,19 @@ const supabaseOrdersLoader: OrdersDataLoader = {
       console.error('Error fetching order codes:', codesError);
     }
 
+    const ticketMap = new Map<string, string | null>();
+    const qrMap = new Map<string, unknown>();
+    (tickets ?? []).forEach((ticket) => {
+      if (ticket?.orderId) {
+        ticketMap.set(ticket.orderId, ticket.ticketCode ?? null);
+        qrMap.set(ticket.orderId, ticket.qrPayload ?? null);
+      }
+    });
+
     return {
-      ticketMap: new Map((tickets ?? []).map((ticket) => [ticket.orderId, ticket.ticketCode ?? null])),
+      ticketMap,
       codeMap: new Map((codes ?? []).map((code) => [code.orderId, code.code ?? null])),
+      qrMap,
     };
   },
   loadCashSales: async (orderIds) => {
@@ -861,15 +1167,23 @@ const loadOrdersFromSupabase = async (status: string | null) => {
     'total',
     'currency',
     '"items"',
+    '"totals"',
     '"createdAt"',
     '"updatedAt"',
     '"queuedPaymentMethod"',
     '"tipAmount"',
     '"tipPercent"',
+    '"deliveryTipAmount"',
+    '"deliveryTipPercent"',
     '"metadata"',
     '"notes"',
     '"message"',
     '"instructions"',
+    '"customer_name"',
+    '"pos_customer_id"',
+    '"shipping_contact_phone"',
+    '"shipping_contact_is_whatsapp"',
+    '"shipping_address_id"',
   ];
   if (ORDER_CLIENT_ID_COLUMN) {
     orderSelectFields.push(`clientId:${ORDER_CLIENT_ID_COLUMN}`);
@@ -938,15 +1252,23 @@ const loadOrdersFromSqlite = async (status: string | null) => {
       o.total,
       o.currency,
       o.items,
+      o.totals,
       o.createdAt,
       o.updatedAt,
       o.queuedPaymentMethod,
       o.tipAmount,
       o.tipPercent,
+      o.deliveryTipAmount,
+      o.deliveryTipPercent,
       o.metadata,
       o.notes,
       o.message,
       o.instructions,
+      o.customer_name,
+      o.pos_customer_id,
+      o.shipping_contact_phone,
+      o.shipping_contact_is_whatsapp,
+      o.shipping_address_id,
       u.clientId AS user_clientId,
       u.email AS user_email,
       u.firstNameEncrypted AS user_firstNameEncrypted,
@@ -985,15 +1307,23 @@ const loadOrdersFromSqlite = async (status: string | null) => {
       total: row.total ?? null,
       currency: row.currency ?? null,
       items: parseOrderItemsColumn(row.items),
+      totals: row.totals ?? null,
       createdAt: row.createdAt ?? null,
       updatedAt: row.updatedAt ?? null,
       queuedPaymentMethod: row.queuedPaymentMethod ?? null,
       tipAmount: row.tipAmount ?? null,
       tipPercent: row.tipPercent ?? null,
+      deliveryTipAmount: row.deliveryTipAmount ?? null,
+      deliveryTipPercent: row.deliveryTipPercent ?? null,
       metadata: row.metadata ?? null,
       notes: row.notes ?? null,
       message: row.message ?? null,
       instructions: row.instructions ?? null,
+      customer_name: row.customer_name ?? null,
+      pos_customer_id: row.pos_customer_id ?? null,
+      shipping_contact_phone: row.shipping_contact_phone ?? null,
+      shipping_contact_is_whatsapp: row.shipping_contact_is_whatsapp ?? null,
+      shipping_address_id: row.shipping_address_id ?? null,
       order_items: orderItemsMap.get(row.id) ?? [],
       user: buildLocalOrderUser(row),
     };

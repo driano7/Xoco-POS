@@ -505,7 +505,7 @@ export function NewOrderModal({
     [availableBeverageSizes]
   );
 
-  const { tipAmount, appliedPercent } = useMemo(() => {
+  const tipComputation = useMemo(() => {
     let percent: number | null = null;
     let amount = 0;
     if (tipSelection === 'preset' && typeof selectedTipPercent === 'number') {
@@ -534,6 +534,7 @@ export function NewOrderModal({
     tipSelection,
     useCustomTipAmount,
   ]);
+  const { tipAmount, appliedPercent } = tipComputation;
 
   const totalWithTip = subtotal + tipAmount;
   const isCashPayment = paymentMethod === 'efectivo';

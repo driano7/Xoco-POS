@@ -49,6 +49,23 @@ export interface OrderUserInfo {
   email?: string | null;
 }
 
+export interface OrderShippingInfo {
+  address?: {
+    street?: string;
+    city?: string;
+    state?: string;
+    postalCode?: string;
+    reference?: string;
+  };
+  contactPhone?: string | null;
+  isWhatsapp?: boolean | null;
+  addressId?: string | null;
+  deliveryTip?: {
+    amount?: number | null;
+    percent?: number | null;
+  } | null;
+}
+
 export interface OrderItemSummary {
   id?: string | null;
   productId?: string | null;
@@ -88,6 +105,11 @@ export interface Order {
   queuedPaymentMethod?: string | null;
   tipAmount?: number | null;
   tipPercent?: number | null;
+  deliveryTipAmount?: number | null;
+  deliveryTipPercent?: number | null;
+  customerName?: string | null;
+  posCustomerId?: string | null;
+  shipping?: OrderShippingInfo | null;
   totals?: {
     subtotal?: number | null;
     tax?: number | null;
@@ -98,6 +120,8 @@ export interface Order {
     tipAmount?: number | null;
   } | null;
   metadata?: Record<string, unknown> | string | null;
+  ticketSnapshot?: unknown;
+  qrPayload?: unknown;
   notes?: string | null;
   queuedByStaffId?: string | null;
   queuedByStaffName?: string | null;
@@ -212,13 +236,17 @@ export interface LoyaltyCustomer {
   email?: string | null;
   city?: string | null;
   country?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
   firstNameEncrypted?: string | null;
+  lastNameEncrypted?: string | null;
   favoriteBeverage?: string | null;
   favoriteFood?: string | null;
+  favoriteColdDrink?: string | null;
+  favoriteHotDrink?: string | null;
   loyaltyCoffees?: number | null;
   rewardEarned?: boolean | null;
   weeklyCoffeeCount?: number | null;
-  lastNameEncrypted?: string | null;
 }
 
 export interface LoyaltyStats {
@@ -1259,7 +1287,7 @@ export async function exportCofeprisReport(format: 'csv' | 'xlsx', month?: strin
 }
 
 export async function fetchPestControlStatus(): Promise<PestControlStatus> {
-  const url = buildApiUrl('/api/pest-control');
+  const url = buildApiUrl('/api/cofepris/pest');
   const response = await fetch(url, { cache: 'no-store', keepalive: true });
   if (!response.ok) {
     throw new Error('No pudimos cargar el control de plagas.');
@@ -1272,7 +1300,7 @@ export async function fetchPestControlStatus(): Promise<PestControlStatus> {
 }
 
 export async function savePestControlRecord(payload: PestControlPayload): Promise<PestControlRecord> {
-  const url = buildApiUrl('/api/pest-control');
+  const url = buildApiUrl('/api/cofepris/pest');
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

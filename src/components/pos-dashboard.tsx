@@ -43,7 +43,8 @@ import { NewOrderModal } from '@/components/order/new-order-modal';
 import { CustomerLoyaltyCoffees } from '@/components/customer-loyalty-coffees';
 import { SearchableDropdown } from '@/components/searchable-dropdown';
 import { CofeprisPanel } from '@/components/compliance/sanitary-compliance-panel';
-import TicketVenta from '@/components/ticket-venta';
+import { VirtualTicket, type VirtualTicketProps } from '@xoco/ui';
+import { toPng } from 'html-to-image';
 import {
   useMenuOptions,
   type MenuItem,
@@ -1418,6 +1419,10 @@ const getCustomerDisplayName = (customer?: LoyaltyCustomer | null) => {
   if (!customer) {
     return 'Sin datos';
   }
+  const name = [customer.firstName, customer.lastName].filter(Boolean).join(' ').trim();
+  if (name) {
+    return name;
+  }
   return customer.clientId || customer.email || `${customer.userId.slice(0, 6)}…`;
 };
 
@@ -2566,7 +2571,12 @@ export function PosDashboard() {
       }
       return {
         ...customer,
-        beverage: customer.beverage ?? loyaltyRecord.favoriteBeverage ?? '',
+        beverage:
+          customer.beverage ??
+          loyaltyRecord.favoriteBeverage ??
+          loyaltyRecord.favoriteColdDrink ??
+          loyaltyRecord.favoriteHotDrink ??
+          '',
         food: customer.food ?? loyaltyRecord.favoriteFood ?? '',
         loyaltyCoffees: loyaltyRecord.loyaltyCoffees ?? null,
         rewardEarned: loyaltyRecord.rewardEarned ?? null,
@@ -4157,6 +4167,7 @@ const currentMonthMetrics = useMemo(() => {
                         Boolean(detail.data?.id && hiddenQueueOrderIds.has(detail.data.id))
                       }
                       onCompletePrepOrder={(order) => void handleCompletePrepOrder(order)}
+                      onNotify={enqueueSnackbar}
                     />
                   )}
                   {detail.type === 'reservation' && (
@@ -4205,25 +4216,7 @@ const currentMonthMetrics = useMemo(() => {
               <DetailModal onClose={() => setPendingQueue(null)} size="wide">
                 {(() => {
                   const order = pendingQueue.order;
-                  const rawItems = Array.isArray(order.items) ? order.items : [];
-                  const ticketItems =
-                    rawItems.length > 0
-                      ? rawItems.map((item, index) => ({
-                          name: item.name ?? item.productId ?? `Producto ${index + 1}`,
-                          quantity: item.quantity ?? 0,
-                          price: item.price ?? null,
-                        }))
-                      : [
-                          {
-                            name: 'Consumo registrado',
-                            quantity: 1,
-                            price:
-                              order.total ??
-                              order.totals?.total ??
-                              order.totals?.totalAmount ??
-                              0,
-                          },
-                        ];
+                  const rawItems = Array.isArray(order.items) ? (order.items as OrderItemEntry[]) : [];
                   const totals = order.totals ?? {};
                   const subtotal =
                     typeof order.subtotal === 'number'
@@ -4257,15 +4250,18 @@ const currentMonthMetrics = useMemo(() => {
                     pendingQueue.options?.paymentReference ??
                     order.queuedPaymentReference ??
                     null;
-                  const footer =
-                    ticketMethod &&
-                    ticketMethod !== 'efectivo' &&
-                    paymentReference ? (
-                      <div className="text-left text-xs">
-                        <p className="uppercase tracking-[0.3em] text-gray-500">Referencia</p>
-                        <p className="font-mono text-gray-900">{paymentReference}</p>
-                      </div>
-                    ) : undefined;
+                  const queueMetadataObject = parseMetadataRecord(order.metadata);
+                  const queueShippingFallback = buildShippingFromMetadata(queueMetadataObject);
+                  const queueVirtualTicketOrder = buildVirtualTicketOrderPayload({
+                    order,
+                    hydratedItems: rawItems,
+                    ticketTotal: totalAmount,
+                    ticketSubtotal: subtotal,
+                    ticketTax: tax,
+                    tipAmount: typeof order.tipAmount === 'number' ? order.tipAmount : null,
+                    metadataObject: queueMetadataObject,
+                    fallbackShipping: queueShippingFallback,
+                  });
 
                   return (
                     <div className="space-y-6">
@@ -4275,21 +4271,12 @@ const currentMonthMetrics = useMemo(() => {
                           Revisa el ticket térmico antes de mover el pedido a En preparación.
                         </p>
                       </div>
-                      <TicketVenta
-                        businessName="Xoco Café"
-                        businessAddress="Sucursal Matriz"
-                        ticketCode={order.ticketCode ?? order.orderNumber ?? order.id}
-                        orderNumber={order.orderNumber ?? order.id}
-                        createdAt={order.createdAt ?? null}
-                        items={ticketItems}
-                        subtotal={subtotal}
-                        tax={tax}
-                        total={totalAmount}
-                        metodoPago={ticketMethod}
-                        montoRecibido={cashTendered}
-                        cambioEntregado={cashChange}
-                        footer={footer}
-                      />
+                      <div className="flex justify-center">
+                        <VirtualTicket
+                          order={queueVirtualTicketOrder}
+                          orderStatus={order.status}
+                        />
+                      </div>
                       {actionState?.error && (
                         <p className="rounded-2xl border border-danger-200/80 bg-danger-50/60 px-3 py-2 text-xs text-danger-700 dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
                           {actionState.error}
@@ -5494,6 +5481,252 @@ const parseMetadataRecord = (value: unknown): Record<string, unknown> | null => 
   return null;
 };
 
+const buildAddressDetails = (record?: Record<string, unknown> | null) => {
+  if (!record) {
+    return null;
+  }
+  const street =
+    toTrimmedString(record.street) ??
+    toTrimmedString(record.addressLine1) ??
+    toTrimmedString(record.line1);
+  const city = toTrimmedString(record.city) ?? toTrimmedString(record.locality);
+  const state = toTrimmedString(record.state) ?? toTrimmedString(record.region);
+  const postalCode =
+    toTrimmedString(record.postalCode) ??
+    toTrimmedString(record.zip) ??
+    toTrimmedString(record.cp);
+  const reference =
+    toTrimmedString(record.reference) ??
+    toTrimmedString(record.references) ??
+    toTrimmedString(record.note);
+  if (street || city || state || postalCode || reference) {
+    return {
+      street,
+      city,
+      state,
+      postalCode,
+      reference,
+    };
+  }
+  return null;
+};
+
+const buildShippingFromMetadata = (metadata?: Record<string, unknown> | null) => {
+  if (!metadata) {
+    return null;
+  }
+  let shippingRecord: Record<string, unknown> | null = null;
+  if (metadata.shipping) {
+    const parsed = parseMetadataRecord(metadata.shipping);
+    if (parsed) {
+      shippingRecord = parsed;
+    }
+  }
+  if (!shippingRecord && metadata.delivery) {
+    const parsed = parseMetadataRecord(metadata.delivery);
+    if (parsed) {
+      shippingRecord = parsed;
+    }
+  }
+  if (!shippingRecord) {
+    return null;
+  }
+  const addressRecord =
+    parseMetadataRecord(shippingRecord['address']) ??
+    parseMetadataRecord(shippingRecord['location']) ??
+    shippingRecord;
+  const contactPhone =
+    toTrimmedString(shippingRecord['contactPhone']) ??
+    toTrimmedString(shippingRecord['contact_phone']) ??
+    toTrimmedString(shippingRecord['phone']);
+  const isWhatsapp =
+    typeof shippingRecord['isWhatsapp'] === 'boolean'
+      ? (shippingRecord['isWhatsapp'] as boolean)
+      : typeof shippingRecord['whatsapp'] === 'boolean'
+        ? (shippingRecord['whatsapp'] as boolean)
+        : null;
+  const addressId =
+    toTrimmedString(shippingRecord['addressId']) ??
+    toTrimmedString(shippingRecord['address_id']) ??
+    toTrimmedString(metadata.deliveryAddressId) ??
+    null;
+  const deliveryTipRecord =
+    parseMetadataRecord(shippingRecord['deliveryTip']) ??
+    parseMetadataRecord(metadata.deliveryTip) ??
+    null;
+  const deliveryTip =
+    deliveryTipRecord &&
+    (deliveryTipRecord.amount !== undefined || deliveryTipRecord.percent !== undefined)
+      ? {
+          amount:
+            coerceNumber(deliveryTipRecord.amount) ??
+            coerceNumber(deliveryTipRecord.a) ??
+            null,
+          percent:
+            coerceNumber(deliveryTipRecord.percent) ??
+            coerceNumber(deliveryTipRecord.p) ??
+            null,
+        }
+      : null;
+  return {
+    address: buildAddressDetails(addressRecord),
+    contactPhone,
+    isWhatsapp,
+    addressId,
+    deliveryTip,
+  };
+};
+
+const buildVirtualTicketItems = (items: OrderItemEntry[]) =>
+  items.map((item, index) => {
+    const quantity = safeQuantity(item.quantity);
+    const price = typeof item.price === 'number' ? item.price : 0;
+    const metadataRecord = parseMetadataRecord(item.metadata);
+    const packageItems = (() => {
+      if (!metadataRecord) {
+        return null;
+      }
+      if (Array.isArray(metadataRecord.items)) {
+        return metadataRecord.items
+          .filter((entry): entry is string => typeof entry === 'string')
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+      }
+      if (Array.isArray(metadataRecord.packageItems)) {
+        return metadataRecord.packageItems
+          .filter((entry): entry is string => typeof entry === 'string')
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+      }
+      return null;
+    })();
+    return {
+      id: item.productId ?? `ticket-item-${index}`,
+      productId: item.productId ?? null,
+      name: item.name ?? item.productId ?? `Producto ${index + 1}`,
+      quantity,
+      price,
+      category: item.category ?? item.subcategory ?? null,
+      subcategory: item.subcategory ?? null,
+      size: item.sizeLabel ?? null,
+      packageItems,
+    };
+  });
+
+const buildVirtualTicketOrderPayload = ({
+  order,
+  hydratedItems,
+  ticketTotal,
+  ticketSubtotal,
+  ticketTax,
+  tipAmount,
+  metadataObject,
+  fallbackShipping,
+}: {
+  order: Order;
+  hydratedItems: OrderItemEntry[];
+  ticketTotal: number | null;
+  ticketSubtotal: number | null;
+  ticketTax: number | null;
+  tipAmount: number | null;
+  metadataObject: Record<string, unknown> | null;
+  fallbackShipping?: ReturnType<typeof buildShippingFromMetadata> | null;
+}): VirtualTicketProps['order'] => {
+  const metadataDeliveryRecord =
+    metadataObject?.delivery && isPlainObject(metadataObject.delivery)
+      ? (metadataObject.delivery as Record<string, unknown>)
+      : null;
+  const metadataDeliveryTipRecord =
+    metadataObject?.deliveryTip && isPlainObject(metadataObject.deliveryTip)
+      ? (metadataObject.deliveryTip as Record<string, unknown>)
+      : null;
+  const metadataDeliveryTipAmount = coerceNumber(
+    metadataObject?.deliveryTipAmount ??
+      metadataDeliveryRecord?.['tipAmount'] ??
+      metadataDeliveryTipRecord?.['amount'] ??
+      metadataDeliveryTipRecord?.['a']
+  );
+  const metadataDeliveryTipPercent = coerceNumber(
+    metadataObject?.deliveryTipPercent ??
+      metadataDeliveryRecord?.['tipPercent'] ??
+      metadataDeliveryTipRecord?.['percent'] ??
+      metadataDeliveryTipRecord?.['p']
+  );
+  const shipping =
+    order.shipping ??
+    fallbackShipping ??
+    buildShippingFromMetadata(metadataObject) ??
+    undefined;
+  const resolvedDeliveryTipAmount =
+    typeof order.deliveryTipAmount === 'number'
+      ? order.deliveryTipAmount
+      : shipping?.deliveryTip?.amount ?? metadataDeliveryTipAmount ?? null;
+  const resolvedDeliveryTipPercent =
+    typeof order.deliveryTipPercent === 'number'
+      ? order.deliveryTipPercent
+      : shipping?.deliveryTip?.percent ?? metadataDeliveryTipPercent ?? null;
+  const ticketItemsSource =
+    order.ticketSnapshot ??
+    (hydratedItems.length
+      ? buildVirtualTicketItems(hydratedItems)
+      : [
+          {
+            name: 'Consumo registrado',
+            quantity: order.itemsCount ?? 1,
+            price: ticketTotal ?? 0,
+          },
+        ]);
+  const ticketId = order.ticketCode ?? order.orderNumber ?? order.id;
+  const customerName =
+    order.customerName ??
+    extractCustomerName(order.user) ??
+    toTrimmedString(metadataObject?.customerName) ??
+    null;
+  return {
+    id: order.id,
+    orderNumber: order.orderNumber ?? order.shortCode ?? order.id,
+    ticketId,
+    status: order.status,
+    userEmail: order.user?.email ?? null,
+    customerName: customerName ?? undefined,
+    posCustomerId: order.clientId ?? order.posCustomerId ?? null,
+    createdAt: order.createdAt ?? order.updatedAt ?? null,
+    total: typeof order.total === 'number' ? order.total : ticketTotal ?? 0,
+    tipAmount: typeof tipAmount === 'number' ? tipAmount : order.tipAmount ?? null,
+    tipPercent: order.tipPercent ?? null,
+    subtotal: ticketSubtotal ?? undefined,
+    vatAmount: ticketTax ?? undefined,
+    vatPercent: order.vatPercent ?? null,
+    deliveryTipAmount: resolvedDeliveryTipAmount ?? undefined,
+    deliveryTipPercent: resolvedDeliveryTipPercent ?? undefined,
+    items: ticketItemsSource,
+    qrPayload: order.qrPayload ?? metadataObject?.qrPayload ?? null,
+    type: order.type ?? 'pos',
+        shipping: shipping
+          ? {
+              address: shipping.address
+                ? {
+                    street: shipping.address.street ?? undefined,
+                    city: shipping.address.city ?? undefined,
+                    state: shipping.address.state ?? undefined,
+                    postalCode: shipping.address.postalCode ?? undefined,
+                    reference: shipping.address.reference ?? undefined,
+                  }
+                : undefined,
+              contactPhone: shipping.contactPhone ?? undefined,
+              isWhatsapp: shipping.isWhatsapp ?? undefined,
+              addressId: shipping.addressId ?? undefined,
+              deliveryTip: shipping.deliveryTip
+                ? {
+                    amount: shipping.deliveryTip.amount ?? undefined,
+                    percent: shipping.deliveryTip.percent ?? undefined,
+                  }
+                : undefined,
+            }
+          : undefined,
+  };
+};
+
 const extractBeverageSizeFromItems = (orderItems: OrderItemEntry[]) => {
   for (const item of orderItems) {
     if (isBeverageDescriptor(item.category) || isBeverageDescriptor(item.subcategory) || isBeverageDescriptor(item.name)) {
@@ -5660,6 +5893,7 @@ const OrderDetailContent = ({
   isLoyaltyReady = true,
   onWalletScanRequest,
   isInPrepQueue = false,
+  onNotify = () => undefined,
 }: {
   order: Order;
   onMoveToQueue?: (
@@ -5677,6 +5911,7 @@ const OrderDetailContent = ({
   isLoyaltyReady?: boolean;
   onWalletScanRequest?: (onCapture: (value: string) => void) => void;
   isInPrepQueue?: boolean;
+  onNotify?: (message: string) => void;
 }) => {
   const [items, setItems] = useState<OrderItemEntry[]>(
     Array.isArray(order.items) ? (order.items as OrderItemEntry[]) : []
@@ -5684,6 +5919,8 @@ const OrderDetailContent = ({
   const [itemsLoading, setItemsLoading] = useState(false);
   const [itemsError, setItemsError] = useState<string | null>(null);
   const paymentMetadataRecord = extractPaymentMetadata(order.metadata);
+  const metadataObject = useMemo(() => parseMetadataRecord(order.metadata), [order.metadata]);
+  const fallbackShipping = useMemo(() => buildShippingFromMetadata(metadataObject), [metadataObject]);
   const metadataPaymentMethod = toTrimmedString(paymentMetadataRecord?.method) ?? null;
   const metadataPaymentReference = toTrimmedString(paymentMetadataRecord?.reference) ?? null;
   const metadataPaymentReferenceType =
@@ -5698,6 +5935,8 @@ const OrderDetailContent = ({
   const [paymentReference, setPaymentReference] = useState<string>(
     order.queuedPaymentReference ?? ''
   );
+  const ticketRef = useRef<HTMLDivElement | null>(null);
+  const [isDownloadingTicket, setIsDownloadingTicket] = useState(false);
   const editingPaymentMethodLabel = selectedPaymentMethod
     ? PAYMENT_METHOD_LABELS[selectedPaymentMethod] ?? selectedPaymentMethod
     : null;
@@ -5815,12 +6054,15 @@ const OrderDetailContent = ({
     ? PAYMENT_REFERENCE_TYPE_LABELS[resolvedPaymentReferenceType] ??
       resolvedPaymentReferenceType
     : null;
-  const hydratedItems =
-    items.length > 0
-      ? items
-        : Array.isArray(order.items)
-          ? (order.items as OrderItemEntry[])
-          : [];
+  const hydratedItems = useMemo(() => {
+    if (items.length > 0) {
+      return items;
+    }
+    if (Array.isArray(order.items)) {
+      return order.items as OrderItemEntry[];
+    }
+    return [];
+  }, [items, order.items]);
   const beverageSize = extractBeverageSizeFromItems(hydratedItems);
   const loyaltyDisplayName = loyaltyCustomer ? getCustomerDisplayName(loyaltyCustomer) : null;
   const loyaltyCoffees = loyaltyCustomer?.loyaltyCoffees ?? null;
@@ -5846,35 +6088,29 @@ const OrderDetailContent = ({
         : 0;
   const totalAmount = typeof order.total === 'number' ? order.total : null;
   const ticketTotal = totalAmount ?? fallbackTicketTotal;
-  const ticketItems =
-    hydratedItems.length > 0
-      ? hydratedItems.map((item, index) => {
-          const quantity = safeQuantity(item.quantity) ?? 0;
-          const price = typeof item.price === 'number' ? item.price : 0;
-          return {
-            name: item.name ?? item.productId ?? `Producto ${index + 1}`,
-            quantity,
-            price,
-            subtotal: quantity ? price * quantity : price,
-          };
-        })
-      : [
-          {
-            name: 'Consumo registrado',
-            quantity: 1,
-            price: ticketTotal ?? 0,
-            subtotal: ticketTotal ?? 0,
-          },
-        ];
-  const ticketFooter =
-    normalizedPaymentMethod &&
-    normalizedPaymentMethod !== 'efectivo' &&
-    resolvedPaymentReference ? (
-      <div className="text-left text-xs text-gray-700">
-        <p className="uppercase tracking-[0.3em] text-gray-500">Referencia</p>
-        <p className="font-mono text-gray-900">{resolvedPaymentReference}</p>
-      </div>
-    ) : undefined;
+  const virtualTicketOrder = useMemo(
+    () =>
+      buildVirtualTicketOrderPayload({
+        order,
+        hydratedItems,
+        ticketTotal,
+        ticketSubtotal,
+        ticketTax,
+        tipAmount: tipValue,
+        metadataObject,
+        fallbackShipping,
+      }),
+    [
+      fallbackShipping,
+      hydratedItems,
+      metadataObject,
+      order,
+      ticketSubtotal,
+      ticketTax,
+      ticketTotal,
+      tipValue,
+    ]
+  );
   const allowPaymentEditing = !isInPrepQueue && order.status !== 'completed';
   const isPublicSale = isPublicSaleOrder(order);
   const shouldShowLoyaltyPanel = allowPaymentEditing && !isPublicSale;
@@ -5888,6 +6124,36 @@ const OrderDetailContent = ({
       : resolvedCashTendered !== null && totalAmount !== null
         ? Math.max(resolvedCashTendered - totalAmount, 0)
         : null;
+  const ticketIdentifier = order.ticketCode ?? order.orderNumber ?? order.id;
+  const handleTicketDownload = useCallback(async () => {
+    if (!ticketRef.current) {
+      onNotify('No pudimos preparar el ticket para descargar.');
+      return;
+    }
+    setIsDownloadingTicket(true);
+    try {
+      const dataUrl = await toPng(ticketRef.current, {
+        cacheBust: true,
+        pixelRatio: 2,
+        quality: 1,
+      });
+      const sanitizedName = (ticketIdentifier || 'ticket-pos')
+        .toString()
+        .replace(/[^a-z0-9_-]+/gi, '-')
+        .replace(/-+/g, '-')
+        .toLowerCase();
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      link.download = `${sanitizedName || 'ticket-pos'}.png`;
+      link.click();
+      onNotify('Ticket descargado en PNG.');
+    } catch (error) {
+      console.error('Ticket download failed', error);
+      onNotify('No pudimos descargar el ticket.');
+    } finally {
+      setIsDownloadingTicket(false);
+    }
+  }, [onNotify, ticketIdentifier]);
   const paymentSummaryText = (() => {
     if (!normalizedPaymentMethod) {
       return null;
@@ -6115,24 +6381,24 @@ const OrderDetailContent = ({
       )}
       <OrderItemsSection items={items} />
       <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
-        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
-          Ticket digital (vista cliente)
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+            Ticket digital (vista cliente)
+          </p>
+          <button
+            type="button"
+            onClick={() => void handleTicketDownload()}
+            disabled={isDownloadingTicket}
+            className="rounded-full border border-primary-200 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.3em] text-primary-700 transition hover:border-primary-400 hover:bg-primary-50 disabled:opacity-40 dark:border-white/20 dark:text-white dark:hover:bg-white/10"
+          >
+            {isDownloadingTicket ? 'Generando…' : 'Descargar PNG'}
+          </button>
+        </div>
         <div className="mt-4 flex justify-center">
-          <TicketVenta
-            businessName="Xoco Café"
-            businessAddress="Sucursal Matriz"
-            ticketCode={order.ticketCode ?? order.orderNumber ?? order.id}
-            orderNumber={order.orderNumber ?? order.id}
-            createdAt={order.createdAt ?? order.updatedAt ?? null}
-            items={ticketItems}
-            subtotal={ticketSubtotal}
-            tax={ticketTax}
-            total={ticketTotal ?? 0}
-            metodoPago={resolvedPaymentMethod}
-            montoRecibido={resolvedCashTendered ?? undefined}
-            cambioEntregado={resolvedCashChangeAmount ?? undefined}
-            footer={ticketFooter}
+          <VirtualTicket
+            ref={ticketRef}
+            order={virtualTicketOrder}
+            orderStatus={order.status}
           />
         </div>
       </div>
@@ -6487,7 +6753,11 @@ const CustomerDetailContent = ({
   const name = getCustomerDisplayName(customer);
   const coffees = customer.loyaltyCoffees ?? customer.orders ?? 0;
   const [preferences, setPreferences] = useState({
-    beverage: customer.favoriteBeverage ?? '',
+    beverage:
+      customer.favoriteBeverage ??
+      customer.favoriteColdDrink ??
+      customer.favoriteHotDrink ??
+      '',
     food: customer.favoriteFood ?? '',
   });
   const [editingField, setEditingField] = useState<'beverage' | 'food' | null>(null);
