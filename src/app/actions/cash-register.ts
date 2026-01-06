@@ -33,12 +33,14 @@ import { supabaseAdmin } from '@/lib/supabase-server';
 
 const TURNOS_TABLE = process.env.SUPABASE_TURNOS_TABLE ?? 'turnos';
 const VENTAS_TABLE = process.env.SUPABASE_VENTAS_TABLE ?? 'ventas';
+const ORDERS_TABLE = process.env.SUPABASE_ORDERS_TABLE ?? 'orders';
 
 const registrarVentaSchema = z.object({
   turnoId: z.number().int().positive(),
   total: z.number().positive(),
   metodoPago: z.enum(['efectivo', 'tarjeta', 'transferencia']),
   montoRecibido: z.number().nonnegative().optional(),
+  orderId: z.string().min(1).optional(),
 });
 
 const cerrarTurnoSchema = z.object({
@@ -113,12 +115,14 @@ export async function registrarVenta(input: RegistrarVentaInput): Promise<Regist
     }
   }
 
-  const cambio = isCash && payload.montoRecibido !== undefined ? payload.montoRecibido - payload.total : null;
+  const cambio =
+    isCash && payload.montoRecibido !== undefined ? payload.montoRecibido - payload.total : null;
 
   const { data: venta, error: ventaError } = await supabaseAdmin
     .from(VENTAS_TABLE)
     .insert({
       turno_id: payload.turnoId,
+      order_id: payload.orderId ?? null,
       total: payload.total,
       metodo_pago: payload.metodoPago,
       monto_recibido: isCash ? payload.montoRecibido ?? payload.total : null,
@@ -141,6 +145,23 @@ export async function registrarVenta(input: RegistrarVentaInput): Promise<Regist
 
     if (updateError) {
       throw new Error(updateError.message ?? 'No pudimos actualizar el total del turno.');
+    }
+  }
+
+  if (payload.orderId) {
+    const orderUpdate: Record<string, unknown> = {
+      paymentMethod: payload.metodoPago,
+    };
+    if (isCash) {
+      orderUpdate.cashTendered = payload.montoRecibido ?? payload.total;
+      orderUpdate.cashChange = cambio;
+    }
+    const { error: orderUpdateError } = await supabaseAdmin
+      .from(ORDERS_TABLE)
+      .update(orderUpdate)
+      .eq('id', payload.orderId);
+    if (orderUpdateError) {
+      console.warn('No se pudo actualizar el pedido al registrar la venta:', orderUpdateError);
     }
   }
 

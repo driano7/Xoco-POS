@@ -103,6 +103,10 @@ export interface Order {
   queuedByStaffName?: string | null;
   queuedPaymentReference?: string | null;
   queuedPaymentReferenceType?: string | null;
+  paymentMethod?: string | null;
+  metodoPago?: string | null;
+  montoRecibido?: number | null;
+  cambioEntregado?: number | null;
 }
 
 export interface Reservation {
@@ -1146,6 +1150,11 @@ export interface TicketDetail {
     handledByStaffId?: string | null;
     handledByStaffName?: string | null;
   };
+  sale?: {
+    metodoPago?: string | null;
+    montoRecibido?: number | null;
+    cambioEntregado?: number | null;
+  };
   order: {
     id: string;
     status: string;
@@ -1162,6 +1171,10 @@ export interface TicketDetail {
     queuedPaymentReferenceType?: string | null;
     queuedByStaffId?: string | null;
     queuedByStaffName?: string | null;
+    paymentMethod?: string | null;
+    metodoPago?: string | null;
+    montoRecibido?: number | null;
+    cambioEntregado?: number | null;
   };
   customer: {
     id?: string | null;
@@ -1228,6 +1241,19 @@ export async function downloadHygieneChecklistPdf(month: string): Promise<Blob> 
   const response = await fetch(url, { cache: 'no-store' });
   if (!response.ok) {
     throw new Error('No pudimos generar el PDF de higiene.');
+  }
+  return await response.blob();
+}
+
+export async function exportCofeprisReport(format: 'csv' | 'xlsx', month?: string): Promise<Blob> {
+  const params: Record<string, string> = { format };
+  if (month) {
+    params.month = month;
+  }
+  const url = buildApiUrl('/api/cofepris/export', params);
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok) {
+    throw new Error('No pudimos generar el reporte COFEPRIS.');
   }
   return await response.blob();
 }

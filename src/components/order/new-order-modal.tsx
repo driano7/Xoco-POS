@@ -231,6 +231,7 @@ export function NewOrderModal({
   const [isPublicSale, setIsPublicSale] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<string | null>(null);
   const [paymentReference, setPaymentReference] = useState('');
+  const [cashTenderedInput, setCashTenderedInput] = useState('');
   const [loyaltyMatch, setLoyaltyMatch] = useState<LoyaltyCustomer | null>(null);
   const [loyaltyBaseCoffees, setLoyaltyBaseCoffees] = useState<number | null>(null);
   const [availableBeverageSizes, setAvailableBeverageSizes] = useState<MenuItem[]>([]);
@@ -317,6 +318,12 @@ export function NewOrderModal({
   useEffect(() => {
     if (paymentMethod === 'efectivo') {
       setPaymentReference('');
+    }
+  }, [paymentMethod]);
+
+  useEffect(() => {
+    if (paymentMethod !== 'efectivo') {
+      setCashTenderedInput('');
     }
   }, [paymentMethod]);
 
@@ -487,6 +494,8 @@ export function NewOrderModal({
     setAvailableBeverageSizes([]);
   };
 
+  const parsedCustomPercent = useMemo(() => parsePositiveNumber(customTipPercent), [customTipPercent]);
+  const parsedCustomAmount = useMemo(() => parsePositiveNumber(customTipAmount), [customTipAmount]);
   const beverageSizeDropdownOptions = useMemo(
     () =>
       availableBeverageSizes.map((variant) => ({
@@ -495,47 +504,6 @@ export function NewOrderModal({
       })),
     [availableBeverageSizes]
   );
-
-  const canSubmit = items.length > 0 && !isSubmitting && Boolean(paymentMethod);
-  const showPaymentReferenceField = Boolean(paymentMethod && paymentMethod !== 'efectivo');
-  const paymentReferenceLabel =
-    (paymentMethod && PAYMENT_REFERENCE_LABELS[paymentMethod]) || 'Referencia de pago';
-  const paymentReferencePlaceholder =
-    (paymentMethod && PAYMENT_REFERENCE_PLACEHOLDERS[paymentMethod]) || 'Referencia de pago';
-  const paymentReferenceHint =
-    (paymentMethod && PAYMENT_REFERENCE_HINTS[paymentMethod]) ||
-    'Captura la referencia proporcionada por el comprobante.';
-  const walletScannerAvailable = Boolean(onWalletScanRequest);
-  const loyaltyModulo = useMemo(
-    () =>
-      typeof loyaltyBaseCoffees === 'number'
-        ? loyaltyBaseCoffees % LOYALTY_STAMPS_TARGET
-        : null,
-    [loyaltyBaseCoffees]
-  );
-  const coffeesUntilReward = useMemo(() => {
-    if (loyaltyModulo === null) {
-      return null;
-    }
-    return loyaltyModulo === 6 ? 0 : 6 - loyaltyModulo;
-  }, [loyaltyModulo]);
-
-  const parsedCustomPercent = useMemo(() => parsePositiveNumber(customTipPercent), [customTipPercent]);
-  const parsedCustomAmount = useMemo(() => parsePositiveNumber(customTipAmount), [customTipAmount]);
-  const loyaltyStatusMessage = useMemo(() => {
-    if (!loyaltyMatch || typeof loyaltyBaseCoffees !== 'number') {
-      return null;
-    }
-    if (coffeesUntilReward === 0) {
-      return 'El siguiente café de este pedido se descuenta automáticamente.';
-    }
-    if (typeof coffeesUntilReward === 'number') {
-      return coffeesUntilReward === 1
-        ? 'Te falta 1 café para activar el beneficio.'
-        : `Te faltan ${coffeesUntilReward} cafés para activar el beneficio.`;
-    }
-    return null;
-  }, [coffeesUntilReward, loyaltyBaseCoffees, loyaltyMatch]);
 
   const { tipAmount, appliedPercent } = useMemo(() => {
     let percent: number | null = null;
@@ -567,7 +535,55 @@ export function NewOrderModal({
     useCustomTipAmount,
   ]);
 
-const totalWithTip = subtotal + tipAmount;
+  const totalWithTip = subtotal + tipAmount;
+  const isCashPayment = paymentMethod === 'efectivo';
+  const parsedCashTendered = useMemo(
+    () => parsePositiveNumber(cashTenderedInput),
+    [cashTenderedInput]
+  );
+  const cashChangePreview =
+    isCashPayment && parsedCashTendered !== null
+      ? Math.max(parsedCashTendered - totalWithTip, 0)
+      : null;
+  const hasValidCashAmount =
+    !isCashPayment || (parsedCashTendered !== null && parsedCashTendered >= totalWithTip);
+  const canSubmit = items.length > 0 && !isSubmitting && Boolean(paymentMethod) && hasValidCashAmount;
+  const showPaymentReferenceField = Boolean(paymentMethod && paymentMethod !== 'efectivo');
+  const paymentReferenceLabel =
+    (paymentMethod && PAYMENT_REFERENCE_LABELS[paymentMethod]) || 'Referencia de pago';
+  const paymentReferencePlaceholder =
+    (paymentMethod && PAYMENT_REFERENCE_PLACEHOLDERS[paymentMethod]) || 'Referencia de pago';
+  const paymentReferenceHint =
+    (paymentMethod && PAYMENT_REFERENCE_HINTS[paymentMethod]) ||
+    'Captura la referencia proporcionada por el comprobante.';
+  const walletScannerAvailable = Boolean(onWalletScanRequest);
+  const loyaltyModulo = useMemo(
+    () =>
+      typeof loyaltyBaseCoffees === 'number'
+        ? loyaltyBaseCoffees % LOYALTY_STAMPS_TARGET
+        : null,
+    [loyaltyBaseCoffees]
+  );
+  const coffeesUntilReward = useMemo(() => {
+    if (loyaltyModulo === null) {
+      return null;
+    }
+    return loyaltyModulo === 6 ? 0 : 6 - loyaltyModulo;
+  }, [loyaltyModulo]);
+  const loyaltyStatusMessage = useMemo(() => {
+    if (!loyaltyMatch || typeof loyaltyBaseCoffees !== 'number') {
+      return null;
+    }
+    if (coffeesUntilReward === 0) {
+      return 'El siguiente café de este pedido se descuenta automáticamente.';
+    }
+    if (typeof coffeesUntilReward === 'number') {
+      return coffeesUntilReward === 1
+        ? 'Te falta 1 café para activar el beneficio.'
+        : `Te faltan ${coffeesUntilReward} cafés para activar el beneficio.`;
+    }
+    return null;
+  }, [coffeesUntilReward, loyaltyBaseCoffees, loyaltyMatch]);
 
 const getClientLabel = (customer: ValidatedCustomer | null) => {
   if (!customer) {
@@ -599,6 +615,7 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
     setPaymentReference('');
     setLoyaltyMatch(null);
     setLoyaltyBaseCoffees(null);
+    setCashTenderedInput('');
   };
 
   const handleClientLookup = async () => {
@@ -665,6 +682,17 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
       return;
     }
 
+    if (paymentMethod === 'efectivo') {
+      if (parsedCashTendered === null) {
+        setFormError('Captura con cuánto pagó el cliente.');
+        return;
+      }
+      if (parsedCashTendered < totalWithTip) {
+        setFormError('El monto recibido no puede ser menor al total.');
+        return;
+      }
+    }
+
     const needsReference = requiresPaymentReference(paymentMethod);
     const trimmedReference = paymentReference.trim();
     const normalizedReference = looksLikeLightningInvoice(trimmedReference)
@@ -694,12 +722,22 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
     const fallbackUserId = isUsingPublicSaleId ? PUBLIC_SALE_USER_ID : undefined;
     const referenceType = normalizedReference ? detectReferenceType(normalizedReference) : null;
     const metadataPayload: Record<string, unknown> = {};
+    const paymentMetadata: Record<string, unknown> = {};
+    if (paymentMethod) {
+      paymentMetadata.method = paymentMethod;
+    }
     if (normalizedReference) {
-      metadataPayload.payment = {
-        reference: normalizedReference,
-        method: paymentMethod,
-        referenceType,
-      };
+      paymentMetadata.reference = normalizedReference;
+      if (referenceType) {
+        paymentMetadata.referenceType = referenceType;
+      }
+    }
+    if (paymentMethod === 'efectivo' && parsedCashTendered !== null) {
+      paymentMetadata.cashTendered = parsedCashTendered;
+      paymentMetadata.cashChange = Math.max(parsedCashTendered - totalWithTip, 0);
+    }
+    if (Object.keys(paymentMetadata).length > 0) {
+      metadataPayload.payment = paymentMetadata;
     }
     const trimmedNotes = notes.trim();
     const payload: Record<string, unknown> = {
@@ -1154,6 +1192,34 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
         </div>
         {!paymentMethod && (
           <p className="mt-2 text-xs text-danger-500">Este campo es obligatorio.</p>
+        )}
+        {paymentMethod === 'efectivo' && (
+          <div className="mt-4 space-y-2 rounded-2xl border border-primary-100/70 bg-white/60 p-4 text-sm dark:border-white/20 dark:bg-white/5">
+            <label className="text-xs font-semibold uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+              ¿Con cuánto pagó?
+            </label>
+            <input
+              value={cashTenderedInput}
+              onChange={(event) => setCashTenderedInput(event.target.value)}
+              placeholder="Ej. 500"
+              inputMode="decimal"
+              className="w-full rounded-xl border border-primary-100/70 bg-transparent px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/5 dark:text-white"
+            />
+            {parsedCashTendered !== null ? (
+              <p className="text-xs text-[var(--brand-muted)]">
+                Cambio sugerido:{' '}
+                <span className={parsedCashTendered < totalWithTip ? 'text-danger-500' : 'text-primary-700 dark:text-primary-100'}>
+                  {parsedCashTendered < totalWithTip
+                    ? 'Insuficiente'
+                    : formatCurrency(cashChangePreview ?? 0)}
+                </span>
+              </p>
+            ) : (
+              <p className="text-xs text-[var(--brand-muted)]">
+                Captura la cantidad recibida para calcular el cambio.
+              </p>
+            )}
+          </div>
         )}
         {showPaymentReferenceField && (
           <div className="mt-4">

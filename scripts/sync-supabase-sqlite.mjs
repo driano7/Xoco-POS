@@ -119,6 +119,10 @@ const SYNC_TABLES = [
   { name: 'inventory_stock_ledger', pk: 'id', updatedColumn: 'createdAt', pushChanges: false },
   { name: 'inventory_stock_entries', pk: 'id', updatedColumn: 'createdAt' },
   { name: 'inventory_stock_entry_items', pk: 'id', fullRefresh: true, pushChanges: false },
+  { name: 'hygiene_logs', pk: 'id', updatedColumn: 'createdAt' },
+  { name: 'pest_control_logs', pk: 'id', updatedColumn: 'createdAt' },
+  { name: 'waste_logs', pk: 'id', updatedColumn: 'createdAt' },
+  { name: 'product_recipes', pk: 'id', updatedColumn: 'createdAt' },
 ];
 
 async function ensureSyncStateTable() {

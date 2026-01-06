@@ -42,7 +42,8 @@ import { OrdersPanel } from '@/components/orders-panel';
 import { NewOrderModal } from '@/components/order/new-order-modal';
 import { CustomerLoyaltyCoffees } from '@/components/customer-loyalty-coffees';
 import { SearchableDropdown } from '@/components/searchable-dropdown';
-import { SanitaryCompliancePanel } from '@/components/compliance/sanitary-compliance-panel';
+import { CofeprisPanel } from '@/components/compliance/sanitary-compliance-panel';
+import TicketVenta from '@/components/ticket-venta';
 import {
   useMenuOptions,
   type MenuItem,
@@ -76,6 +77,7 @@ import {
   fetchTicketDetail,
   updateCustomerPreferences,
   fetchReservationDetail,
+  fetchPestControlStatus,
 } from '@/lib/api';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode, WheelEvent } from 'react';
@@ -191,6 +193,67 @@ const parseMetadataObject = (value: unknown): Record<string, unknown> | null => 
     }
   }
   return null;
+};
+
+const extractPaymentMetadata = (metadata?: unknown): Record<string, unknown> | null => {
+  const parsed = parseMetadataObject(metadata);
+  if (!parsed) {
+    return null;
+  }
+  const payment = parsed.payment;
+  if (isPlainObject(payment)) {
+    return payment as Record<string, unknown>;
+  }
+  return null;
+};
+
+const coerceNumber = (value: unknown): number | null => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const extractReferenceLastDigits = (value: string | null | undefined) => {
+  if (!value) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const digits = trimmed.replace(/\D/g, '');
+  if (digits.length >= 4) {
+    return digits.slice(-4);
+  }
+  if (trimmed.length >= 4) {
+    return trimmed.slice(-4);
+  }
+  return trimmed;
+};
+
+const summarizeWalletReference = (reference: string | null | undefined) => {
+  if (!reference) {
+    return null;
+  }
+  const trimmed = reference.trim();
+  if (trimmed.length <= 12) {
+    return trimmed;
+  }
+  if (trimmed.startsWith('0x')) {
+    return `${trimmed.slice(0, 6)}…${trimmed.slice(-4)}`;
+  }
+  if (trimmed.includes('.')) {
+    return trimmed;
+  }
+  if (trimmed.toLowerCase().startsWith('ln')) {
+    return `${trimmed.slice(0, 10)}…${trimmed.slice(-4)}`;
+  }
+  return `${trimmed.slice(0, 4)}…${trimmed.slice(-4)}`;
 };
 
 const STAFF_NOTES_METADATA_KEYS = ['posNote', 'staffNote', 'notaPos', 'barraNote', 'kitchenNote'];
@@ -1126,6 +1189,19 @@ const buildOrderFromTicketDetail = (detail: TicketDetail, fallback?: ScannedTick
     toTrimmedString(paymentMetadata?.referenceType) ??
     detail.ticket.paymentReferenceType ??
     null;
+  const saleMethod =
+    detail.sale?.metodoPago ??
+    (detail.order as { metodoPago?: string | null }).metodoPago ??
+    (detail.order as { paymentMethod?: string | null }).paymentMethod ??
+    null;
+  const saleTendered =
+    detail.sale?.montoRecibido ??
+    (detail.order as { montoRecibido?: number | null }).montoRecibido ??
+    null;
+  const saleChange =
+    detail.sale?.cambioEntregado ??
+    (detail.order as { cambioEntregado?: number | null }).cambioEntregado ??
+    null;
 
   return {
     id: detail.order.id,
@@ -1145,6 +1221,9 @@ const buildOrderFromTicketDetail = (detail: TicketDetail, fallback?: ScannedTick
     queuedPaymentReferenceType: resolvedPaymentReferenceType,
     queuedByStaffId: resolvedQueuedByStaffId,
     queuedByStaffName: resolvedQueuedByStaffName,
+    metodoPago: saleMethod ?? resolvedPaymentMethod ?? null,
+    montoRecibido: saleTendered,
+    cambioEntregado: saleChange,
     user: {
       firstName: fallbackFirst,
       lastName: fallbackLast,
@@ -1533,6 +1612,7 @@ type ScanResult =
 type NavSection =
   | 'home'
   | 'metrics'
+  | 'cofepris'
   | 'advancedMetrics'
   | 'forecasts'
   | 'marketing'
@@ -1544,6 +1624,7 @@ type NavSection =
 const NAV_ITEMS: { id: NavSection; label: string }[] = [
   { id: 'home', label: 'Home' },
   { id: 'metrics', label: 'Métricas' },
+  { id: 'cofepris', label: 'COFEPRIS' },
   { id: 'advancedMetrics', label: 'Métricas avanzadas' },
   { id: 'forecasts', label: 'Pronósticos' },
   { id: 'marketing', label: 'Marketing' },
@@ -2302,6 +2383,10 @@ export function PosDashboard() {
   const staffTotal = staffData?.metrics.totalStaff ?? 0;
   const reservationsSectionId = 'reservations-panel';
   const [detail, setDetail] = useState<DetailState>(null);
+  const [pendingQueue, setPendingQueue] = useState<{
+    order: Order;
+    options?: { paymentMethod?: string | null; paymentReference?: string | null };
+  } | null>(null);
   const [showReservationHistory, setShowReservationHistory] = useState(false);
   const [showReservationCompletedHistory, setShowReservationCompletedHistory] = useState(false);
   const [actionState, setActionState] = useState<DetailActionState>({
@@ -2537,6 +2622,27 @@ export function PosDashboard() {
     }
     return items;
   }, [user?.role, isSocio]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadPestAlert = async () => {
+      try {
+        const status = await fetchPestControlStatus();
+        if (!cancelled) {
+          setPestAlertMessage(status.alertMessage ?? null);
+        }
+      } catch (error) {
+        console.warn('No pudimos obtener el estado de fumigación:', error);
+        if (!cancelled) {
+          setPestAlertMessage((prev) => prev ?? 'No pudimos verificar la fumigación.');
+        }
+      }
+    };
+    void loadPestAlert();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const params: Record<string, string> = { marketing_range: marketingRange };
@@ -3190,7 +3296,7 @@ export function PosDashboard() {
       options?: { paymentMethod?: string | null; paymentReference?: string | null }
     ) => {
       if (!user) {
-        return;
+        return false;
       }
       setActionState({ isLoading: true, message: null, error: null });
       try {
@@ -3208,6 +3314,7 @@ export function PosDashboard() {
           error: null,
         });
         setDetail(null);
+        return true;
       } catch (error) {
         setActionState({
           isLoading: false,
@@ -3217,10 +3324,28 @@ export function PosDashboard() {
               ? error.message
               : 'No pudimos mover el pedido a En preparación. Intenta más tarde.',
         });
+        return false;
       }
     },
     [getCurrentStaffName, refresh, refreshPrep, user]
   );
+
+  const handleQueuePreviewRequest = useCallback(
+    (order: Order, options?: { paymentMethod?: string | null; paymentReference?: string | null }) => {
+      setPendingQueue({ order, options });
+    },
+    []
+  );
+
+  const handleConfirmPendingQueue = useCallback(async () => {
+    if (!pendingQueue) {
+      return;
+    }
+    const wasQueued = await handleMoveOrderToQueue(pendingQueue.order, pendingQueue.options);
+    if (wasQueued) {
+      setPendingQueue(null);
+    }
+  }, [handleMoveOrderToQueue, pendingQueue]);
 
   const handleReturnOrderToQueue = useCallback(
     async (
@@ -3896,19 +4021,6 @@ const currentMonthMetrics = useMemo(() => {
           </div>
         )}
 
-        <section className="card space-y-6 p-6">
-          <div className="flex items-center justify-between">
-            <p className="badge">Checklist de higiene y COFEPRIS</p>
-            <p className="text-xs text-[var(--brand-muted)]">Se guarda staffId, fecha y hora automáticamente.</p>
-          </div>
-          <SanitaryCompliancePanel
-            staffId={user.id}
-            staffName={staffDisplayName}
-            branchId={user.branchId}
-            onPestAlertChange={(message) => setPestAlertMessage(message)}
-          />
-        </section>
-
         <OrdersPanel
           hiddenOrderIds={hiddenQueueOrderIds}
           prepTasks={visibleActivePrep}
@@ -4034,7 +4146,7 @@ const currentMonthMetrics = useMemo(() => {
                 {detail.type === 'order' && (
                     <OrderDetailContent
                       order={detail.data}
-                      onMoveToQueue={(order, options) => void handleMoveOrderToQueue(order, options)}
+                      onMoveToQueue={(order, options) => handleQueuePreviewRequest(order, options)}
                       onReturnToQueue={(order, options) => void handleReturnOrderToQueue(order, options)}
                       actionState={actionState}
                       prefilledPaymentReference={lastPaymentReference}
@@ -4087,6 +4199,123 @@ const currentMonthMetrics = useMemo(() => {
                     />
                   )}
                 </div>
+              </DetailModal>
+            )}
+            {pendingQueue && (
+              <DetailModal onClose={() => setPendingQueue(null)} size="wide">
+                {(() => {
+                  const order = pendingQueue.order;
+                  const rawItems = Array.isArray(order.items) ? order.items : [];
+                  const ticketItems =
+                    rawItems.length > 0
+                      ? rawItems.map((item, index) => ({
+                          name: item.name ?? item.productId ?? `Producto ${index + 1}`,
+                          quantity: item.quantity ?? 0,
+                          price: item.price ?? null,
+                        }))
+                      : [
+                          {
+                            name: 'Consumo registrado',
+                            quantity: 1,
+                            price:
+                              order.total ??
+                              order.totals?.total ??
+                              order.totals?.totalAmount ??
+                              0,
+                          },
+                        ];
+                  const totals = order.totals ?? {};
+                  const subtotal =
+                    typeof order.subtotal === 'number'
+                      ? order.subtotal
+                      : typeof totals.subtotal === 'number'
+                        ? totals.subtotal
+                        : null;
+                  const tax =
+                    typeof order.vatAmount === 'number'
+                      ? order.vatAmount
+                      : typeof totals.tax === 'number'
+                        ? totals.tax
+                        : null;
+                  const totalAmount =
+                    typeof order.total === 'number'
+                      ? order.total
+                      : typeof totals.total === 'number'
+                        ? totals.total
+                        : typeof totals.totalAmount === 'number'
+                          ? totals.totalAmount
+                          : 0;
+                  const ticketMethod =
+                    pendingQueue.options?.paymentMethod ??
+                    order.metodoPago ??
+                    order.queuedPaymentMethod ??
+                    order.paymentMethod ??
+                    null;
+                  const cashTendered = order.montoRecibido ?? null;
+                  const cashChange = order.cambioEntregado ?? null;
+                  const paymentReference =
+                    pendingQueue.options?.paymentReference ??
+                    order.queuedPaymentReference ??
+                    null;
+                  const footer =
+                    ticketMethod &&
+                    ticketMethod !== 'efectivo' &&
+                    paymentReference ? (
+                      <div className="text-left text-xs">
+                        <p className="uppercase tracking-[0.3em] text-gray-500">Referencia</p>
+                        <p className="font-mono text-gray-900">{paymentReference}</p>
+                      </div>
+                    ) : undefined;
+
+                  return (
+                    <div className="space-y-6">
+                      <div>
+                        <p className="badge">Confirmar ticket</p>
+                        <p className="mt-2 text-sm text-[var(--brand-muted)]">
+                          Revisa el ticket térmico antes de mover el pedido a En preparación.
+                        </p>
+                      </div>
+                      <TicketVenta
+                        businessName="Xoco Café"
+                        businessAddress="Sucursal Matriz"
+                        ticketCode={order.ticketCode ?? order.orderNumber ?? order.id}
+                        orderNumber={order.orderNumber ?? order.id}
+                        createdAt={order.createdAt ?? null}
+                        items={ticketItems}
+                        subtotal={subtotal}
+                        tax={tax}
+                        total={totalAmount}
+                        metodoPago={ticketMethod}
+                        montoRecibido={cashTendered}
+                        cambioEntregado={cashChange}
+                        footer={footer}
+                      />
+                      {actionState?.error && (
+                        <p className="rounded-2xl border border-danger-200/80 bg-danger-50/60 px-3 py-2 text-xs text-danger-700 dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
+                          {actionState.error}
+                        </p>
+                      )}
+                      <div className="flex flex-col gap-3 sm:flex-row">
+                        <button
+                          type="button"
+                          className="w-full rounded-2xl border border-primary-100/80 px-4 py-2 text-sm font-semibold text-[var(--brand-text)] transition hover:border-primary-300 hover:bg-white dark:border-white/20 dark:text-white"
+                          onClick={() => setPendingQueue(null)}
+                          disabled={actionState?.isLoading}
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          className="w-full rounded-2xl bg-primary-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:opacity-60"
+                          onClick={() => void handleConfirmPendingQueue()}
+                          disabled={actionState?.isLoading}
+                        >
+                          {actionState?.isLoading ? 'Procesando…' : 'Confirmar y mover'}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
               </DetailModal>
             )}
             {showReservationHistory && (
@@ -4187,6 +4416,26 @@ const currentMonthMetrics = useMemo(() => {
               <InventoryAccidentMetrics stats={inventoryAccidentStats} />
             </section>
           </>
+        )}
+
+        {activeSection === 'cofepris' && (
+          <section className="card space-y-6 p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="badge">COFEPRIS</p>
+                <p className="text-sm text-[var(--brand-muted)]">
+                  Panel completo de higiene, plagas, inventario y residuos · exportable en CSV / Excel.
+                </p>
+              </div>
+              <p className="text-xs text-[var(--brand-muted)]">Acceso disponible para baristas y gerentes.</p>
+            </div>
+            <CofeprisPanel
+              staffId={user.id}
+              staffName={staffDisplayName}
+              branchId={user.branchId}
+              onPestAlertChange={(message) => setPestAlertMessage(message)}
+            />
+          </section>
         )}
 
         {activeSection === 'advancedMetrics' && isSocio && (
@@ -5434,10 +5683,22 @@ const OrderDetailContent = ({
   );
   const [itemsLoading, setItemsLoading] = useState(false);
   const [itemsError, setItemsError] = useState<string | null>(null);
-  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string | null>(null);
-  const [showPaymentSelector, setShowPaymentSelector] = useState<boolean>(!order.queuedPaymentMethod);
-  const [paymentReference, setPaymentReference] = useState<string>(order.queuedPaymentReference ?? '');
-  const paymentMethodLabel = selectedPaymentMethod
+  const paymentMetadataRecord = extractPaymentMetadata(order.metadata);
+  const metadataPaymentMethod = toTrimmedString(paymentMetadataRecord?.method) ?? null;
+  const metadataPaymentReference = toTrimmedString(paymentMetadataRecord?.reference) ?? null;
+  const metadataPaymentReferenceType =
+    toTrimmedString(paymentMetadataRecord?.referenceType) ?? null;
+  const metadataCashTendered = coerceNumber(paymentMetadataRecord?.cashTendered);
+  const metadataCashChange = coerceNumber(paymentMetadataRecord?.cashChange);
+  const initialPaymentMethod = order.queuedPaymentMethod ?? null;
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string | null>(
+    initialPaymentMethod
+  );
+  const [showPaymentSelector, setShowPaymentSelector] = useState<boolean>(!initialPaymentMethod);
+  const [paymentReference, setPaymentReference] = useState<string>(
+    order.queuedPaymentReference ?? ''
+  );
+  const editingPaymentMethodLabel = selectedPaymentMethod
     ? PAYMENT_METHOD_LABELS[selectedPaymentMethod] ?? selectedPaymentMethod
     : null;
   const handleWalletScan = () => {
@@ -5513,6 +5774,25 @@ const OrderDetailContent = ({
     };
   }, [items.length, order.id, order.orderNumber, order.ticketCode]);
 
+  const resolvedPaymentMethod =
+    order.metodoPago ??
+    order.paymentMethod ??
+    order.queuedPaymentMethod ??
+    metadataPaymentMethod ??
+    null;
+  const resolvedPaymentReference =
+    order.queuedPaymentReference ?? metadataPaymentReference ?? null;
+  const resolvedPaymentReferenceType =
+    order.queuedPaymentReferenceType ?? metadataPaymentReferenceType ?? null;
+  const resolvedCashTendered = order.montoRecibido ?? metadataCashTendered ?? null;
+  const resolvedCashChange = order.cambioEntregado ?? metadataCashChange ?? null;
+  const paymentMethodDisplayLabel = resolvedPaymentMethod
+    ? getPaymentMethodLabel(resolvedPaymentMethod)
+    : null;
+  const normalizedPaymentMethod = resolvedPaymentMethod
+    ? resolvedPaymentMethod.toLowerCase()
+    : null;
+
   const totalItemsFromList = items.reduce((sum, item) => sum + safeQuantity(item.quantity), 0);
   const totalItems =
     totalItemsFromList > 0 ? totalItemsFromList : order.itemsCount ?? items.length ?? 0;
@@ -5531,9 +5811,9 @@ const OrderDetailContent = ({
         ? (order.totals?.tipAmount as number)
         : null;
   const assignedStaffDisplay = order.queuedByStaffName ?? order.queuedByStaffId ?? null;
-  const paymentReferenceTypeLabel = order.queuedPaymentReferenceType
-    ? PAYMENT_REFERENCE_TYPE_LABELS[order.queuedPaymentReferenceType] ??
-      order.queuedPaymentReferenceType
+  const paymentReferenceTypeLabel = resolvedPaymentReferenceType
+    ? PAYMENT_REFERENCE_TYPE_LABELS[resolvedPaymentReferenceType] ??
+      resolvedPaymentReferenceType
     : null;
   const hydratedItems =
     items.length > 0
@@ -5545,14 +5825,113 @@ const OrderDetailContent = ({
   const loyaltyDisplayName = loyaltyCustomer ? getCustomerDisplayName(loyaltyCustomer) : null;
   const loyaltyCoffees = loyaltyCustomer?.loyaltyCoffees ?? null;
   const loyaltyRewardEarned = Boolean(loyaltyCustomer?.rewardEarned);
-  const showPaymentSections = !isInPrepQueue && order.status !== 'completed';
-  const isPublicSale = isPublicSaleOrder(order);
-  const shouldShowLoyaltyPanel = showPaymentSections && !isPublicSale;
+  const ticketTotals = order.totals ?? {};
+  const ticketSubtotal =
+    typeof order.subtotal === 'number'
+      ? order.subtotal
+      : typeof ticketTotals.subtotal === 'number'
+        ? ticketTotals.subtotal
+        : null;
+  const ticketTax =
+    typeof order.vatAmount === 'number'
+      ? order.vatAmount
+      : typeof ticketTotals.tax === 'number'
+        ? ticketTotals.tax
+        : null;
+  const fallbackTicketTotal =
+    typeof ticketTotals.total === 'number'
+      ? ticketTotals.total
+      : typeof ticketTotals.totalAmount === 'number'
+        ? ticketTotals.totalAmount
+        : 0;
   const totalAmount = typeof order.total === 'number' ? order.total : null;
+  const ticketTotal = totalAmount ?? fallbackTicketTotal;
+  const ticketItems =
+    hydratedItems.length > 0
+      ? hydratedItems.map((item, index) => {
+          const quantity = safeQuantity(item.quantity) ?? 0;
+          const price = typeof item.price === 'number' ? item.price : 0;
+          return {
+            name: item.name ?? item.productId ?? `Producto ${index + 1}`,
+            quantity,
+            price,
+            subtotal: quantity ? price * quantity : price,
+          };
+        })
+      : [
+          {
+            name: 'Consumo registrado',
+            quantity: 1,
+            price: ticketTotal ?? 0,
+            subtotal: ticketTotal ?? 0,
+          },
+        ];
+  const ticketFooter =
+    normalizedPaymentMethod &&
+    normalizedPaymentMethod !== 'efectivo' &&
+    resolvedPaymentReference ? (
+      <div className="text-left text-xs text-gray-700">
+        <p className="uppercase tracking-[0.3em] text-gray-500">Referencia</p>
+        <p className="font-mono text-gray-900">{resolvedPaymentReference}</p>
+      </div>
+    ) : undefined;
+  const allowPaymentEditing = !isInPrepQueue && order.status !== 'completed';
+  const isPublicSale = isPublicSaleOrder(order);
+  const shouldShowLoyaltyPanel = allowPaymentEditing && !isPublicSale;
   const tipAmountValue = typeof tipValue === 'number' ? tipValue : 0;
-  const showTipDetails = showPaymentSections && tipAmountValue > 0;
+  const showTipDetails = tipAmountValue > 0;
   const subtotalAmount =
     showTipDetails && totalAmount !== null ? Math.max(totalAmount - tipAmountValue, 0) : null;
+  const resolvedCashChangeAmount =
+    resolvedCashChange !== null
+      ? Math.max(resolvedCashChange, 0)
+      : resolvedCashTendered !== null && totalAmount !== null
+        ? Math.max(resolvedCashTendered - totalAmount, 0)
+        : null;
+  const paymentSummaryText = (() => {
+    if (!normalizedPaymentMethod) {
+      return null;
+    }
+    if (normalizedPaymentMethod === 'efectivo') {
+      if (resolvedCashChangeAmount !== null) {
+        return `Cambio entregado: ${formatCurrency(resolvedCashChangeAmount)}`;
+      }
+      if (resolvedCashTendered !== null) {
+        return `Monto recibido: ${formatCurrency(resolvedCashTendered)}`;
+      }
+      return null;
+    }
+    if (normalizedPaymentMethod === 'cripto' && resolvedPaymentReference) {
+      const label =
+        resolvedPaymentReferenceType === 'ens_name'
+          ? resolvedPaymentReference
+          : summarizeWalletReference(resolvedPaymentReference) ?? resolvedPaymentReference;
+      const prefix = paymentReferenceTypeLabel ?? 'Wallet';
+      return `${prefix}: ${label}`;
+    }
+    if (
+      (normalizedPaymentMethod === 'debito' ||
+        normalizedPaymentMethod === 'credito' ||
+        normalizedPaymentMethod === 'transferencia') &&
+      resolvedPaymentReference
+    ) {
+      const digits = extractReferenceLastDigits(resolvedPaymentReference);
+      if (digits) {
+        return `Terminación ${digits}`;
+      }
+    }
+    if (resolvedPaymentReference) {
+      const digits = extractReferenceLastDigits(resolvedPaymentReference);
+      if (digits) {
+        return `Referencia ••••${digits}`;
+      }
+      return `Referencia: ${resolvedPaymentReference}`;
+    }
+    return null;
+  })();
+  const paymentReferenceDisplayValue =
+    resolvedPaymentReference ?? (normalizedPaymentMethod === 'efectivo' ? 'No aplica' : 'Pendiente');
+  const paymentMethodLabel = paymentMethodDisplayLabel ?? 'Pendiente por definir';
   const handledStatusBadge = isInPrepQueue
     ? 'En preparación'
     : order.status === 'completed'
@@ -5657,32 +6036,38 @@ const OrderDetailContent = ({
             )
           }
         />
-        {showPaymentSections && (
-          <DetailRow
-            label="Método de pago"
-            value={
-              <span className="text-sm font-normal text-[var(--brand-text)] dark:text-white">
-                {paymentMethodLabel ?? 'Pendiente por definir'}
+        <DetailRow
+          label="Método de pago"
+          value={
+            <span className="text-sm font-normal text-[var(--brand-text)] dark:text-white">
+              {paymentMethodLabel}
+            </span>
+          }
+        />
+        <DetailRow
+          label="Referencia"
+          value={
+            paymentReferenceDisplayValue ? (
+              <span className="text-sm font-semibold text-primary-900 dark:text-primary-100">
+                {paymentReferenceDisplayValue}
+                {paymentReferenceTypeLabel && resolvedPaymentReference && (
+                  <span className="ml-2 rounded-full bg-primary-100 px-2 py-[2px] text-[10px] uppercase tracking-[0.2em] text-primary-700 dark:bg-white/10 dark:text-white">
+                    {paymentReferenceTypeLabel}
+                  </span>
+                )}
               </span>
-            }
-          />
-        )}
-        {showPaymentSections && (
+            ) : (
+              <span className="text-sm text-[var(--brand-muted)]">Pendiente</span>
+            )
+          }
+        />
+        {paymentSummaryText && (
           <DetailRow
-            label="Referencia"
+            label="Resumen de cobro"
             value={
-              order.queuedPaymentReference ? (
-                <span className="text-sm font-semibold text-primary-900 dark:text-primary-100">
-                  {order.queuedPaymentReference}
-                  {paymentReferenceTypeLabel && (
-                    <span className="ml-2 rounded-full bg-primary-100 px-2 py-[2px] text-[10px] uppercase tracking-[0.2em] text-primary-700 dark:bg-white/10 dark:text-white">
-                      {paymentReferenceTypeLabel}
-                    </span>
-                  )}
-                </span>
-              ) : (
-                <span className="text-sm text-[var(--brand-muted)]">Pendiente</span>
-              )
+              <span className="text-sm font-semibold text-primary-700 dark:text-primary-100">
+                {paymentSummaryText}
+              </span>
             }
           />
         )}
@@ -5729,12 +6114,34 @@ const OrderDetailContent = ({
         </p>
       )}
       <OrderItemsSection items={items} />
-      {showPaymentSections && order.status !== 'completed' && onMoveToQueue && (
+      <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+          Ticket digital (vista cliente)
+        </p>
+        <div className="mt-4 flex justify-center">
+          <TicketVenta
+            businessName="Xoco Café"
+            businessAddress="Sucursal Matriz"
+            ticketCode={order.ticketCode ?? order.orderNumber ?? order.id}
+            orderNumber={order.orderNumber ?? order.id}
+            createdAt={order.createdAt ?? order.updatedAt ?? null}
+            items={ticketItems}
+            subtotal={ticketSubtotal}
+            tax={ticketTax}
+            total={ticketTotal ?? 0}
+            metodoPago={resolvedPaymentMethod}
+            montoRecibido={resolvedCashTendered ?? undefined}
+            cambioEntregado={resolvedCashChangeAmount ?? undefined}
+            footer={ticketFooter}
+          />
+        </div>
+      </div>
+      {allowPaymentEditing && onMoveToQueue && (
         <div className="space-y-3">
           {selectedPaymentMethod && !showPaymentSelector ? (
             <div className="rounded-2xl border border-primary-100/70 bg-white/70 p-4 text-sm dark:border-white/10 dark:bg-white/5">
               <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Método de pago</p>
-              <p className="mt-2 text-sm">{paymentMethodLabel ?? selectedPaymentMethod}</p>
+              <p className="mt-2 text-sm">{editingPaymentMethodLabel ?? selectedPaymentMethod}</p>
               <button
                 type="button"
                 className="mt-3 text-xs font-semibold text-primary-600 underline-offset-2 hover:underline dark:text-primary-200"

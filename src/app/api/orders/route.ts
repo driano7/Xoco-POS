@@ -47,6 +47,7 @@ const ORDER_CODES_TABLE = process.env.SUPABASE_ORDER_CODES_TABLE ?? 'order_codes
 const ORDER_ITEMS_TABLE = process.env.SUPABASE_ORDER_ITEMS_TABLE ?? 'order_items';
 const PRODUCTS_TABLE = process.env.SUPABASE_PRODUCTS_TABLE ?? 'products';
 const USERS_TABLE = process.env.SUPABASE_USERS_TABLE ?? 'users';
+const VENTAS_TABLE = process.env.SUPABASE_VENTAS_TABLE ?? 'ventas';
 const ORDER_CLIENT_ID_COLUMN =
   process.env.SUPABASE_ORDERS_CLIENT_ID_COLUMN?.trim() || null;
 
@@ -160,6 +161,13 @@ type ProductRecord = {
   subcategory?: string | null;
 };
 
+type CashSaleRecord = {
+  metodo_pago?: string | null;
+  paymentMethod?: string | null;
+  monto_recibido?: number | string | null;
+  cambio_entregado?: number | string | null;
+};
+
 type OrdersDataLoader = {
   loadProducts: (productIds: Set<string>) => Promise<Map<string, ProductRecord>>;
   loadTicketsAndCodes: (
@@ -168,6 +176,7 @@ type OrdersDataLoader = {
     ticketMap: Map<string, string | null>;
     codeMap: Map<string, string | null>;
   }>;
+  loadCashSales?: (orderIds: string[]) => Promise<Map<string, CashSaleRecord>>;
 };
 
 const collectProductIds = (rawItems: unknown, target: Set<string>) => {
@@ -507,6 +516,7 @@ const mapOrdersPayload = async (
       notes,
       message,
       instructions,
+      paymentMethod,
       ...rest
     } = order as Record<string, unknown> & {
       id?: string;
@@ -518,6 +528,7 @@ const mapOrdersPayload = async (
       notes?: unknown;
       message?: unknown;
       instructions?: unknown;
+      paymentMethod?: unknown;
     };
     const sourceItems =
       Array.isArray(rawStoredItems) && rawStoredItems.length
@@ -548,6 +559,7 @@ const mapOrdersPayload = async (
       queuedByStaffName: toTrimmedString(prepAssignment?.staffName) ?? null,
       queuedPaymentReference: toTrimmedString(paymentMetadata?.reference) ?? null,
       queuedPaymentReferenceType: toTrimmedString(paymentMetadata?.referenceType) ?? null,
+      paymentMethod: typeof paymentMethod === 'string' ? paymentMethod : null,
     };
   });
 
@@ -566,6 +578,32 @@ const mapOrdersPayload = async (
       ...order,
       ticketCode: orderId ? ticketMap.get(orderId) || null : null,
       shortCode: orderId ? codeMap.get(orderId) || null : null,
+    };
+  });
+
+  const cashSalesMap =
+    loader.loadCashSales && enriched.length
+      ? await loader.loadCashSales(
+          enriched
+            .map((order) => order.id)
+            .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+        )
+      : new Map<string, CashSaleRecord>();
+
+  enriched = enriched.map((order) => {
+    const orderId = typeof order.id === 'string' ? order.id : null;
+    const sale = orderId ? cashSalesMap.get(orderId) : null;
+    const saleMethod =
+      toTrimmedString(sale?.metodo_pago ?? sale?.paymentMethod) ??
+      (typeof order.paymentMethod === 'string' ? order.paymentMethod : null);
+    const saleTendered = sale ? normalizeNumber(sale.monto_recibido) : null;
+    const saleChange = sale ? normalizeNumber(sale.cambio_entregado) : null;
+    return {
+      ...order,
+      paymentMethod: saleMethod ?? order.paymentMethod ?? null,
+      metodoPago: saleMethod ?? null,
+      montoRecibido: saleTendered,
+      cambioEntregado: saleChange,
     };
   });
 
@@ -743,6 +781,7 @@ const sqliteOrdersLoader: OrdersDataLoader = {
       ),
     };
   },
+  loadCashSales: async () => new Map<string, CashSaleRecord>(),
 };
 
 const supabaseOrdersLoader: OrdersDataLoader = {
@@ -784,6 +823,32 @@ const supabaseOrdersLoader: OrdersDataLoader = {
       ticketMap: new Map((tickets ?? []).map((ticket) => [ticket.orderId, ticket.ticketCode ?? null])),
       codeMap: new Map((codes ?? []).map((code) => [code.orderId, code.code ?? null])),
     };
+  },
+  loadCashSales: async (orderIds) => {
+    const map = new Map<string, CashSaleRecord>();
+    if (!orderIds.length) {
+      return map;
+    }
+    const { data, error } = await supabaseAdmin
+      .from(VENTAS_TABLE)
+      .select('order_id,metodo_pago,monto_recibido,cambio_entregado')
+      .in('order_id', orderIds);
+
+    if (error) {
+      throw new Error(`Failed to fetch ventas: ${error.message}`);
+    }
+
+    (data ?? []).forEach((row) => {
+      const orderId = typeof row.order_id === 'string' ? row.order_id : null;
+      if (orderId) {
+        map.set(orderId, {
+          metodo_pago: row.metodo_pago,
+          monto_recibido: row.monto_recibido,
+          cambio_entregado: row.cambio_entregado,
+        });
+      }
+    });
+    return map;
   },
 };
 

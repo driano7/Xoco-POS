@@ -41,6 +41,10 @@ const lato = Lato({
 export const metadata: Metadata = {
   title: 'Xoco Café POS',
   description: 'Panel POS integrado con Supabase y la app de clientes.',
+  icons: {
+    icon: '/icons/xoco-cart.svg',
+    shortcut: '/icons/xoco-cart.svg',
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

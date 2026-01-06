@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="cart-handle" x1="12" y1="18" x2="52" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a6d80"/>
+      <stop offset="1" stop-color="#5d5165"/>
+    </linearGradient>
+    <linearGradient id="cart-body" x1="22" y1="40" x2="118" y2="94" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f3f4f6"/>
+      <stop offset="1" stop-color="#d7dae0"/>
+    </linearGradient>
+    <linearGradient id="cart-rail" x1="20" y1="96" x2="102" y2="110" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#a7afc0"/>
+      <stop offset="1" stop-color="#8f9bad"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="26" ry="26" fill="#f9fafb"/>
+  <path d="M24 24h16l12 52h46" fill="none" stroke="url(#cart-handle)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M40 50h72l-6 32H50L40 50z" fill="url(#cart-body)" stroke="#b9becb" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M48 98h56" stroke="url(#cart-rail)" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="54" cy="104" r="10" fill="#5f566b"/>
+  <circle cx="98" cy="104" r="10" fill="#5f566b"/>
+  <rect x="56" y="34" width="10" height="30" rx="3" fill="#ff6b6b"/>
+  <rect x="72" y="28" width="10" height="36" rx="3" fill="#ffd66b"/>
+  <rect x="88" y="22" width="10" height="42" rx="3" fill="#7be495"/>
+  <rect x="104" y="16" width="10" height="48" rx="3" fill="#59b4ff"/>
+</svg>

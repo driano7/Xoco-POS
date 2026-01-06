@@ -62,6 +62,11 @@ El sistema ha sido adaptado, rediseñado y programado específicamente para Xoco
 - Administrador, Barista, Cajero.  
 - Permisos por módulo o acción.  
 
+## 🛡️ Panel COFEPRIS (ES/EN)  
+- **ES:** Se agregó una pestaña exclusiva dentro del dashboard POS dedicada al cumplimiento sanitario COFEPRIS (Comisión Federal para la Protección contra Riesgos Sanitarios). Permite que baristas y gerentes registren higiene por área, control de plagas, manejo de inventario alimentario y bitácoras de residuos con filtros por mes y exportaciones a CSV/Excel del mes actual o previos.  
+- **EN:** Added a dedicated COFEPRIS compliance tab (COFEPRIS is Mexico’s federal sanitary authority) so staff can review hygiene logs, pest control certificates, smart inventory for food handling, and waste logs. The panel includes a monthly filter plus CSV/XLSX exports that gather all COFEPRIS records for the selected period.  
+- Acceso habilitado para roles Barista y Gerente directamente desde la navegación principal del POS.  
+
 ---
 
 # 💻 Tecnologías  

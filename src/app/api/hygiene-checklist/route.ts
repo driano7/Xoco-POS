@@ -26,10 +26,21 @@
  * --------------------------------------------------------------------
  */
 
+import { randomUUID } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-server';
+import { sqlite } from '@/lib/sqlite';
+import {
+  enqueuePendingOperations,
+  flushPendingOperations,
+  isLikelyNetworkError,
+  markSupabaseFailure,
+  markSupabaseHealthy,
+  shouldPreferSupabase,
+} from '@/lib/offline-sync';
 
 const TABLE = process.env.SUPABASE_HYGIENE_TABLE ?? 'hygiene_logs';
+const SQLITE_TABLE = 'hygiene_logs';
 
 type HygieneArea = 'BAÑO' | 'COCINA' | 'BARRA' | 'MESAS';
 
@@ -169,6 +180,57 @@ const normalizeRecord = (record: Record<string, unknown>) => ({
     new Date().toISOString(),
 });
 
+const upsertSqliteRecord = async (record: ReturnType<typeof normalizeRecord>) => {
+  await sqlite.run(
+    `
+    INSERT INTO ${SQLITE_TABLE} (id, area, staffId, is_clean, supplies_refilled, observations, createdAt)
+    VALUES (:id, :area, :staffId, :is_clean, :supplies_refilled, :observations, :createdAt)
+    ON CONFLICT(id) DO UPDATE SET
+      area = excluded.area,
+      staffId = excluded.staffId,
+      is_clean = excluded.is_clean,
+      supplies_refilled = excluded.supplies_refilled,
+      observations = excluded.observations,
+      createdAt = excluded.createdAt
+  `,
+    {
+      ':id': record.id,
+      ':area': record.area,
+      ':staffId': record.staffId ?? null,
+      ':is_clean': record.isClean ? 1 : 0,
+      ':supplies_refilled': record.suppliesRefilled ? 1 : 0,
+      ':observations': record.observations ?? null,
+      ':createdAt': record.createdAt,
+    }
+  );
+};
+
+const loadSqliteEntries = async (startIso: string, endIso: string) => {
+  const rows = await sqlite.all<Record<string, unknown>>(
+    `
+    SELECT id, area, staffId, is_clean, supplies_refilled, observations, createdAt
+    FROM ${SQLITE_TABLE}
+    WHERE createdAt >= :start AND createdAt < :end
+    ORDER BY createdAt ASC
+  `,
+    {
+      ':start': startIso,
+      ':end': endIso,
+    }
+  );
+  return rows.map((row) => normalizeRecord(row));
+};
+
+const queueHygieneInsert = async (payload: Record<string, unknown>) => {
+  await enqueuePendingOperations('hygiene:insert', [
+    {
+      type: 'insert',
+      table: TABLE,
+      payload,
+    },
+  ]);
+};
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -177,41 +239,64 @@ export async function GET(request: NextRequest) {
     const monthKey = monthKeyFromParam(monthParam);
     const { startIso, endIso, label } = resolveMonthRange(monthKey);
 
-    const { data, error } = await supabaseAdmin
-      .from(TABLE)
-      .select('id,area,"staffId","is_clean","supplies_refilled",observations,"createdAt"')
-      .gte('createdAt', startIso)
-      .lt('createdAt', endIso)
-      .order('createdAt', { ascending: true });
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    const entries = (data ?? []).map((record) => normalizeRecord(record));
-
-    if (format === 'pdf') {
-      const pdfBuffer = buildPdfBuffer(entries, label);
-      return new NextResponse(pdfBuffer, {
-        headers: {
-          'Content-Type': 'application/pdf',
-          'Content-Disposition': `attachment; filename="higiene-${monthKey}.pdf"`,
-          'Content-Length': String(pdfBuffer.length),
+    const buildResponse = (entries: ReturnType<typeof normalizeRecord>[]) => {
+      if (format === 'pdf') {
+        const pdfBuffer = buildPdfBuffer(entries, label);
+        return new NextResponse(pdfBuffer, {
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `attachment; filename="higiene-${monthKey}.pdf"`,
+            'Content-Length': String(pdfBuffer.length),
+          },
+        });
+      }
+      return NextResponse.json({
+        success: true,
+        data: {
+          month: monthKey,
+          entries,
+          summary: {
+            total: entries.length,
+            lastEntry: entries[entries.length - 1] ?? null,
+          },
         },
       });
+    };
+
+    const preferSupabase = shouldPreferSupabase();
+
+    const loadFromSqlite = async () => {
+      const entries = await loadSqliteEntries(startIso, endIso);
+      return buildResponse(entries);
+    };
+
+    if (!preferSupabase) {
+      return loadFromSqlite();
     }
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        month: monthKey,
-        entries,
-        summary: {
-          total: entries.length,
-          lastEntry: entries[entries.length - 1] ?? null,
-        },
-      },
-    });
+    try {
+      const { data, error } = await supabaseAdmin
+        .from(TABLE)
+        .select('id,area,"staffId","is_clean","supplies_refilled",observations,"createdAt"')
+        .gte('createdAt', startIso)
+        .lt('createdAt', endIso)
+        .order('createdAt', { ascending: true });
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      const entries = (data ?? []).map((record) => normalizeRecord(record));
+      await Promise.all(entries.map((entry) => upsertSqliteRecord(entry)));
+      markSupabaseHealthy();
+      return buildResponse(entries);
+    } catch (error) {
+      if (!isLikelyNetworkError(error)) {
+        throw error;
+      }
+      markSupabaseFailure(error);
+      return loadFromSqlite();
+    }
   } catch (error) {
     console.error('Error fetching hygiene checklist:', error);
     return NextResponse.json(
@@ -223,6 +308,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    await flushPendingOperations();
     const payload = (await request.json()) as {
       area?: HygieneArea;
       isClean?: boolean;
@@ -239,28 +325,68 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const id = randomUUID();
+    const createdAt = new Date().toISOString();
     const insertPayload = {
+      id,
       area,
       staffId: payload.staffId ?? null,
       is_clean: payload.isClean ?? true,
       supplies_refilled: payload.suppliesRefilled ?? true,
       observations: payload.observations?.trim() || null,
+      createdAt,
     };
+    const localRecord = normalizeRecord(insertPayload);
+    const preferSupabase = shouldPreferSupabase();
+    let attemptedSupabase = false;
 
-    const { data, error } = await supabaseAdmin
-      .from(TABLE)
-      .insert(insertPayload)
-      .select('id,area,"staffId","is_clean","supplies_refilled",observations,"createdAt"')
-      .single();
+    if (preferSupabase) {
+      try {
+        const { data, error } = await supabaseAdmin
+          .from(TABLE)
+          .insert(insertPayload)
+          .select('id,area,"staffId","is_clean","supplies_refilled",observations,"createdAt"')
+          .single();
 
-    if (error) {
-      throw new Error(error.message);
+        if (error) {
+          throw new Error(error.message);
+        }
+
+        const normalized = normalizeRecord(data);
+        await upsertSqliteRecord(normalized);
+        markSupabaseHealthy();
+        return NextResponse.json(
+          {
+            success: true,
+            data: normalized,
+            pendingSync: false,
+          },
+          { status: 201 }
+        );
+      } catch (error) {
+        attemptedSupabase = true;
+        if (!isLikelyNetworkError(error)) {
+          console.error('Error storing hygiene checklist:', error);
+          return NextResponse.json(
+            { success: false, error: error instanceof Error ? error.message : 'No pudimos guardar el checklist.' },
+            { status: 500 }
+          );
+        }
+        markSupabaseFailure(error);
+      }
     }
 
-    return NextResponse.json({
-      success: true,
-      data: normalizeRecord(data),
-    });
+    await upsertSqliteRecord(localRecord);
+    await queueHygieneInsert(insertPayload);
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: localRecord,
+        pendingSync: true,
+      },
+      { status: attemptedSupabase ? 202 : 201 }
+    );
   } catch (error) {
     console.error('Error storing hygiene checklist:', error);
     return NextResponse.json(

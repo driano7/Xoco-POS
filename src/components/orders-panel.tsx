@@ -104,6 +104,168 @@ const buildOrderSearchTerms = (order: Order) => {
   ].filter((value): value is string => Boolean(value && value.trim()));
 };
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value && typeof value === 'object' && !Array.isArray(value));
+
+const trimValue = (value: unknown): string | null => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : null;
+  }
+  return null;
+};
+
+const parseMetadataObject = (metadata: unknown): Record<string, unknown> | null => {
+  if (!metadata) {
+    return null;
+  }
+  if (isPlainObject(metadata)) {
+    return metadata as Record<string, unknown>;
+  }
+  if (typeof metadata === 'string') {
+    try {
+      const parsed = JSON.parse(metadata);
+      return isPlainObject(parsed) ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+};
+
+const extractPaymentMetadata = (metadata: unknown): Record<string, unknown> | null => {
+  const parsed = parseMetadataObject(metadata);
+  if (!parsed) {
+    return null;
+  }
+  const payment = parsed.payment;
+  if (isPlainObject(payment)) {
+    return payment as Record<string, unknown>;
+  }
+  return null;
+};
+
+const coerceNumber = (value: unknown): number | null => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const extractReferenceLastDigits = (value: string | null | undefined) => {
+  if (!value) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const digits = trimmed.replace(/\D/g, '');
+  if (digits.length >= 4) {
+    return digits.slice(-4);
+  }
+  if (trimmed.length >= 4) {
+    return trimmed.slice(-4);
+  }
+  return trimmed;
+};
+
+const summarizeWalletReference = (reference: string | null | undefined) => {
+  if (!reference) {
+    return null;
+  }
+  const trimmed = reference.trim();
+  if (trimmed.length <= 10) {
+    return trimmed;
+  }
+  if (trimmed.startsWith('0x')) {
+    return `${trimmed.slice(0, 6)}…${trimmed.slice(-4)}`;
+  }
+  if (trimmed.toLowerCase().startsWith('ln')) {
+    return `${trimmed.slice(0, 8)}…${trimmed.slice(-4)}`;
+  }
+  if (trimmed.includes('.')) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, 4)}…${trimmed.slice(-4)}`;
+};
+
+const resolveOrderPaymentInfo = (order: Order) => {
+  const paymentMetadata = extractPaymentMetadata(order.metadata);
+  const method =
+    trimValue(order.metodoPago ?? order.paymentMethod ?? order.queuedPaymentMethod) ??
+    trimValue(paymentMetadata?.method);
+  const reference =
+    trimValue(order.queuedPaymentReference) ?? trimValue(paymentMetadata?.reference);
+  const referenceType =
+    trimValue(order.queuedPaymentReferenceType) ?? trimValue(paymentMetadata?.referenceType);
+  const cashTendered =
+    coerceNumber(order.montoRecibido) ?? coerceNumber(paymentMetadata?.cashTendered);
+  const cashChange =
+    coerceNumber(order.cambioEntregado) ?? coerceNumber(paymentMetadata?.cashChange);
+  return { method, reference, referenceType, cashTendered, cashChange };
+};
+
+const getOrderTotalAmount = (order: Order) => {
+  if (typeof order.total === 'number') {
+    return order.total;
+  }
+  if (order.totals && typeof order.totals === 'object') {
+    if (typeof order.totals.total === 'number') {
+      return order.totals.total;
+    }
+    if (typeof order.totals.totalAmount === 'number') {
+      return order.totals.totalAmount;
+    }
+  }
+  return null;
+};
+
+const buildPaymentSummary = (order: Order, paymentInfo = resolveOrderPaymentInfo(order)) => {
+  const method = paymentInfo.method?.toLowerCase();
+  if (!method) {
+    return null;
+  }
+  if (method === 'efectivo') {
+    const totalAmount = getOrderTotalAmount(order);
+    const changeAmount =
+      paymentInfo.cashChange ??
+      (paymentInfo.cashTendered !== null && totalAmount !== null
+        ? Math.max(paymentInfo.cashTendered - totalAmount, 0)
+        : null);
+    if (typeof changeAmount === 'number') {
+      return `Cambio: ${formatCurrency(Math.max(changeAmount, 0))}`;
+    }
+    if (typeof paymentInfo.cashTendered === 'number') {
+      return `Recibido: ${formatCurrency(paymentInfo.cashTendered)}`;
+    }
+    return null;
+  }
+  if (method === 'cripto' && paymentInfo.reference) {
+    return `Wallet ${summarizeWalletReference(paymentInfo.reference)}`;
+  }
+  if (
+    (method === 'debito' || method === 'credito' || method === 'transferencia') &&
+    paymentInfo.reference
+  ) {
+    const digits = extractReferenceLastDigits(paymentInfo.reference);
+    if (digits) {
+      return `Terminación ${digits}`;
+    }
+  }
+  if (paymentInfo.reference) {
+    const digits = extractReferenceLastDigits(paymentInfo.reference);
+    if (digits) {
+      return `Ref ••••${digits}`;
+    }
+  }
+  return null;
+};
+
 interface OrdersPanelProps {
   onSelect?: (order: Order) => void;
   onSelectPrepTask?: (task: PrepTask) => void;
@@ -325,6 +487,13 @@ function OrdersColumn({
           pagination.items.map((order) => {
             const totalItems =
               order.itemsCount ?? (Array.isArray(order.items) ? order.items.length : 0);
+            const paymentInfo = resolveOrderPaymentInfo(order);
+            const methodDisplay = getPaymentMethodDisplay(paymentInfo.method);
+            const referenceDisplay =
+              paymentInfo.method?.toLowerCase() === 'efectivo'
+                ? 'No aplica'
+                : paymentInfo.reference ?? 'Pendiente';
+            const paymentSummary = buildPaymentSummary(order, paymentInfo);
             return (
               <button
                 type="button"
@@ -352,11 +521,14 @@ function OrdersColumn({
                   Ticket POS: {order.ticketCode ?? 'Sin ticket'}
                 </p>
                 <p className="text-xs text-[var(--brand-muted)]">
-                  Método: {getPaymentMethodDisplay(order.queuedPaymentMethod)}
+                  Método: {methodDisplay}
                 </p>
                 <p className="text-xs text-[var(--brand-muted)]">
-                  Referencia: {order.queuedPaymentReference ?? 'Pendiente'}
+                  Referencia: {referenceDisplay}
                 </p>
+                {paymentSummary && (
+                  <p className="text-xs text-[var(--brand-muted)]">Pago: {paymentSummary}</p>
+                )}
                 <p className="text-xs text-[var(--brand-muted)]">
                   Atendió: {order.queuedByStaffName ?? order.queuedByStaffId ?? 'Sin asignar'}
                 </p>
@@ -585,6 +757,13 @@ const OrdersHistoryModal = ({
             {list.map((order) => {
               const totalItems =
                 order.itemsCount ?? (Array.isArray(order.items) ? order.items.length : 0);
+              const paymentInfo = resolveOrderPaymentInfo(order);
+              const methodDisplay = getPaymentMethodDisplay(paymentInfo.method);
+              const referenceDisplay =
+                paymentInfo.method?.toLowerCase() === 'efectivo'
+                  ? 'No aplica'
+                  : paymentInfo.reference ?? 'Pendiente';
+              const paymentSummary = buildPaymentSummary(order, paymentInfo);
               return (
                 <button
                   type="button"
@@ -615,11 +794,16 @@ const OrdersHistoryModal = ({
                     Ticket POS: {order.ticketCode ?? 'Sin ticket'}
                   </p>
                   <p className="text-xs text-[var(--brand-muted)] dark:text-white/70">
-                    Método: {getPaymentMethodDisplay(order.queuedPaymentMethod)}
+                    Método: {methodDisplay}
                   </p>
                   <p className="text-xs text-[var(--brand-muted)] dark:text-white/70">
-                    Referencia: {order.queuedPaymentReference ?? 'Pendiente'}
+                    Referencia: {referenceDisplay}
                   </p>
+                  {paymentSummary && (
+                    <p className="text-xs text-[var(--brand-muted)] dark:text-white/70">
+                      Pago: {paymentSummary}
+                    </p>
+                  )}
                   <p className="text-xs text-[var(--brand-muted)] dark:text-white/70">
                     Atendió: {order.queuedByStaffName ?? order.queuedByStaffId ?? 'Sin asignar'}
                   </p>

@@ -35,6 +35,7 @@ const ORDERS_TABLE = process.env.SUPABASE_ORDERS_TABLE ?? 'orders';
 const ORDER_ITEMS_TABLE = process.env.SUPABASE_ORDER_ITEMS_TABLE ?? 'order_items';
 const PRODUCTS_TABLE = process.env.SUPABASE_PRODUCTS_TABLE ?? 'products';
 const USERS_TABLE = process.env.SUPABASE_USERS_TABLE ?? 'users';
+const VENTAS_TABLE = process.env.SUPABASE_VENTAS_TABLE ?? 'ventas';
 
 const TICKET_FIELDS =
   'id,"ticketCode","orderId","userId","paymentMethod","tipAmount","tipPercent",currency,"createdAt"';
@@ -45,6 +46,11 @@ const toTrimmedString = (value: unknown) => {
     return trimmed || null;
   }
   return null;
+};
+
+const normalizeNumber = (value: unknown) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 };
 
 const coerceMetadataObject = (value: unknown): Record<string, unknown> | null => {
@@ -122,7 +128,7 @@ export async function GET(
     }
 
     const orderSelectFields =
-      'id,"orderNumber",status,total,currency,"createdAt","userId","items","metadata","notes","message","instructions","queuedPaymentMethod"';
+      'id,"orderNumber",status,total,currency,"createdAt","userId","items","metadata","notes","message","instructions","queuedPaymentMethod","paymentMethod"';
 
     const {
       data: orderById,
@@ -183,6 +189,23 @@ export async function GET(
       ticketRecord = ticketByResolvedOrder ?? null;
     }
 
+    const {
+      data: saleRecord,
+      error: saleError,
+    } = await supabaseAdmin
+      .from(VENTAS_TABLE)
+      .select('metodo_pago,monto_recibido,cambio_entregado')
+      .eq('order_id', order.id)
+      .maybeSingle();
+
+    if (saleError) {
+      throw new Error(saleError.message);
+    }
+
+    const metodoPagoVenta = toTrimmedString(saleRecord?.metodo_pago);
+    const montoRecibidoVenta = saleRecord ? normalizeNumber(saleRecord.monto_recibido) : null;
+    const cambioVenta = saleRecord ? normalizeNumber(saleRecord.cambio_entregado) : null;
+
     const metadataObject = coerceMetadataObject((order as { metadata?: unknown })?.metadata ?? null);
     const prepAssignment =
       metadataObject?.prepAssignment && typeof metadataObject.prepAssignment === 'object' && !Array.isArray(metadataObject.prepAssignment)
@@ -204,7 +227,11 @@ export async function GET(
     );
     const paymentMethodFromMetadata = toTrimmedString(paymentMetadata?.method);
     const queuedPaymentMethod =
-      paymentMethodFromOrder ?? paymentMethodFromMetadata ?? toTrimmedString(ticketRecord?.paymentMethod);
+      paymentMethodFromOrder ??
+      paymentMethodFromMetadata ??
+      toTrimmedString(ticketRecord?.paymentMethod) ??
+      metodoPagoVenta ??
+      null;
     const queuedPaymentReference =
       toTrimmedString((order as { queuedPaymentReference?: unknown }).queuedPaymentReference) ??
       toTrimmedString(paymentMetadata?.reference);
@@ -642,6 +669,13 @@ export async function GET(
       success: true,
       data: {
         ticket: effectiveTicket,
+        sale: saleRecord
+          ? {
+              metodoPago: metodoPagoVenta ?? null,
+              montoRecibido: montoRecibidoVenta,
+              cambioEntregado: cambioVenta,
+            }
+          : null,
         order: {
           id: order.id,
           status: order.status ?? 'pending',
@@ -658,6 +692,10 @@ export async function GET(
           queuedPaymentReferenceType: queuedPaymentReferenceType ?? null,
           queuedByStaffId: queuedByStaffId ?? null,
           queuedByStaffName: queuedByStaffName ?? null,
+          paymentMethod: paymentMethodFromOrder ?? metodoPagoVenta ?? null,
+          metodoPago: metodoPagoVenta ?? null,
+          montoRecibido: montoRecibidoVenta,
+          cambioEntregado: cambioVenta,
         },
         customer: customerPayload,
         items,

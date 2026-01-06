@@ -194,6 +194,8 @@ CREATE TABLE IF NOT EXISTS products (
   reviewCount INTEGER NOT NULL DEFAULT 0,
   stockQuantity INTEGER NOT NULL DEFAULT 0,
   lowStockThreshold INTEGER NOT NULL DEFAULT 10,
+  is_low_stock INTEGER NOT NULL DEFAULT 0,
+  out_of_stock_reason TEXT,
   isActive INTEGER NOT NULL DEFAULT 1,
   createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -545,4 +547,45 @@ CREATE TABLE IF NOT EXISTS inventory_stock_entry_items (
   valuationRate REAL,
   amount REAL,
   relatedOrderItemId TEXT REFERENCES order_items(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS hygiene_logs (
+  id TEXT PRIMARY KEY,
+  area TEXT NOT NULL,
+  staffId TEXT REFERENCES staff_users(id) ON DELETE SET NULL,
+  is_clean INTEGER NOT NULL DEFAULT 1,
+  supplies_refilled INTEGER NOT NULL DEFAULT 1,
+  observations TEXT,
+  createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pest_control_logs (
+  id TEXT PRIMARY KEY,
+  service_date TEXT NOT NULL,
+  provider_name TEXT,
+  certificate_number TEXT,
+  next_service_date TEXT,
+  staffId TEXT REFERENCES staff_users(id) ON DELETE SET NULL,
+  observations TEXT,
+  createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS waste_logs (
+  id TEXT PRIMARY KEY,
+  organicBeveragesKg REAL NOT NULL DEFAULT 0,
+  organicFoodsKg REAL NOT NULL DEFAULT 0,
+  inorganicKg REAL NOT NULL DEFAULT 0,
+  trashRemoved INTEGER NOT NULL DEFAULT 0,
+  binsWashed INTEGER NOT NULL DEFAULT 0,
+  branchId TEXT REFERENCES branches(id) ON DELETE SET NULL,
+  staffId TEXT REFERENCES staff_users(id) ON DELETE SET NULL,
+  createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS product_recipes (
+  id TEXT PRIMARY KEY,
+  productId TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  inventoryItemId TEXT NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
+  quantityUsed REAL NOT NULL,
+  createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
