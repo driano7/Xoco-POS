@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS orders (
   queuedPaymentMethod TEXT,
   shipping_contact_phone TEXT,
   shipping_contact_is_whatsapp INTEGER DEFAULT 0,
+  shipping_address_id TEXT,
   createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -197,6 +198,9 @@ CREATE TABLE IF NOT EXISTS products (
   lowStockThreshold INTEGER NOT NULL DEFAULT 10,
   is_low_stock INTEGER NOT NULL DEFAULT 0,
   out_of_stock_reason TEXT,
+  manual_stock_status TEXT NOT NULL DEFAULT 'normal' CHECK (manual_stock_status IN ('normal','low','out')),
+  manual_stock_reason TEXT,
+  manual_status_updated_at TEXT,
   isActive INTEGER NOT NULL DEFAULT 1,
   createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -393,6 +397,9 @@ CREATE TABLE IF NOT EXISTS inventory_items (
   unit TEXT NOT NULL DEFAULT 'unidad',
   minStock INTEGER NOT NULL DEFAULT 0,
   isActive INTEGER NOT NULL DEFAULT 1,
+  manual_stock_status TEXT NOT NULL DEFAULT 'normal' CHECK (manual_stock_status IN ('normal','low','out')),
+  manual_stock_reason TEXT,
+  manual_status_updated_at TEXT,
   lastRestockAt TEXT,
   lastRestockQty REAL,
   avgCost REAL,

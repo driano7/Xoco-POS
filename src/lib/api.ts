@@ -260,6 +260,8 @@ export interface InventoryCategory {
   name?: string | null;
 }
 
+export type ManualStockStatus = 'normal' | 'low' | 'out';
+
 export interface InventoryBranchStock {
   branchId?: string | null;
   quantity: number;
@@ -278,6 +280,12 @@ export interface InventoryItem {
   isLowStock: boolean;
   createdAt?: string | null;
   updatedAt?: string | null;
+  manualStockStatus?: ManualStockStatus | null;
+  manualStockReason?: string | null;
+  manualStatusUpdatedAt?: string | null;
+  effectiveStatus: ManualStockStatus;
+  isManualOverride: boolean;
+  statusSource?: 'manual' | 'auto';
 }
 
 export interface InventoryMovement {
@@ -408,6 +416,14 @@ export interface CatalogProduct {
   stockQuantity?: number | null;
   lowStockThreshold?: number | null;
   isActive?: boolean;
+  is_low_stock?: boolean | null;
+  out_of_stock_reason?: string | null;
+  manualStockStatus?: ManualStockStatus | null;
+  manualStockReason?: string | null;
+  manualStatusUpdatedAt?: string | null;
+  manual_stock_status?: ManualStockStatus | null;
+  manual_stock_reason?: string | null;
+  manual_status_updated_at?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   availableSizes?: unknown;
@@ -995,6 +1011,31 @@ export async function fetchInventoryDashboard(): Promise<InventoryDashboard> {
   }
 
   return payload.data;
+}
+
+export interface ManualStockStatusPayload {
+  target: 'inventory' | 'product';
+  id: string;
+  status: ManualStockStatus;
+  reason?: string | null;
+}
+
+export async function updateManualStockStatus(payload: ManualStockStatusPayload): Promise<void> {
+  const url = buildApiUrl('/api/inventory/manual-status');
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    keepalive: true,
+  });
+
+  if (!response.ok) {
+    const errorPayload = await response.json().catch(() => null);
+    const message =
+      (errorPayload && typeof errorPayload.error === 'string' && errorPayload.error) ||
+      'No pudimos actualizar el estado del inventario.';
+    throw new Error(message);
+  }
 }
 
 export async function fetchPaymentsDashboard(): Promise<PaymentsDashboard> {

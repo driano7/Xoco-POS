@@ -5665,17 +5665,18 @@ const buildVirtualTicketOrderPayload = ({
     typeof order.deliveryTipPercent === 'number'
       ? order.deliveryTipPercent
       : shipping?.deliveryTip?.percent ?? metadataDeliveryTipPercent ?? null;
-  const ticketItemsSource =
-    order.ticketSnapshot ??
-    (hydratedItems.length
-      ? buildVirtualTicketItems(hydratedItems)
+  const hydratedTicketItems =
+    hydratedItems.length > 0 ? buildVirtualTicketItems(hydratedItems) : [];
+  const fallbackTicketItems =
+    hydratedTicketItems.length > 0
+      ? hydratedTicketItems
       : [
           {
             name: 'Consumo registrado',
             quantity: order.itemsCount ?? 1,
             price: ticketTotal ?? 0,
           },
-        ]);
+        ];
   const ticketId = order.ticketCode ?? order.orderNumber ?? order.id;
   const customerName =
     order.customerName ??
@@ -5699,7 +5700,7 @@ const buildVirtualTicketOrderPayload = ({
     vatPercent: order.vatPercent ?? null,
     deliveryTipAmount: resolvedDeliveryTipAmount ?? undefined,
     deliveryTipPercent: resolvedDeliveryTipPercent ?? undefined,
-    items: ticketItemsSource,
+    items: hydratedTicketItems.length > 0 ? hydratedTicketItems : fallbackTicketItems,
     qrPayload: order.qrPayload ?? metadataObject?.qrPayload ?? null,
     type: order.type ?? 'pos',
         shipping: shipping

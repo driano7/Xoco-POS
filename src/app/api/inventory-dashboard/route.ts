@@ -41,6 +41,28 @@ const toNumber = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+type ManualStockStatus = 'normal' | 'low' | 'out';
+
+const normalizeManualStatus = (value: unknown): ManualStockStatus => {
+  if (typeof value === 'string') {
+    const lowered = value.toLowerCase();
+    if (lowered === 'low' || lowered === 'out') {
+      return lowered;
+    }
+  }
+  return 'normal';
+};
+
+const deriveAutoStatus = (stockTotal: number, minStock: number): ManualStockStatus => {
+  if (stockTotal <= 0) {
+    return 'out';
+  }
+  if (minStock > 0 && stockTotal <= minStock) {
+    return 'low';
+  }
+  return 'normal';
+};
+
 export async function GET() {
   try {
     const [{ data: categories, error: categoriesError }, { data: items, error: itemsError }] =
@@ -48,7 +70,10 @@ export async function GET() {
         supabaseAdmin.from(CATEGORIES_TABLE).select('id,code,name'),
         supabaseAdmin
           .from(ITEMS_TABLE)
-          .select('id,"categoryId",name,unit,"minStock","isActive","createdAt","updatedAt"')
+          .select(
+            'id,"categoryId",name,unit,"minStock","isActive","createdAt","updatedAt",' +
+              '"manualStockStatus","manualStockReason","manualStatusUpdatedAt"'
+          )
           .order('name', { ascending: true }),
       ]);
 
@@ -98,13 +123,29 @@ export async function GET() {
     const enrichedItems = (items ?? []).map((item) => {
       const stock = stockByItem.get(item.id) || { total: 0, branches: [] };
       const minStock = toNumber(item.minStock);
+      const manualStatus = normalizeManualStatus(
+        (item as { manualStockStatus?: ManualStockStatus | string | null }).manualStockStatus
+      );
+      const manualReason =
+        (item as { manualStockReason?: string | null }).manualStockReason ?? null;
+      const manualUpdatedAt =
+        (item as { manualStatusUpdatedAt?: string | null }).manualStatusUpdatedAt ?? null;
+      const autoStatus = deriveAutoStatus(stock.total, minStock);
+      const effectiveStatus = manualStatus !== 'normal' ? manualStatus : autoStatus;
+      const isManualOverride = manualStatus !== 'normal';
       return {
         ...item,
         minStock,
         stockTotal: stock.total,
         branches: stock.branches,
         category: categoryMap.get(item.categoryId) || null,
-        isLowStock: stock.total <= minStock,
+        isLowStock: effectiveStatus !== 'normal',
+        manualStockStatus: manualStatus,
+        manualStockReason: manualReason,
+        manualStatusUpdatedAt: manualUpdatedAt,
+        effectiveStatus,
+        isManualOverride,
+        statusSource: isManualOverride ? 'manual' : 'auto',
       };
     });
 

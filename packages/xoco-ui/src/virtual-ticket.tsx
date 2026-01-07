@@ -308,9 +308,20 @@ const extractItemsFromSource = (source: any): OrderItem[] => {
   if (Array.isArray(parsedSource)) {
     return parsedSource.map(buildOrderItem);
   }
-  if (typeof parsedSource === 'object') {
-    if (Array.isArray(parsedSource.items)) {
-      return parsedSource.items.map(buildOrderItem);
+  if (parsedSource && typeof parsedSource === 'object') {
+    const record = parsedSource as Record<string, unknown>;
+    const arrayCandidates = [
+      record.items,
+      record.list,
+      record.orderItems,
+      record.lineItems,
+      record.products,
+      record.order_items,
+    ];
+    for (const candidate of arrayCandidates) {
+      if (Array.isArray(candidate)) {
+        return candidate.map(buildOrderItem);
+      }
     }
     if (
       Array.isArray(parsedSource.beverages) ||

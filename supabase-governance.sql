@@ -292,6 +292,12 @@ CREATE TABLE IF NOT EXISTS public.products (
   "reviewCount" INTEGER NOT NULL DEFAULT 0,
   "stockQuantity" INTEGER NOT NULL DEFAULT 0,
   "lowStockThreshold" INTEGER NOT NULL DEFAULT 10,
+  "is_low_stock" BOOLEAN NOT NULL DEFAULT FALSE,
+  "out_of_stock_reason" TEXT,
+  "manualStockStatus" TEXT NOT NULL DEFAULT 'normal'
+    CHECK ("manualStockStatus" IN ('normal','low','out')),
+  "manualStockReason" TEXT,
+  "manualStatusUpdatedAt" TIMESTAMPTZ,
   "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "isActive" BOOLEAN NOT NULL DEFAULT TRUE
@@ -962,6 +968,10 @@ CREATE TABLE IF NOT EXISTS public.inventory_items (
   unit TEXT NOT NULL DEFAULT 'unidad',
   "minStock" INTEGER NOT NULL DEFAULT 0,
   "isActive" BOOLEAN NOT NULL DEFAULT TRUE,
+  "manualStockStatus" TEXT NOT NULL DEFAULT 'normal'
+    CHECK ("manualStockStatus" IN ('normal','low','out')),
+  "manualStockReason" TEXT,
+  "manualStatusUpdatedAt" TIMESTAMPTZ,
   "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -1429,7 +1439,11 @@ CREATE TABLE IF NOT EXISTS public.inventory_stock_entry_items (
 ALTER TABLE public.inventory_items
   ADD COLUMN IF NOT EXISTS "lastRestockAt" TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS "lastRestockQty" NUMERIC(12,3),
-  ADD COLUMN IF NOT EXISTS "avgCost" NUMERIC(12,4);
+  ADD COLUMN IF NOT EXISTS "avgCost" NUMERIC(12,4),
+  ADD COLUMN IF NOT EXISTS "manualStockStatus" TEXT DEFAULT 'normal'
+    CHECK ("manualStockStatus" IN ('normal','low','out')),
+  ADD COLUMN IF NOT EXISTS "manualStockReason" TEXT,
+  ADD COLUMN IF NOT EXISTS "manualStatusUpdatedAt" TIMESTAMPTZ;
 
 ALTER TABLE public.inventory_stock
   ADD COLUMN IF NOT EXISTS "lastUpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW();
@@ -1937,4 +1951,8 @@ CREATE TABLE IF NOT EXISTS public.product_recipes (
 -- 4. Banderas de Stock para App de Clientes
 ALTER TABLE public.products 
 ADD COLUMN IF NOT EXISTS "is_low_stock" BOOLEAN DEFAULT FALSE,
-ADD COLUMN IF NOT EXISTS "out_of_stock_reason" TEXT;
+ADD COLUMN IF NOT EXISTS "out_of_stock_reason" TEXT,
+ADD COLUMN IF NOT EXISTS "manualStockStatus" TEXT DEFAULT 'normal'
+  CHECK ("manualStockStatus" IN ('normal','low','out')),
+ADD COLUMN IF NOT EXISTS "manualStockReason" TEXT,
+ADD COLUMN IF NOT EXISTS "manualStatusUpdatedAt" TIMESTAMPTZ;

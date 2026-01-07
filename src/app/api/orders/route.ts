@@ -731,7 +731,7 @@ const mapOrdersPayload = async (
             ? rawStoredItems
             : [];
     const items = mapOrderItems(sourceItems, productMap);
-    const ticketSnapshot = storedItemsValue ?? rawStoredItems ?? null;
+    const ticketSnapshot = rawStoredItems ?? storedItemsValue ?? null;
     const metadataObject = coerceMetadataObject(metadata);
     const prepAssignment = metadataObject?.prepAssignment
       ? coerceMetadataObject(metadataObject.prepAssignment)
