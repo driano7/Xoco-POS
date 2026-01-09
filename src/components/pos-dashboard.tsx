@@ -45,6 +45,7 @@ import { SearchableDropdown } from '@/components/searchable-dropdown';
 import { CofeprisPanel } from '@/components/compliance/sanitary-compliance-panel';
 import { VirtualTicket, type VirtualTicketProps } from '@xoco/ui';
 import { toPng } from 'html-to-image';
+import { ChartButton } from '@/components/chart-button';
 import {
   useMenuOptions,
   type MenuItem,
@@ -57,6 +58,7 @@ import type {
   Order,
   PrepTask,
   Reservation,
+  OrderShippingInfo,
   PaymentsDashboard,
   StaffDashboard,
   StaffMember,
@@ -734,9 +736,9 @@ const parseCompactTicketPayload = (root: Record<string, unknown>): ScannedTicket
     customer:
       customerName || customerEmail
         ? {
-            name: customerName ?? null,
-            email: customerEmail ?? null,
-          }
+          name: customerName ?? null,
+          email: customerEmail ?? null,
+        }
         : undefined,
   };
 };
@@ -961,27 +963,27 @@ const parseScannedPayload = (payload: string): ScanResult | null => {
                 : null;
       const ticketCustomer = rawCustomer || resolvedTicketClientId
         ? {
-            id:
-              typeof rawCustomer?.id === 'string'
-                ? rawCustomer.id
-                : resolvedTicketClientId ?? null,
-            clientId:
-              typeof rawCustomer?.clientId === 'string'
-                ? rawCustomer.clientId
-                : resolvedTicketClientId ?? null,
-            email:
-              typeof rawCustomer?.email === 'string'
-                ? rawCustomer.email
-                : typeof parsed.clientEmail === 'string'
-                  ? parsed.clientEmail
-                  : null,
-            name:
-              typeof rawCustomer?.name === 'string'
-                ? rawCustomer.name
-                : typeof parsed.customerName === 'string'
-                  ? parsed.customerName
-                  : null,
-          }
+          id:
+            typeof rawCustomer?.id === 'string'
+              ? rawCustomer.id
+              : resolvedTicketClientId ?? null,
+          clientId:
+            typeof rawCustomer?.clientId === 'string'
+              ? rawCustomer.clientId
+              : resolvedTicketClientId ?? null,
+          email:
+            typeof rawCustomer?.email === 'string'
+              ? rawCustomer.email
+              : typeof parsed.clientEmail === 'string'
+                ? parsed.clientEmail
+                : null,
+          name:
+            typeof rawCustomer?.name === 'string'
+              ? rawCustomer.name
+              : typeof parsed.customerName === 'string'
+                ? parsed.customerName
+                : null,
+        }
         : undefined;
       const totalsPayload = isPlainObject(parsed.totals) ? (parsed.totals as Record<string, unknown>) : null;
       const tipPayload = isPlainObject(parsed.tip) ? (parsed.tip as Record<string, unknown>) : null;
@@ -1003,14 +1005,14 @@ const parseScannedPayload = (payload: string): ScanResult | null => {
           lineItems: lineItems.length ? lineItems : undefined,
           totals: totalsPayload
             ? {
-                itemsCount:
-                  typeof totalsPayload.itemsCount === 'number' ? totalsPayload.itemsCount : null,
-                totalAmount:
-                  typeof totalsPayload.totalAmount === 'number'
-                    ? (totalsPayload.totalAmount as number)
-                    : null,
-                tipAmount: tipAmount ?? null,
-              }
+              itemsCount:
+                typeof totalsPayload.itemsCount === 'number' ? totalsPayload.itemsCount : null,
+              totalAmount:
+                typeof totalsPayload.totalAmount === 'number'
+                  ? (totalsPayload.totalAmount as number)
+                  : null,
+              tipAmount: tipAmount ?? null,
+            }
             : undefined,
           tipAmount: tipAmount ?? null,
           tipPercent: tipPercentValue ?? null,
@@ -1134,18 +1136,18 @@ const buildOrderFromTicketDetail = (detail: TicketDetail, fallback?: ScannedTick
   const combinedItems = items.length
     ? items
     : fallbackItems.map((entry, index) => ({
-        id: `${detail.ticket.ticketCode}-${index}`,
-        productId: null,
-        name: entry.name,
-        category: null,
-        quantity: entry.quantity ?? 0,
-        price: entry.unitPrice ?? null,
-        sizeId: null,
-        sizeLabel: null,
-        packageId: null,
-        packageName: null,
-        metadata: null,
-      }));
+      id: `${detail.ticket.ticketCode}-${index}`,
+      productId: null,
+      name: entry.name,
+      category: null,
+      quantity: entry.quantity ?? 0,
+      price: entry.unitPrice ?? null,
+      sizeId: null,
+      sizeLabel: null,
+      packageId: null,
+      packageName: null,
+      metadata: null,
+    }));
 
   const firstName = detail.customer?.firstName ?? null;
   const lastName = detail.customer?.lastName ?? null;
@@ -1285,13 +1287,13 @@ const buildOrderFromTicketPayload = (ticket: ScannedTicket): Order => {
     tipAmount: ticket.tipAmount ?? ticket.totals?.tipAmount ?? null,
     tipPercent: ticket.tipPercent ?? null,
     queuedPaymentMethod: ticket.paymentMethod ?? null,
-  user: {
-    firstName,
-    lastName,
-    email: ticket.customer?.email ?? ticket.clientEmail ?? null,
-    clientId: ticket.customer?.clientId ?? null,
-    phone: typeof ticket.customer?.phone === 'string' ? ticket.customer.phone : null,
-  },
+    user: {
+      firstName,
+      lastName,
+      email: ticket.customer?.email ?? ticket.clientEmail ?? null,
+      clientId: ticket.customer?.clientId ?? null,
+      phone: typeof ticket.customer?.phone === 'string' ? ticket.customer.phone : null,
+    },
     createdAt: ticket.issuedAt ?? null,
     type: 'POS',
     metadata: ticket.metadata ?? ticket.notes ?? null,
@@ -1785,14 +1787,14 @@ type SuperUserAction = {
 type GovernanceRequest = {
   id: string;
   type:
-    | 'salary'
-    | 'role'
-    | 'branch'
-    | 'manager'
-    | 'termination'
-    | 'branch-edit'
-    | 'inventory'
-    | 'evaluation';
+  | 'salary'
+  | 'role'
+  | 'branch'
+  | 'manager'
+  | 'termination'
+  | 'branch-edit'
+  | 'inventory'
+  | 'evaluation';
   employee: string;
   branch: string;
   createdBy: string;
@@ -2101,10 +2103,10 @@ export function PosDashboard() {
       : [syntheticSession, ...(rawStaffData.sessions ?? [])];
     const metrics = rawStaffData.metrics
       ? {
-          ...rawStaffData.metrics,
-          totalStaff: staffWithSuper.length,
-          activeStaff: staffWithSuper.filter((member) => member.isActive !== false).length,
-        }
+        ...rawStaffData.metrics,
+        totalStaff: staffWithSuper.length,
+        activeStaff: staffWithSuper.filter((member) => member.isActive !== false).length,
+      }
       : rawStaffData.metrics;
     return {
       ...rawStaffData,
@@ -2808,10 +2810,10 @@ export function PosDashboard() {
       beverages:
         beverageOptions.length > 0
           ? mergeMenuInventory(
-              prev.beverages,
-              mapMenuToInventory(beverageOptions, BEVERAGE_MENU_PREFIX),
-              BEVERAGE_MENU_PREFIX
-            )
+            prev.beverages,
+            mapMenuToInventory(beverageOptions, BEVERAGE_MENU_PREFIX),
+            BEVERAGE_MENU_PREFIX
+          )
           : prev.beverages,
     }));
     void refreshMenu();
@@ -2860,13 +2862,13 @@ export function PosDashboard() {
             comments:
               comment?.trim() && decision === 'declined'
                 ? [
-                    ...request.comments,
-                    {
-                      author: reviewer,
-                      body: comment,
-                      createdAt: new Date().toISOString(),
-                    },
-                  ]
+                  ...request.comments,
+                  {
+                    author: reviewer,
+                    body: comment,
+                    createdAt: new Date().toISOString(),
+                  },
+                ]
                 : request.comments,
           };
         })
@@ -2967,11 +2969,11 @@ export function PosDashboard() {
               notifyOrderScanState(orderFromDetail);
               rememberClientId(
                 orderFromDetail.clientId ??
-                  orderFromDetail.user?.clientId ??
-                  detail.customer?.clientId ??
-                  parsed.data.customer?.clientId ??
-                  parsed.data.customer?.id ??
-                  null
+                orderFromDetail.user?.clientId ??
+                detail.customer?.clientId ??
+                parsed.data.customer?.clientId ??
+                parsed.data.customer?.id ??
+                null
               );
               tryCloseScanner();
               return;
@@ -2988,10 +2990,10 @@ export function PosDashboard() {
           notifyOrderScanState(fallbackOrder);
           rememberClientId(
             fallbackOrder.clientId ??
-              fallbackOrder.user?.clientId ??
-              parsed.data.customer?.clientId ??
-              parsed.data.customer?.id ??
-              null
+            fallbackOrder.user?.clientId ??
+            parsed.data.customer?.clientId ??
+            parsed.data.customer?.id ??
+            null
           );
           tryCloseScanner();
           return;
@@ -3036,9 +3038,9 @@ export function PosDashboard() {
               notifyOrderScanState(orderFromDetail);
               rememberClientId(
                 orderFromDetail.clientId ??
-                  orderFromDetail.user?.clientId ??
-                  detail.customer?.clientId ??
-                  null
+                orderFromDetail.user?.clientId ??
+                detail.customer?.clientId ??
+                null
               );
               tryCloseScanner();
               return;
@@ -3080,9 +3082,9 @@ export function PosDashboard() {
           notifyOrderScanState(orderFromDetail);
           rememberClientId(
             orderFromDetail.clientId ??
-              orderFromDetail.user?.clientId ??
-              detail.customer?.clientId ??
-              null
+            orderFromDetail.user?.clientId ??
+            detail.customer?.clientId ??
+            null
           );
           tryCloseScanner();
           return;
@@ -3104,9 +3106,9 @@ export function PosDashboard() {
         notifyOrderScanState(orderFromDetail);
         rememberClientId(
           orderFromDetail.clientId ??
-            orderFromDetail.user?.clientId ??
-            detail.customer?.clientId ??
-            null
+          orderFromDetail.user?.clientId ??
+          detail.customer?.clientId ??
+          null
         );
         tryCloseScanner();
         return;
@@ -3564,60 +3566,60 @@ export function PosDashboard() {
     return map;
   }, [staffData?.sessions]);
 
-const totalSessionSeconds = useMemo(
-  () => sessionsIncludingActive.reduce((total, session) => total + resolveSessionDurationSeconds(session), 0),
-  [sessionsIncludingActive]
-);
-const hoursWorked = totalSessionSeconds / 3600;
-const roundedHours = Math.floor(hoursWorked);
+  const totalSessionSeconds = useMemo(
+    () => sessionsIncludingActive.reduce((total, session) => total + resolveSessionDurationSeconds(session), 0),
+    [sessionsIncludingActive]
+  );
+  const hoursWorked = totalSessionSeconds / 3600;
+  const roundedHours = Math.floor(hoursWorked);
 
-const sessionDaysSet = useMemo(() => {
-  const set = new Set<string>();
-  sessionsIncludingActive.forEach((session) => {
-    if (session.sessionStart) {
-      set.add(session.sessionStart.substring(0, 10));
-    }
-  });
-  return set;
-}, [sessionsIncludingActive]);
+  const sessionDaysSet = useMemo(() => {
+    const set = new Set<string>();
+    sessionsIncludingActive.forEach((session) => {
+      if (session.sessionStart) {
+        set.add(session.sessionStart.substring(0, 10));
+      }
+    });
+    return set;
+  }, [sessionsIncludingActive]);
 
-const monthlySessionHistory = useMemo(() => {
-  const map = new Map<
-    string,
-    {
-      seconds: number;
-      days: Set<string>;
-    }
-  >();
+  const monthlySessionHistory = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        seconds: number;
+        days: Set<string>;
+      }
+    >();
 
-  sessionsIncludingActive.forEach((session) => {
-    if (!session.sessionStart) {
-      return;
-    }
-    const month = session.sessionStart.substring(0, 7);
-    const entry = map.get(month) ?? { seconds: 0, days: new Set<string>() };
-    entry.seconds += resolveSessionDurationSeconds(session);
-    entry.days.add(session.sessionStart.substring(0, 10));
-    map.set(month, entry);
-  });
+    sessionsIncludingActive.forEach((session) => {
+      if (!session.sessionStart) {
+        return;
+      }
+      const month = session.sessionStart.substring(0, 7);
+      const entry = map.get(month) ?? { seconds: 0, days: new Set<string>() };
+      entry.seconds += resolveSessionDurationSeconds(session);
+      entry.days.add(session.sessionStart.substring(0, 10));
+      map.set(month, entry);
+    });
 
-  return Array.from(map.entries())
-    .map(([month, entry]) => {
-      const labelDate = new Date(`${month}-01T00:00:00Z`);
-      return {
-        month,
-        label: labelDate.toLocaleDateString('es-MX', { month: 'short', year: 'numeric' }),
-        hours: Number((entry.seconds / 3600).toFixed(1)),
-        days: entry.days.size,
-      };
-    })
-    .sort((a, b) => b.month.localeCompare(a.month));
-}, [sessionsIncludingActive]);
+    return Array.from(map.entries())
+      .map(([month, entry]) => {
+        const labelDate = new Date(`${month}-01T00:00:00Z`);
+        return {
+          month,
+          label: labelDate.toLocaleDateString('es-MX', { month: 'short', year: 'numeric' }),
+          hours: Number((entry.seconds / 3600).toFixed(1)),
+          days: entry.days.size,
+        };
+      })
+      .sort((a, b) => b.month.localeCompare(a.month));
+  }, [sessionsIncludingActive]);
 
-const currentMonthMetrics = useMemo(() => {
-  const target = monthlySessionHistory.find((entry) => entry.month === currentMonthKey);
-  return target ?? { month: currentMonthKey, label: '', hours: 0, days: 0 };
-}, [monthlySessionHistory, currentMonthKey]);
+  const currentMonthMetrics = useMemo(() => {
+    const target = monthlySessionHistory.find((entry) => entry.month === currentMonthKey);
+    return target ?? { month: currentMonthKey, label: '', hours: 0, days: 0 };
+  }, [monthlySessionHistory, currentMonthKey]);
 
   const emptyUser: AuthenticatedStaff = {
     id: 'anon',
@@ -3857,11 +3859,10 @@ const currentMonthMetrics = useMemo(() => {
                 key={item.id}
                 type="button"
                 onClick={() => setActiveSection(item.id)}
-                className={`rounded-full border px-4 py-1 text-xs font-semibold transition ${
-                  isActive
-                    ? 'border-primary-500 bg-primary-100 text-primary-700'
-                    : 'border-primary-100 text-[var(--brand-muted)] hover:border-primary-200'
-                }`}
+                className={`rounded-full border px-4 py-1 text-xs font-semibold transition ${isActive
+                  ? 'border-primary-500 bg-primary-100 text-primary-700'
+                  : 'border-primary-100 text-[var(--brand-muted)] hover:border-primary-200'
+                  }`}
               >
                 {item.label}
               </button>
@@ -3938,41 +3939,41 @@ const currentMonthMetrics = useMemo(() => {
                 </button>
               </div>
               <div className="grid gap-4 lg:grid-cols-2">
-              <QuickAction
-                title="Abrir nuevo pedido"
-                description="Escanea el QR de un cliente o crea un pedido POS manual."
-                cta="Nuevo pedido"
-                onClick={() => handleOpenNewOrder()}
-              />
-              <QuickAction
-                title="Escanear QR inteligente"
-                description="Escanea tickets, reservas o clientes en un solo lector."
-                cta="Abrir lector"
-                onClick={() => handleOpenScanner()}
-              />
-            </div>
-            <div className="mt-2 flex flex-wrap justify-center gap-3">
-              <button
-                type="button"
-                onClick={() =>
-                  handleOpenPresetQr('evm', '0xd717d02a2434f8506b14143f60d998337d6f5649')
-                }
-                className="inline-flex items-center gap-3 rounded-2xl border border-primary-100/70 bg-white/80 px-5 py-3 text-sm font-semibold text-primary-700 transition hover:border-primary-300 hover:text-primary-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
-              >
-                <span aria-hidden="true">📷</span>
-                QR dirección EVM (0x…5649)
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  handleOpenPresetQr('lightning', 'howlingnote18@walletofsatoshi.com')
-                }
-                className="inline-flex items-center gap-3 rounded-2xl border border-primary-100/70 bg-white/80 px-5 py-3 text-sm font-semibold text-primary-700 transition hover:border-primary-300 hover:text-primary-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
-              >
-                <span aria-hidden="true">⚡️</span>
-                QR Lightning (howlingnote18@walletofsatoshi.com)
-              </button>
-            </div>
+                <QuickAction
+                  title="Abrir nuevo pedido"
+                  description="Escanea el QR de un cliente o crea un pedido POS manual."
+                  cta="Nuevo pedido"
+                  onClick={() => handleOpenNewOrder()}
+                />
+                <QuickAction
+                  title="Escanear QR inteligente"
+                  description="Escanea tickets, reservas o clientes en un solo lector."
+                  cta="Abrir lector"
+                  onClick={() => handleOpenScanner()}
+                />
+              </div>
+              <div className="mt-2 flex flex-wrap justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleOpenPresetQr('evm', '0xd717d02a2434f8506b14143f60d998337d6f5649')
+                  }
+                  className="inline-flex items-center gap-3 rounded-2xl border border-primary-100/70 bg-white/80 px-5 py-3 text-sm font-semibold text-primary-700 transition hover:border-primary-300 hover:text-primary-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
+                >
+                  <span aria-hidden="true">📷</span>
+                  QR dirección EVM (0x…5649)
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleOpenPresetQr('lightning', 'howlingnote18@walletofsatoshi.com')
+                  }
+                  className="inline-flex items-center gap-3 rounded-2xl border border-primary-100/70 bg-white/80 px-5 py-3 text-sm font-semibold text-primary-700 transition hover:border-primary-300 hover:text-primary-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
+                >
+                  <span aria-hidden="true">⚡️</span>
+                  QR Lightning (howlingnote18@walletofsatoshi.com)
+                </button>
+              </div>
               {menuError && (
                 <p className="rounded-2xl border border-danger-200/70 bg-danger-50/50 px-4 py-2 text-xs text-danger-600 dark:border-danger-500/40 dark:bg-danger-900/20 dark:text-danger-200">
                   {menuError} ·{' '}
@@ -4009,32 +4010,32 @@ const currentMonthMetrics = useMemo(() => {
               <>
                 <section className="card space-y-4 p-6">
                   <SmartScannerPanel onPayload={handleScannerPayload} onClose={handleCloseScanner} feedback={scannerFeedback} />
-            </section>
-            <div className="mt-2 flex justify-center">
-              <button
-                type="button"
-                onClick={() =>
-                  handleOpenPresetQr('lightning', 'howlingnote18@walletofsatoshi.com')
-                }
-                className="inline-flex items-center gap-3 rounded-2xl border border-primary-100/70 bg-white/80 px-5 py-3 text-sm font-semibold text-primary-700 transition hover:border-primary-300 hover:text-primary-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
-              >
-                <span aria-hidden="true">⚡️</span>
-                QR Lightning (howlingnote18@walletofsatoshi.com)
-              </button>
-            </div>
-          </>
-        )}
+                </section>
+                <div className="mt-2 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleOpenPresetQr('lightning', 'howlingnote18@walletofsatoshi.com')
+                    }
+                    className="inline-flex items-center gap-3 rounded-2xl border border-primary-100/70 bg-white/80 px-5 py-3 text-sm font-semibold text-primary-700 transition hover:border-primary-300 hover:text-primary-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
+                  >
+                    <span aria-hidden="true">⚡️</span>
+                    QR Lightning (howlingnote18@walletofsatoshi.com)
+                  </button>
+                </div>
+              </>
+            )}
 
-        {pestAlertMessage && (
-          <div className="rounded-3xl border border-danger-200 bg-danger-50/70 px-4 py-3 text-sm font-semibold text-danger-700 shadow-sm dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
-            {pestAlertMessage}
-          </div>
-        )}
+            {pestAlertMessage && (
+              <div className="rounded-3xl border border-danger-200 bg-danger-50/70 px-4 py-3 text-sm font-semibold text-danger-700 shadow-sm dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
+                {pestAlertMessage}
+              </div>
+            )}
 
-        <OrdersPanel
-          hiddenOrderIds={hiddenQueueOrderIds}
-          prepTasks={visibleActivePrep}
-          onSelect={(order) => setDetail({ type: 'order', data: order })}
+            <OrdersPanel
+              hiddenOrderIds={hiddenQueueOrderIds}
+              prepTasks={visibleActivePrep}
+              onSelect={(order) => setDetail({ type: 'order', data: order })}
               onSelectPrepTask={(task) => setDetail({ type: 'prep', data: task })}
             />
 
@@ -4143,17 +4144,17 @@ const currentMonthMetrics = useMemo(() => {
                 size={detail.type === 'scan-customer' ? 'wide' : 'default'}
               >
                 <div className="space-y-6">
-                <div className="flex items-center justify-between">
-                  <p className="badge">Detalle seleccionado</p>
-                  <button
-                    type="button"
-                    className="text-xs font-bold uppercase tracking-[0.3em] text-[var(--brand-text)] dark:text-white"
-                    onClick={() => setDetail(null)}
-                  >
-                    Cerrar
-                  </button>
-                </div>
-                {detail.type === 'order' && (
+                  <div className="flex items-center justify-between">
+                    <p className="badge">Detalle seleccionado</p>
+                    <button
+                      type="button"
+                      className="text-xs font-bold uppercase tracking-[0.3em] text-[var(--brand-text)] dark:text-white"
+                      onClick={() => setDetail(null)}
+                    >
+                      Cerrar
+                    </button>
+                  </div>
+                  {detail.type === 'order' && (
                     <OrderDetailContent
                       order={detail.data}
                       onMoveToQueue={(order, options) => handleQueuePreviewRequest(order, options)}
@@ -4185,16 +4186,16 @@ const currentMonthMetrics = useMemo(() => {
                       actionState={actionState}
                     />
                   )}
-                {detail.type === 'customer' && (
-                  <CustomerDetailContent
-                    customer={detail.data}
-                    beverageOptions={beverageOptions}
-                    foodOptions={foodOptions}
-                    isMenuLoading={menuLoading}
-                    onClose={() => setDetail(null)}
-                    onRefreshLoyalty={refreshLoyalty}
-                  />
-                )}
+                  {detail.type === 'customer' && (
+                    <CustomerDetailContent
+                      customer={detail.data}
+                      beverageOptions={beverageOptions}
+                      foodOptions={foodOptions}
+                      isMenuLoading={menuLoading}
+                      onClose={() => setDetail(null)}
+                      onRefreshLoyalty={refreshLoyalty}
+                    />
+                  )}
                   {detail.type === 'scan-reservation' && (
                     <ScannedReservationContent
                       reservation={detail.data}
@@ -4761,9 +4762,8 @@ const DetailModal = ({
         onClick={onClose}
       />
       <div
-        className={`relative z-10 max-h-[90vh] w-full overflow-y-auto rounded-3xl bg-white text-[var(--brand-text)] shadow-2xl dark:bg-[#1f1613] dark:text-white ${
-          size === 'wide' ? 'max-w-5xl p-8' : 'max-w-3xl p-6'
-        }`}
+        className={`relative z-10 max-h-[90vh] w-full overflow-y-auto rounded-3xl bg-white text-[var(--brand-text)] shadow-2xl dark:bg-[#1f1613] dark:text-white ${size === 'wide' ? 'max-w-5xl p-8' : 'max-w-3xl p-6'
+          }`}
       >
         {children}
       </div>
@@ -5044,9 +5044,8 @@ function ReservationCard({
   const customerLabel = formatReservationCustomer(reservation);
   const venueLabel = reservation.branchNumber ?? reservation.branchId ?? 'Matriz';
   const reservationLabel = reservation.reservationCode ?? reservation.id.slice(0, 6);
-  const ariaLabel = `Reserva ${reservationLabel} para ${customerLabel} · ${peopleCount} ${
-    peopleCount === 1 ? 'persona' : 'personas'
-  } · Sucursal ${venueLabel}`;
+  const ariaLabel = `Reserva ${reservationLabel} para ${customerLabel} · ${peopleCount} ${peopleCount === 1 ? 'persona' : 'personas'
+    } · Sucursal ${venueLabel}`;
 
   return (
     <article
@@ -5057,11 +5056,11 @@ function ReservationCard({
       onKeyDown={
         onSelect
           ? (event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                onSelect(reservation);
-              }
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onSelect(reservation);
             }
+          }
           : undefined
       }
       className="rounded-2xl border border-primary-100/70 bg-white/80 px-4 py-3 text-sm shadow-sm transition hover:border-primary-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-primary-500 dark:border-white/10 dark:bg-white/10"
@@ -5434,9 +5433,9 @@ const ConsumptionSummary = ({ items }: { items: OrderItemEntry[] }) => {
 const normalizeDescriptor = (value?: string | null) =>
   value
     ? value
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
     : '';
 const BEVERAGE_DESCRIPTOR_KEYWORDS = [
   'bebida',
@@ -5556,17 +5555,17 @@ const buildShippingFromMetadata = (metadata?: Record<string, unknown> | null) =>
     null;
   const deliveryTip =
     deliveryTipRecord &&
-    (deliveryTipRecord.amount !== undefined || deliveryTipRecord.percent !== undefined)
+      (deliveryTipRecord.amount !== undefined || deliveryTipRecord.percent !== undefined)
       ? {
-          amount:
-            coerceNumber(deliveryTipRecord.amount) ??
-            coerceNumber(deliveryTipRecord.a) ??
-            null,
-          percent:
-            coerceNumber(deliveryTipRecord.percent) ??
-            coerceNumber(deliveryTipRecord.p) ??
-            null,
-        }
+        amount:
+          coerceNumber(deliveryTipRecord.amount) ??
+          coerceNumber(deliveryTipRecord.a) ??
+          null,
+        percent:
+          coerceNumber(deliveryTipRecord.percent) ??
+          coerceNumber(deliveryTipRecord.p) ??
+          null,
+      }
       : null;
   return {
     address: buildAddressDetails(addressRecord),
@@ -5642,15 +5641,15 @@ const buildVirtualTicketOrderPayload = ({
       : null;
   const metadataDeliveryTipAmount = coerceNumber(
     metadataObject?.deliveryTipAmount ??
-      metadataDeliveryRecord?.['tipAmount'] ??
-      metadataDeliveryTipRecord?.['amount'] ??
-      metadataDeliveryTipRecord?.['a']
+    metadataDeliveryRecord?.['tipAmount'] ??
+    metadataDeliveryTipRecord?.['amount'] ??
+    metadataDeliveryTipRecord?.['a']
   );
   const metadataDeliveryTipPercent = coerceNumber(
     metadataObject?.deliveryTipPercent ??
-      metadataDeliveryRecord?.['tipPercent'] ??
-      metadataDeliveryTipRecord?.['percent'] ??
-      metadataDeliveryTipRecord?.['p']
+    metadataDeliveryRecord?.['tipPercent'] ??
+    metadataDeliveryTipRecord?.['percent'] ??
+    metadataDeliveryTipRecord?.['p']
   );
   const shipping =
     order.shipping ??
@@ -5671,12 +5670,12 @@ const buildVirtualTicketOrderPayload = ({
     hydratedTicketItems.length > 0
       ? hydratedTicketItems
       : [
-          {
-            name: 'Consumo registrado',
-            quantity: order.itemsCount ?? 1,
-            price: ticketTotal ?? 0,
-          },
-        ];
+        {
+          name: 'Consumo registrado',
+          quantity: order.itemsCount ?? 1,
+          price: ticketTotal ?? 0,
+        },
+      ];
   const ticketId = order.ticketCode ?? order.orderNumber ?? order.id;
   const customerName =
     order.customerName ??
@@ -5703,28 +5702,28 @@ const buildVirtualTicketOrderPayload = ({
     items: hydratedTicketItems.length > 0 ? hydratedTicketItems : fallbackTicketItems,
     qrPayload: order.qrPayload ?? metadataObject?.qrPayload ?? null,
     type: order.type ?? 'pos',
-        shipping: shipping
+    shipping: shipping
+      ? {
+        address: shipping.address
           ? {
-              address: shipping.address
-                ? {
-                    street: shipping.address.street ?? undefined,
-                    city: shipping.address.city ?? undefined,
-                    state: shipping.address.state ?? undefined,
-                    postalCode: shipping.address.postalCode ?? undefined,
-                    reference: shipping.address.reference ?? undefined,
-                  }
-                : undefined,
-              contactPhone: shipping.contactPhone ?? undefined,
-              isWhatsapp: shipping.isWhatsapp ?? undefined,
-              addressId: shipping.addressId ?? undefined,
-              deliveryTip: shipping.deliveryTip
-                ? {
-                    amount: shipping.deliveryTip.amount ?? undefined,
-                    percent: shipping.deliveryTip.percent ?? undefined,
-                  }
-                : undefined,
-            }
+            street: shipping.address.street ?? undefined,
+            city: shipping.address.city ?? undefined,
+            state: shipping.address.state ?? undefined,
+            postalCode: shipping.address.postalCode ?? undefined,
+            reference: shipping.address.reference ?? undefined,
+          }
           : undefined,
+        contactPhone: shipping.contactPhone ?? undefined,
+        isWhatsapp: shipping.isWhatsapp ?? undefined,
+        addressId: shipping.addressId ?? undefined,
+        deliveryTip: shipping.deliveryTip
+          ? {
+            amount: shipping.deliveryTip.amount ?? undefined,
+            percent: shipping.deliveryTip.percent ?? undefined,
+          }
+          : undefined,
+      }
+      : undefined,
   };
 };
 
@@ -5815,9 +5814,8 @@ const OrderItemsSection = ({ items }: { items: OrderItemEntry[] }) => (
                   {descriptorLabel ? ` - ${descriptorLabel}` : ''}
                   {sizeLabel && (
                     <span
-                      className={`ml-1 ${
-                        isBeverage ? 'underline decoration-primary-500 underline-offset-4' : ''
-                      }`}
+                      className={`ml-1 ${isBeverage ? 'underline decoration-primary-500 underline-offset-4' : ''
+                        }`}
                     >
                       {' - '}
                       {sizeLabel}
@@ -5835,6 +5833,61 @@ const OrderItemsSection = ({ items }: { items: OrderItemEntry[] }) => (
     )}
   </div>
 );
+
+const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null }) => {
+  if (!shipping || (!shipping.address && !shipping.deliveryTip)) return null;
+
+  const { address, deliveryTip, contactPhone } = shipping;
+  const fullAddress = address
+    ? [address.street, address.postalCode, address.city, address.state].filter(Boolean).join(', ')
+    : 'Dirección no disponible';
+
+  const hasAddress = !!address;
+  const hasTip = !!(deliveryTip?.amount && deliveryTip.amount > 0);
+
+  return (
+    <div className="mb-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
+      <div className="flex items-start gap-4">
+        <div className="rounded-full bg-primary-100 p-2 text-primary-600 dark:bg-primary-900/30 dark:text-primary-300">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            className="h-5 w-5"
+          >
+            <path
+              fillRule="evenodd"
+              d="M11.54 22.351l.07.04.028.016a.76.76 0 00.723 0l.028-.015.071-.041a16.975 16.975 0 001.144-.742 19.58 19.58 0 002.683-2.282c1.944-1.99 3.963-4.98 3.963-8.827a8.25 8.25 0 00-16.5 0c0 3.846 2.02 6.837 3.963 8.827a19.58 19.58 0 002.682 2.282 16.975 16.975 0 001.145.742zM12 13.5a3 3 0 100-6 3 3 0 000 6z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </div>
+        <div className="flex-1 space-y-1">
+          <p className="font-semibold text-[var(--brand-text)] dark:text-white">
+            Entrega a Domicilio
+          </p>
+          {hasAddress && (
+            <>
+              <p className="text-sm text-[var(--brand-muted)]">{fullAddress}</p>
+              {address!.reference && (
+                <p className="text-xs italic text-[var(--brand-muted)]">&quot;Ref: {address!.reference}&quot;</p>
+              )}
+            </>
+          )}
+          {contactPhone && <p className="text-xs text-[var(--brand-muted)]">Tel: {contactPhone}</p>}
+        </div>
+        {hasTip && (
+          <div className="text-right">
+            <p className="text-xs text-[var(--brand-muted)]">Propina envío</p>
+            <p className="font-semibold text-emerald-600 dark:text-emerald-400">
+              ${deliveryTip!.amount?.toFixed(2)}
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 const OrderNotesCard = ({ note, label = 'Comentarios del pedido' }: { note: string; label?: string }) => (
   <div className="rounded-2xl border border-primary-100/70 bg-white/80 px-4 py-3 text-sm text-[var(--brand-text)] dark:border-white/10 dark:bg-white/5 dark:text-white">
@@ -6053,7 +6106,7 @@ const OrderDetailContent = ({
   const assignedStaffDisplay = order.queuedByStaffName ?? order.queuedByStaffId ?? null;
   const paymentReferenceTypeLabel = resolvedPaymentReferenceType
     ? PAYMENT_REFERENCE_TYPE_LABELS[resolvedPaymentReferenceType] ??
-      resolvedPaymentReferenceType
+    resolvedPaymentReferenceType
     : null;
   const hydratedItems = useMemo(() => {
     if (items.length > 0) {
@@ -6369,6 +6422,7 @@ const OrderDetailContent = ({
       {fallbackNotes && (
         <OrderNotesCard note={fallbackNotes} label="Comentarios adicionales" />
       )}
+      {order.shipping && <ShippingInfoCard shipping={order.shipping} />}
       <ConsumptionSummary items={items} />
       {itemsLoading && (
         <p className="rounded-xl border border-dashed border-primary-200/60 bg-white/60 px-3 py-2 text-xs text-[var(--brand-muted)] dark:border-white/10 dark:bg-white/5">
@@ -6433,11 +6487,10 @@ const OrderDetailContent = ({
                         setSelectedPaymentMethod(method.key);
                         setShowPaymentSelector(false);
                       }}
-                      className={`rounded-2xl border px-3 py-2 text-xs font-semibold transition ${
-                        isActive
-                          ? 'border-primary-500 bg-primary-100 text-primary-800 dark:border-primary-300 dark:bg-primary-500/20 dark:text-primary-100'
-                          : 'border-primary-100 text-[var(--brand-text)] dark:border-white/20 dark:text-white'
-                      }`}
+                      className={`rounded-2xl border px-3 py-2 text-xs font-semibold transition ${isActive
+                        ? 'border-primary-500 bg-primary-100 text-primary-800 dark:border-primary-300 dark:bg-primary-500/20 dark:text-primary-100'
+                        : 'border-primary-100 text-[var(--brand-text)] dark:border-white/20 dark:text-white'
+                        }`}
                     >
                       {method.label}
                     </button>
@@ -6545,9 +6598,8 @@ const ReservationDetailContent = ({
           label="Personas"
           value={
             <span className="font-bold text-primary-900 dark:text-white">
-              {`${reservation.peopleCount ?? 1} ${
-                (reservation.peopleCount ?? 1) === 1 ? 'persona' : 'personas'
-              }`}
+              {`${reservation.peopleCount ?? 1} ${(reservation.peopleCount ?? 1) === 1 ? 'persona' : 'personas'
+                }`}
             </span>
           }
         />
@@ -6637,15 +6689,15 @@ const PrepTaskDetailContent = ({
       ? orderItems
       : displayProductName !== 'Sin producto'
         ? [
-            {
-              productId: task.orderItem?.productId ?? task.product?.id ?? null,
-              name: displayProductName,
-              quantity: displayQuantity,
-              price: task.orderItem?.price ?? null,
-              category: task.product?.category ?? null,
-              subcategory: task.product?.subcategory ?? null,
-            },
-          ]
+          {
+            productId: task.orderItem?.productId ?? task.product?.id ?? null,
+            name: displayProductName,
+            quantity: displayQuantity,
+            price: task.orderItem?.price ?? null,
+            category: task.product?.category ?? null,
+            subcategory: task.product?.subcategory ?? null,
+          },
+        ]
         : [];
   const handlerDisplayName = getPrepTaskHandlerShortName(task);
   const customerLabel =
@@ -6708,14 +6760,14 @@ const PrepTaskDetailContent = ({
             </span>
           }
         />
-          <DetailRow
-            label="Asignado a"
-            value={
-              <span className="font-bold text-primary-900 dark:text-white">
-                {handlerDisplayName ?? 'Sin asignar'}
-              </span>
-            }
-          />
+        <DetailRow
+          label="Asignado a"
+          value={
+            <span className="font-bold text-primary-900 dark:text-white">
+              {handlerDisplayName ?? 'Sin asignar'}
+            </span>
+          }
+        />
       </div>
       {prepOrderNotes && <OrderNotesCard note={prepOrderNotes} label="Comentarios del pedido" />}
       {detailItems.length > 0 && (
@@ -6960,10 +7012,10 @@ const PartnerMetricsContent = ({
             <select
               value={partnerDays}
               onChange={(event) => setPartnerDays(Number(event.target.value))}
-            className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] dark:border-white/10"
+              className="rounded-lg border border-primary-100/70 bg-transparent px-3 py-1 text-sm text-[var(--brand-text)] dark:border-white/10"
               disabled={!useRange}
-          >
-            {[30, 60, 90, 180, 360].map((daysOption) => (
+            >
+              {[30, 60, 90, 180, 360].map((daysOption) => (
                 <option key={daysOption} value={daysOption}>
                   {daysOption} días
                 </option>
@@ -7120,9 +7172,9 @@ const PartnerMetricsContent = ({
         </div>
       )}
 
-  <PartnerFiscalControls folio={fiscalFolio} onUpdate={handleFolioUpdate} onIssue={handleIssueFolio} />
-</div>
-);
+      <PartnerFiscalControls folio={fiscalFolio} onUpdate={handleFolioUpdate} onIssue={handleIssueFolio} />
+    </div>
+  );
 };
 
 const SalesPanel = ({
@@ -7235,11 +7287,10 @@ const SalesPanel = ({
               ].map((option) => (
                 <label
                   key={option.value}
-                  className={`flex items-center gap-1 rounded-full border px-3 py-1 text-xs ${
-                    exportFormat === option.value
-                      ? 'border-primary-500 bg-primary-100 text-primary-700'
-                      : 'border-primary-100/70 text-[var(--brand-muted)]'
-                  }`}
+                  className={`flex items-center gap-1 rounded-full border px-3 py-1 text-xs ${exportFormat === option.value
+                    ? 'border-primary-500 bg-primary-100 text-primary-700'
+                    : 'border-primary-100/70 text-[var(--brand-muted)]'
+                    }`}
                 >
                   <input
                     type="radio"
@@ -7485,8 +7536,8 @@ const PartnerFiscalControls = ({
           Generar folio
         </button>
       </div>
-  </div>
-);
+    </div>
+  );
 };
 
 const ADVANCED_RANGE_OPTIONS: Array<{ value: string; label: string; disabled?: boolean }> = [
@@ -7554,6 +7605,14 @@ const AdvancedMetricsPanel = ({
 }) => {
   const [exportFormat, setExportFormat] = useState<'csv' | 'xlsx'>('csv');
   const [focusedSection, setFocusedSection] = useState<AdvancedMetricsSectionId>('clients');
+
+  const chartData = useMemo(() => {
+    if (!metrics?.sections[focusedSection]?.bars) return [];
+    return metrics.sections[focusedSection].bars.map((item) => ({
+      name: item.label,
+      value: item.value,
+    }));
+  }, [metrics, focusedSection]);
 
   const handleExport = () => {
     if (typeof window === 'undefined' || !metrics) {
@@ -7641,41 +7700,48 @@ const AdvancedMetricsPanel = ({
               {format.label}
             </label>
           ))}
+          {chartData.length > 0 && (
+            <ChartButton
+              title={metrics?.sections[focusedSection]?.title ?? 'Gráfica'}
+              data={chartData}
+              yAxisLabel="Cantidad"
+            />
+          )}
           <button type="button" className="brand-button" onClick={handleExport} disabled={!metrics}>
             Descargar vista
           </button>
         </div>
-      <button
-        type="button"
-        className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline dark:text-primary-200"
-        onClick={onRefresh}
-      >
-        Refrescar métricas
-      </button>
+        <button
+          type="button"
+          className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline dark:text-primary-200"
+          onClick={onRefresh}
+        >
+          Refrescar métricas
+        </button>
+      </div>
+      {error && (
+        <div className="rounded-2xl border border-danger-200 bg-danger-50/70 px-4 py-3 text-sm text-danger-700 dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
+          {error}
+        </div>
+      )}
+      {isLoading && <p className="text-sm text-[var(--brand-muted)]">Cargando métricas avanzadas…</p>}
+      {!isLoading && metrics && !metrics.hasData && (
+        <p className="text-sm text-[var(--brand-muted)]">Rango seleccionado sin datos disponibles.</p>
+      )}
+      {!isLoading && metrics && (
+        <div className="mt-5 space-y-5">
+          {ADVANCED_SECTION_ORDER.map((sectionId) => (
+            <AdvancedMetricsSectionBlock
+              key={sectionId}
+              sectionId={sectionId}
+              section={sectionData[sectionId]}
+              isFocused={focusedSection === sectionId}
+              onFocus={() => setFocusedSection(sectionId)}
+            />
+          ))}
+        </div>
+      )}
     </div>
-    {error && (
-      <div className="rounded-2xl border border-danger-200 bg-danger-50/70 px-4 py-3 text-sm text-danger-700 dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
-        {error}
-      </div>
-    )}
-    {isLoading && <p className="text-sm text-[var(--brand-muted)]">Cargando métricas avanzadas…</p>}
-    {!isLoading && metrics && !metrics.hasData && (
-      <p className="text-sm text-[var(--brand-muted)]">Rango seleccionado sin datos disponibles.</p>
-    )}
-    {!isLoading && metrics && (
-      <div className="mt-5 space-y-5">
-        {ADVANCED_SECTION_ORDER.map((sectionId) => (
-          <AdvancedMetricsSectionBlock
-            key={sectionId}
-            sectionId={sectionId}
-            section={sectionData[sectionId]}
-            isFocused={focusedSection === sectionId}
-            onFocus={() => setFocusedSection(sectionId)}
-          />
-        ))}
-      </div>
-    )}
-  </div>
   );
 };
 
@@ -7697,9 +7763,8 @@ const AdvancedMetricsSectionBlock = ({
   }
   return (
     <div
-      className={`rounded-3xl border p-5 text-sm shadow-sm transition dark:border-white/10 ${
-        isFocused ? 'border-primary-400/80 shadow-lg' : 'border-primary-100/70'
-      }`}
+      className={`rounded-3xl border p-5 text-sm shadow-sm transition dark:border-white/10 ${isFocused ? 'border-primary-400/80 shadow-lg' : 'border-primary-100/70'
+        }`}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -7920,7 +7985,7 @@ const StaffAdvancedMetricsPanel = ({
             sectionId="employees"
             section={section}
             isFocused
-            onFocus={() => {}}
+            onFocus={() => { }}
             hideExportButton
           />
         </div>
@@ -7986,15 +8051,15 @@ const ForecastPanel = ({
 }) => {
   const branchHighlights = forecasts?.branchDemand
     ? forecasts.branchDemand
-        .flatMap((branch) =>
-          branch.points.map((point) => ({
-            branch: branch.branch,
-            date: point.date,
-            revenue: point.revenue,
-          }))
-        )
-        .sort((a, b) => b.revenue - a.revenue)
-        .slice(0, 5)
+      .flatMap((branch) =>
+        branch.points.map((point) => ({
+          branch: branch.branch,
+          date: point.date,
+          revenue: point.revenue,
+        }))
+      )
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 5)
     : [];
 
   return (
@@ -8172,10 +8237,10 @@ const ForecastSalesWindow = ({
         value={
           window.busiestDay !== 'Sin datos'
             ? new Date(window.busiestDay).toLocaleDateString('es-MX', {
-                weekday: 'long',
-                month: 'short',
-                day: 'numeric',
-              })
+              weekday: 'long',
+              month: 'short',
+              day: 'numeric',
+            })
             : 'Sin datos'
         }
       />
@@ -9931,9 +9996,8 @@ const StaffUtilityDrawer = ({
   const isSuperUser = user.role === 'superuser' || SUPER_USER_EMAILS.has(user.email.toLowerCase());
   return (
     <aside
-      className={`fixed right-4 top-12 z-30 w-64 max-h-[85vh] overflow-y-auto rounded-3xl border border-primary-100/70 bg-white/95 p-4 shadow-2xl transition transform dark:border-white/10 dark:bg-neutral-900/90 ${
-        open ? 'translate-x-0 opacity-100' : 'pointer-events-none translate-x-[120%] opacity-0'
-      }`}
+      className={`fixed right-4 top-12 z-30 w-64 max-h-[85vh] overflow-y-auto rounded-3xl border border-primary-100/70 bg-white/95 p-4 shadow-2xl transition transform dark:border-white/10 dark:bg-neutral-900/90 ${open ? 'translate-x-0 opacity-100' : 'pointer-events-none translate-x-[120%] opacity-0'
+        }`}
     >
       <div className="flex items-center justify-between text-xs text-[var(--brand-muted)]">
         <p className="font-semibold uppercase tracking-[0.3em]">Barra rápida</p>
@@ -9963,29 +10027,29 @@ const StaffUtilityDrawer = ({
           className="rounded-2xl border border-primary-100/70 px-3 py-2 text-left font-semibold text-[var(--brand-text)] transition hover:border-primary-300 dark:border-white/10"
           onClick={() => onSelect('profile')}
         >
-        Mi perfil
-      </button>
-      <button
-        type="button"
-        className="rounded-2xl border border-primary-100/70 px-3 py-2 text-left font-semibold text-[var(--brand-text)] transition hover:border-primary-300 dark:border-white/10"
-        onClick={() => onSelect('metrics')}
-      >
-        Mis números
-      </button>
-      <button
-        type="button"
-        className="rounded-2xl border border-primary-100/70 px-3 py-2 text-left font-semibold text-[var(--brand-text)] transition hover:border-primary-300 dark:border-white/10"
-        onClick={() => onSelect('salary')}
-      >
-        Mi salario y permisos
-      </button>
-      <button
-        type="button"
-        className="rounded-2xl border border-primary-100/70 px-3 py-2 text-left font-semibold text-[var(--brand-text)] transition hover:border-primary-300 dark:border-white/10"
-        onClick={() => onSelect('cleaning')}
-      >
-        Bitácora de limpieza
-      </button>
+          Mi perfil
+        </button>
+        <button
+          type="button"
+          className="rounded-2xl border border-primary-100/70 px-3 py-2 text-left font-semibold text-[var(--brand-text)] transition hover:border-primary-300 dark:border-white/10"
+          onClick={() => onSelect('metrics')}
+        >
+          Mis números
+        </button>
+        <button
+          type="button"
+          className="rounded-2xl border border-primary-100/70 px-3 py-2 text-left font-semibold text-[var(--brand-text)] transition hover:border-primary-300 dark:border-white/10"
+          onClick={() => onSelect('salary')}
+        >
+          Mi salario y permisos
+        </button>
+        <button
+          type="button"
+          className="rounded-2xl border border-primary-100/70 px-3 py-2 text-left font-semibold text-[var(--brand-text)] transition hover:border-primary-300 dark:border-white/10"
+          onClick={() => onSelect('cleaning')}
+        >
+          Bitácora de limpieza
+        </button>
         <div className="mt-4 border-t border-primary-100/50 pt-4 dark:border-white/10">
           <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Tema</p>
           <div className="mt-2">
@@ -9997,36 +10061,36 @@ const StaffUtilityDrawer = ({
             <p className="uppercase tracking-[0.3em] text-[var(--brand-muted)]">Gerencia</p>
             <button
               type="button"
-            className="w-full rounded-2xl border border-amber-300 bg-amber-100 px-3 py-2 text-left font-semibold text-amber-900 shadow-sm transition hover:border-amber-400 hover:bg-amber-100 dark:border-amber-300/40 dark:bg-amber-900/20 dark:text-amber-200"
-            onClick={() => onSelect('inventory')}
-          >
-            Inventarios
-          </button>
-          <button
-            type="button"
-            className="w-full rounded-2xl border border-emerald-300 bg-emerald-100 px-3 py-2 text-left font-semibold text-emerald-900 shadow-sm transition hover:border-emerald-400 hover:bg-emerald-100 dark:border-emerald-300/40 dark:bg-emerald-900/20 dark:text-emerald-100"
-            onClick={() => onSelect('managerSalaries')}
-          >
-            Salarios
-          </button>
-          <button
-            type="button"
-            className="w-full rounded-2xl border border-sky-300 bg-sky-100 px-3 py-2 text-left font-semibold text-sky-900 shadow-sm transition hover:border-sky-400 hover:bg-sky-100 dark:border-sky-300/40 dark:bg-sky-900/20 dark:text-sky-100"
-            onClick={() => onSelect('managerTips')}
-          >
-            Propinas
-          </button>
-          <button
-            type="button"
-            className="w-full rounded-2xl border border-primary-100/70 bg-white/60 px-3 py-2 text-left font-semibold text-[var(--brand-text)] transition hover:border-primary-300 dark:border-white/20 dark:bg-white/5"
-            onClick={() => onSelect('managerEmployees')}
-          >
-            Empleados
-          </button>
-          <button
-            type="button"
-            className="w-full rounded-2xl border border-primary-100/70 bg-white/60 px-3 py-2 text-left font-semibold text-[var(--brand-text)] transition hover:border-primary-300 dark:border-white/20 dark:bg-white/5"
-            onClick={() => onSelect('managerPayments')}
+              className="w-full rounded-2xl border border-amber-300 bg-amber-100 px-3 py-2 text-left font-semibold text-amber-900 shadow-sm transition hover:border-amber-400 hover:bg-amber-100 dark:border-amber-300/40 dark:bg-amber-900/20 dark:text-amber-200"
+              onClick={() => onSelect('inventory')}
+            >
+              Inventarios
+            </button>
+            <button
+              type="button"
+              className="w-full rounded-2xl border border-emerald-300 bg-emerald-100 px-3 py-2 text-left font-semibold text-emerald-900 shadow-sm transition hover:border-emerald-400 hover:bg-emerald-100 dark:border-emerald-300/40 dark:bg-emerald-900/20 dark:text-emerald-100"
+              onClick={() => onSelect('managerSalaries')}
+            >
+              Salarios
+            </button>
+            <button
+              type="button"
+              className="w-full rounded-2xl border border-sky-300 bg-sky-100 px-3 py-2 text-left font-semibold text-sky-900 shadow-sm transition hover:border-sky-400 hover:bg-sky-100 dark:border-sky-300/40 dark:bg-sky-900/20 dark:text-sky-100"
+              onClick={() => onSelect('managerTips')}
+            >
+              Propinas
+            </button>
+            <button
+              type="button"
+              className="w-full rounded-2xl border border-primary-100/70 bg-white/60 px-3 py-2 text-left font-semibold text-[var(--brand-text)] transition hover:border-primary-300 dark:border-white/20 dark:bg-white/5"
+              onClick={() => onSelect('managerEmployees')}
+            >
+              Empleados
+            </button>
+            <button
+              type="button"
+              className="w-full rounded-2xl border border-primary-100/70 bg-white/60 px-3 py-2 text-left font-semibold text-[var(--brand-text)] transition hover:border-primary-300 dark:border-white/20 dark:bg-white/5"
+              onClick={() => onSelect('managerPayments')}
             >
               Pagos y cortes
             </button>
@@ -10442,9 +10506,8 @@ const StaffProfilePanel = ({
         </label>
         {status && (
           <p
-            className={`rounded-2xl px-3 py-2 text-xs ${
-              status.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-danger-50 text-danger-700'
-            } dark:bg-white/10`}
+            className={`rounded-2xl px-3 py-2 text-xs ${status.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-danger-50 text-danger-700'
+              } dark:bg-white/10`}
           >
             {status.message}
           </p>
@@ -10487,44 +10550,44 @@ const StaffMetricsPanel = ({
       </div>
       <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
         <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Últimas sesiones</p>
-                    <div className="mt-3 space-y-2">
-                      {sessionList.length === 0 ? (
-                        <p className="text-xs text-[var(--brand-muted)]">Aún no hay registros.</p>
-                      ) : (
-                        sessionList.map((session) => {
-                          const durationSeconds = resolveSessionDurationSeconds(session);
-                          return (
-                            <div
-                              key={session.id}
-                              className="flex justify-between rounded-2xl bg-white/70 px-3 py-2 dark:bg-white/10"
-                            >
-                              <div>
-                                <p className="font-semibold">
-                                  {session.sessionStart
-                                    ? new Date(session.sessionStart).toLocaleDateString('es-MX', {
-                                        weekday: 'short',
-                                        day: '2-digit',
-                                        month: 'short',
-                                      })
-                                    : 'Sin fecha'}
-                                </p>
-                                <p className="text-xs text-[var(--brand-muted)]">
-                                  {durationSeconds > 0 ? formatSessionDuration(durationSeconds) : 'En progreso'}
-                                </p>
-                              </div>
-                              <span className="text-xs text-[var(--brand-muted)]">
-                                {session.sessionStart
-                                  ? new Date(session.sessionStart).toLocaleTimeString('es-MX', {
-                                      hour: '2-digit',
-                                      minute: '2-digit',
-                                    })
-                                  : '—'}
-                              </span>
-                            </div>
-                          );
+        <div className="mt-3 space-y-2">
+          {sessionList.length === 0 ? (
+            <p className="text-xs text-[var(--brand-muted)]">Aún no hay registros.</p>
+          ) : (
+            sessionList.map((session) => {
+              const durationSeconds = resolveSessionDurationSeconds(session);
+              return (
+                <div
+                  key={session.id}
+                  className="flex justify-between rounded-2xl bg-white/70 px-3 py-2 dark:bg-white/10"
+                >
+                  <div>
+                    <p className="font-semibold">
+                      {session.sessionStart
+                        ? new Date(session.sessionStart).toLocaleDateString('es-MX', {
+                          weekday: 'short',
+                          day: '2-digit',
+                          month: 'short',
                         })
-                      )}
-                    </div>
+                        : 'Sin fecha'}
+                    </p>
+                    <p className="text-xs text-[var(--brand-muted)]">
+                      {durationSeconds > 0 ? formatSessionDuration(durationSeconds) : 'En progreso'}
+                    </p>
+                  </div>
+                  <span className="text-xs text-[var(--brand-muted)]">
+                    {session.sessionStart
+                      ? new Date(session.sessionStart).toLocaleTimeString('es-MX', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })
+                      : '—'}
+                  </span>
+                </div>
+              );
+            })
+          )}
+        </div>
       </div>
       <div className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
         <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
@@ -10665,13 +10728,12 @@ const CleaningLogPanel = ({ cleaning }: { cleaning: StaffSidePanelProps['cleanin
                   </p>
                 </div>
                 <span
-                  className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                    status === 'pending'
-                      ? 'bg-amber-100 text-amber-700'
-                      : status === 'in_review'
-                        ? 'bg-primary-100 text-primary-700'
-                        : 'bg-emerald-100 text-emerald-700'
-                  }`}
+                  className={`rounded-full px-3 py-1 text-xs font-semibold ${status === 'pending'
+                    ? 'bg-amber-100 text-amber-700'
+                    : status === 'in_review'
+                      ? 'bg-primary-100 text-primary-700'
+                      : 'bg-emerald-100 text-emerald-700'
+                    }`}
                 >
                   {status === 'pending' ? 'Pendiente' : status === 'in_review' ? 'Esperando socio' : 'Aprobado'}
                 </span>
@@ -10868,11 +10930,10 @@ const ManagerInventoryPanel = ({
                           <div className="flex gap-1">
                             <button
                               type="button"
-                              className={`rounded-full border px-3 py-1 text-xs font-semibold ${
-                                isCategoryEditing && canEdit
-                                  ? 'border-primary-300 text-primary-600'
-                                  : 'border-primary-100/60 text-[var(--brand-muted)]'
-                              }`}
+                              className={`rounded-full border px-3 py-1 text-xs font-semibold ${isCategoryEditing && canEdit
+                                ? 'border-primary-300 text-primary-600'
+                                : 'border-primary-100/60 text-[var(--brand-muted)]'
+                                }`}
                               onClick={() => {
                                 if (!canEdit || !isCategoryEditing) return;
                                 startEditing(category, item, 'quantity');
@@ -10882,11 +10943,10 @@ const ManagerInventoryPanel = ({
                             </button>
                             <button
                               type="button"
-                              className={`rounded-full border px-3 py-1 text-xs font-semibold ${
-                                isCategoryEditing && canEdit
-                                  ? 'border-rose-300 text-rose-600'
-                                  : 'border-primary-100/60 text-[var(--brand-muted)]'
-                              }`}
+                              className={`rounded-full border px-3 py-1 text-xs font-semibold ${isCategoryEditing && canEdit
+                                ? 'border-rose-300 text-rose-600'
+                                : 'border-primary-100/60 text-[var(--brand-muted)]'
+                                }`}
                               onClick={() => {
                                 if (!canEdit || !isCategoryEditing) return;
                                 startEditing(category, item, 'accidents');
@@ -11227,9 +11287,9 @@ const StaffHierarchyTree = ({
 
   return (
     <pre className="rounded-3xl border border-primary-100/60 bg-white/80 p-4 font-mono text-xs text-[var(--brand-text)] dark:border-white/10 dark:bg-white/5 dark:text-white">
-{buildSection('Socios', socios)}
-\n{buildSection('Gerentes', gerentes)}
-\n{buildSection('Baristas', baristas)}
+      {buildSection('Socios', socios)}
+      \n{buildSection('Gerentes', gerentes)}
+      \n{buildSection('Baristas', baristas)}
     </pre>
   );
 };
@@ -11342,9 +11402,9 @@ const ManagerPaymentsPanel = ({
     ? orderMetrics!.monthStart.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })
     : payments?.monthlyTipPeriodStart
       ? new Date(payments.monthlyTipPeriodStart).toLocaleDateString('es-MX', {
-          day: '2-digit',
-          month: 'short',
-        })
+        day: '2-digit',
+        month: 'short',
+      })
       : 'inicio de mes';
   const salesDescription = preferOrders ? 'Pedidos completados hoy.' : 'Pagos capturados';
   const tipsDescription = preferOrders
@@ -11570,13 +11630,12 @@ const GovernancePanel = ({
                 <p className="text-xs text-[var(--brand-muted)]">Creado por {request.createdBy}</p>
               </div>
               <span
-                className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                  request.status === 'pending'
-                    ? 'bg-amber-100 text-amber-700'
-                    : request.status === 'approved'
-                      ? 'bg-emerald-100 text-emerald-700'
-                      : 'bg-primary-100 text-primary-700'
-                }`}
+                className={`rounded-full px-3 py-1 text-xs font-semibold ${request.status === 'pending'
+                  ? 'bg-amber-100 text-amber-700'
+                  : request.status === 'approved'
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-primary-100 text-primary-700'
+                  }`}
               >
                 {request.status}
               </span>
@@ -11649,13 +11708,12 @@ const EmployeeApprovalsPanel = ({
             <p className="text-xs text-[var(--brand-muted)]">Fecha límite: {new Date(ticket.dueDate).toLocaleDateString('es-MX')}</p>
           </div>
           <span
-            className={`rounded-full px-3 py-1 text-xs font-semibold ${
-              ticket.status === 'approved'
-                ? 'bg-emerald-100 text-emerald-700'
-                : ticket.status === 'declined'
-                  ? 'bg-danger-100 text-danger-700'
-                  : 'bg-amber-100 text-amber-700'
-            }`}
+            className={`rounded-full px-3 py-1 text-xs font-semibold ${ticket.status === 'approved'
+              ? 'bg-emerald-100 text-emerald-700'
+              : ticket.status === 'declined'
+                ? 'bg-danger-100 text-danger-700'
+                : 'bg-amber-100 text-amber-700'
+              }`}
           >
             {ticket.status}
           </span>
@@ -11791,9 +11849,8 @@ const PaidLeaveCalendar = ({ days }: { days: PaidLeaveDay[] }) => (
     {days.map((day) => (
       <div
         key={day.date}
-        className={`rounded-2xl border px-3 py-2 ${
-          day.isEligible ? 'border-primary-200 bg-primary-50 text-primary-900' : 'border-primary-50 text-[var(--brand-muted)]'
-        }`}
+        className={`rounded-2xl border px-3 py-2 ${day.isEligible ? 'border-primary-200 bg-primary-50 text-primary-900' : 'border-primary-50 text-[var(--brand-muted)]'
+          }`}
       >
         <p className="font-semibold">
           {new Date(day.date).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })}

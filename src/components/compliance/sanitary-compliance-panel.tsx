@@ -51,6 +51,7 @@ import {
   type SmartInventoryStatus,
   type WasteLogEntry,
 } from '@/lib/api';
+import { ChartButton } from '@/components/chart-button';
 
 type StatusState =
   | { type: 'idle'; message?: string }
@@ -165,6 +166,35 @@ export const SanitaryCompliancePanel = ({
   const [wasteStatus, wasteStatusActions] = useStatus();
   const [exportStatus, exportStatusActions] = useStatus();
 
+  const chartData = useMemo(() => {
+    if (activeTab === 'waste' && wasteLogs.length > 0) {
+      return wasteLogs
+        .slice(0, 15)
+        .map((log) => ({
+          name: new Date(log.createdAt).toLocaleDateString('es-MX', {
+            day: '2-digit',
+            month: '2-digit',
+          }),
+          value:
+            (Number(log.organicBeveragesKg) || 0) +
+            (Number(log.organicFoodsKg) || 0) +
+            (Number(log.inorganicKg) || 0),
+        }))
+        .reverse();
+    }
+    if (hygieneSummary?.entries) {
+      const grouped = new Map<string, number>();
+      hygieneSummary.entries.forEach((entry) => {
+        const day = new Date(entry.createdAt).toLocaleDateString('es-MX', { day: '2-digit' });
+        grouped.set(day, (grouped.get(day) || 0) + 1);
+      });
+      return Array.from(grouped.entries())
+        .map(([name, value]) => ({ name, value }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return [];
+  }, [activeTab, wasteLogs, hygieneSummary]);
+
   const loadHygiene = useCallback(async () => {
     hygieneStatusActions.loading();
     try {
@@ -233,11 +263,11 @@ export const SanitaryCompliancePanel = ({
         : generalSuppliesRefilled;
       const bathroomDetail = isBathroom
         ? [
-            `Inodoro ${bathroomChecklist.toilet ? '✅' : '⚠️'}`,
-            `Espejos ${bathroomChecklist.mirrors ? '✅' : '⚠️'}`,
-            `Piso ${bathroomChecklist.dryFloor ? 'Seco' : 'Húmedo'}`,
-            `Suministros ${bathroomChecklist.soapRefill ? 'OK' : 'Falta'}`,
-          ].join(' · ')
+          `Inodoro ${bathroomChecklist.toilet ? '✅' : '⚠️'}`,
+          `Espejos ${bathroomChecklist.mirrors ? '✅' : '⚠️'}`,
+          `Piso ${bathroomChecklist.dryFloor ? 'Seco' : 'Húmedo'}`,
+          `Suministros ${bathroomChecklist.soapRefill ? 'OK' : 'Falta'}`,
+        ].join(' · ')
         : null;
       const staffNote = staffName ? `Registrado por ${staffName}` : null;
       const observations = [staffNote, hygieneNotes.trim(), bathroomDetail?.trim()]
@@ -419,9 +449,9 @@ export const SanitaryCompliancePanel = ({
       title: 'Último checklist',
       value: latestHygieneEntry
         ? new Date(latestHygieneEntry.createdAt).toLocaleString('es-MX', {
-            dateStyle: 'short',
-            timeStyle: 'short',
-          })
+          dateStyle: 'short',
+          timeStyle: 'short',
+        })
         : 'Pendiente',
       detail: `${hygieneSummary?.summary.total ?? 0} registros en ${hygieneSummary?.month ?? hygieneMonth}`,
       tone: 'primary' as const,
@@ -444,8 +474,8 @@ export const SanitaryCompliancePanel = ({
       title: 'Cierre sanitario',
       value: lastWasteLog
         ? new Date(lastWasteLog.createdAt).toLocaleDateString('es-MX', {
-            dateStyle: 'medium',
-          })
+          dateStyle: 'medium',
+        })
         : 'Pendiente',
       detail: lastWasteLog
         ? `${lastWasteLog.organicBeveragesKg}kg bebidas · ${lastWasteLog.organicFoodsKg}kg alimentos`
@@ -472,11 +502,10 @@ export const SanitaryCompliancePanel = ({
             <button
               key={area}
               type="button"
-              className={`flex flex-col rounded-3xl border px-4 py-3 text-left transition ${
-                isActive
-                  ? 'border-primary-300 bg-primary-50/80 text-primary-900 dark:border-primary-300/40 dark:bg-primary-900/30 dark:text-primary-50'
-                  : 'border-primary-100 bg-white text-[var(--brand-text)] hover:border-primary-200 dark:border-white/10 dark:bg-white/5 dark:text-white'
-              }`}
+              className={`flex flex-col rounded-3xl border px-4 py-3 text-left transition ${isActive
+                ? 'border-primary-300 bg-primary-50/80 text-primary-900 dark:border-primary-300/40 dark:bg-primary-900/30 dark:text-primary-50'
+                : 'border-primary-100 bg-white text-[var(--brand-text)] hover:border-primary-200 dark:border-white/10 dark:bg-white/5 dark:text-white'
+                }`}
               onClick={() => {
                 setSelectedArea(area);
                 setHygieneNotes('');
@@ -557,13 +586,12 @@ export const SanitaryCompliancePanel = ({
         </button>
         {hygieneStatus.type !== 'idle' && (
           <span
-            className={`rounded-full px-3 py-1 ${
-              hygieneStatus.type === 'error'
-                ? 'bg-danger-50 text-danger-700'
-                : hygieneStatus.type === 'success'
-                  ? 'bg-emerald-50 text-emerald-700'
-                  : 'bg-primary-50 text-primary-700'
-            }`}
+            className={`rounded-full px-3 py-1 ${hygieneStatus.type === 'error'
+              ? 'bg-danger-50 text-danger-700'
+              : hygieneStatus.type === 'success'
+                ? 'bg-emerald-50 text-emerald-700'
+                : 'bg-primary-50 text-primary-700'
+              }`}
           >
             {hygieneStatus.message ?? 'Trabajando...'}
           </span>
@@ -661,13 +689,12 @@ export const SanitaryCompliancePanel = ({
         </button>
         {pestStatusState.type !== 'idle' && (
           <span
-            className={`text-xs ${
-              pestStatusState.type === 'error'
-                ? 'text-danger-700'
-                : pestStatusState.type === 'success'
-                  ? 'text-emerald-700'
-                  : 'text-amber-700'
-            }`}
+            className={`text-xs ${pestStatusState.type === 'error'
+              ? 'text-danger-700'
+              : pestStatusState.type === 'success'
+                ? 'text-emerald-700'
+                : 'text-amber-700'
+              }`}
           >
             {pestStatusState.message ?? 'Trabajando...'}
           </span>
@@ -850,13 +877,12 @@ export const SanitaryCompliancePanel = ({
         </button>
         {wasteStatus.type !== 'idle' && (
           <span
-            className={`text-xs ${
-              wasteStatus.type === 'error'
-                ? 'text-danger-700'
-                : wasteStatus.type === 'success'
-                  ? 'text-emerald-700'
-                  : 'text-[var(--brand-muted)]'
-            }`}
+            className={`text-xs ${wasteStatus.type === 'error'
+              ? 'text-danger-700'
+              : wasteStatus.type === 'success'
+                ? 'text-emerald-700'
+                : 'text-[var(--brand-muted)]'
+              }`}
           >
             {wasteStatus.message ?? 'Trabajando...'}
           </span>
@@ -889,17 +915,16 @@ export const SanitaryCompliancePanel = ({
         {summaryCards.map((card) => (
           <div
             key={card.title}
-            className={`rounded-3xl border px-4 py-3 ${
-              card.tone === 'danger'
-                ? 'border-danger-200 bg-danger-50/70 text-danger-900 dark:border-danger-500/40 dark:bg-danger-900/20 dark:text-danger-100'
-                : card.tone === 'amber'
-                  ? 'border-amber-200 bg-amber-50/70 text-amber-900 dark:border-amber-500/30 dark:bg-amber-900/20 dark:text-amber-50'
-                  : card.tone === 'emerald'
-                    ? 'border-emerald-200 bg-emerald-50/70 text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-900/20 dark:text-emerald-50'
-                    : card.tone === 'primary'
-                      ? 'border-primary-100 bg-primary-50/70 text-primary-900 dark:border-primary-300/40 dark:bg-primary-900/20 dark:text-primary-50'
-                      : 'border-slate-100 bg-white/90 text-[var(--brand-text)] dark:border-white/10 dark:bg-white/10 dark:text-white'
-            }`}
+            className={`rounded-3xl border px-4 py-3 ${card.tone === 'danger'
+              ? 'border-danger-200 bg-danger-50/70 text-danger-900 dark:border-danger-500/40 dark:bg-danger-900/20 dark:text-danger-100'
+              : card.tone === 'amber'
+                ? 'border-amber-200 bg-amber-50/70 text-amber-900 dark:border-amber-500/30 dark:bg-amber-900/20 dark:text-amber-50'
+                : card.tone === 'emerald'
+                  ? 'border-emerald-200 bg-emerald-50/70 text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-900/20 dark:text-emerald-50'
+                  : card.tone === 'primary'
+                    ? 'border-primary-100 bg-primary-50/70 text-primary-900 dark:border-primary-300/40 dark:bg-primary-900/20 dark:text-primary-50'
+                    : 'border-slate-100 bg-white/90 text-[var(--brand-text)] dark:border-white/10 dark:bg-white/10 dark:text-white'
+              }`}
           >
             <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">{card.title}</p>
             <p className="text-2xl font-semibold">{card.value}</p>
@@ -990,15 +1015,21 @@ export const SanitaryCompliancePanel = ({
           <button type="button" className="brand-button--ghost text-xs" onClick={() => void handleExportReport('xlsx')}>
             Exportar Excel
           </button>
+          {chartData.length > 0 && (
+            <ChartButton
+              title={activeTab === 'waste' ? 'Residuos (kg)' : 'Registros de Higiene'}
+              data={chartData}
+              yAxisLabel={activeTab === 'waste' ? 'Kg Totales' : 'Registros'}
+            />
+          )}
           {exportStatus.type !== 'idle' && (
             <span
-              className={`rounded-full px-3 py-1 ${
-                exportStatus.type === 'error'
-                  ? 'bg-danger-50 text-danger-700'
-                  : exportStatus.type === 'success'
-                    ? 'bg-emerald-50 text-emerald-700'
-                    : 'bg-primary-50 text-primary-700'
-              }`}
+              className={`rounded-full px-3 py-1 ${exportStatus.type === 'error'
+                ? 'bg-danger-50 text-danger-700'
+                : exportStatus.type === 'success'
+                  ? 'bg-emerald-50 text-emerald-700'
+                  : 'bg-primary-50 text-primary-700'
+                }`}
             >
               {exportStatus.message ?? 'Preparando…'}
             </span>
@@ -1013,11 +1044,10 @@ export const SanitaryCompliancePanel = ({
             <button
               key={tab.id}
               type="button"
-              className={`rounded-full border px-4 py-1 text-xs font-semibold transition ${
-                isActive
-                  ? 'border-primary-500 bg-primary-100 text-primary-700'
-                  : 'border-primary-100 text-[var(--brand-muted)] hover:border-primary-200'
-              }`}
+              className={`rounded-full border px-4 py-1 text-xs font-semibold transition ${isActive
+                ? 'border-primary-500 bg-primary-100 text-primary-700'
+                : 'border-primary-100 text-[var(--brand-muted)] hover:border-primary-200'
+                }`}
               onClick={() => setActiveTab(tab.id)}
             >
               {tab.label}

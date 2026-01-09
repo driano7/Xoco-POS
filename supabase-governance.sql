@@ -85,7 +85,6 @@ CREATE TABLE IF NOT EXISTS public.users (
 
   -- Programa de lealtad
   "weeklyCoffeeCount" INTEGER NOT NULL DEFAULT 0,
-  "rewardEarned" BOOLEAN NOT NULL DEFAULT FALSE,
   "monthlyMetrics" JSONB,
 
   -- Segmentación
@@ -292,15 +291,11 @@ CREATE TABLE IF NOT EXISTS public.products (
   "reviewCount" INTEGER NOT NULL DEFAULT 0,
   "stockQuantity" INTEGER NOT NULL DEFAULT 0,
   "lowStockThreshold" INTEGER NOT NULL DEFAULT 10,
-  "is_low_stock" BOOLEAN NOT NULL DEFAULT FALSE,
-  "out_of_stock_reason" TEXT,
-  "manualStockStatus" TEXT NOT NULL DEFAULT 'normal'
-    CHECK ("manualStockStatus" IN ('normal','low','out')),
-  "manualStockReason" TEXT,
-  "manualStatusUpdatedAt" TIMESTAMPTZ,
   "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  "isActive" BOOLEAN NOT NULL DEFAULT TRUE
+  "isActive" BOOLEAN NOT NULL DEFAULT TRUE,
+  metadata JSONB,
+  items JSONB
 );
 
 DROP TRIGGER IF EXISTS trg_products_touch_updated_at ON public.products;
@@ -968,10 +963,6 @@ CREATE TABLE IF NOT EXISTS public.inventory_items (
   unit TEXT NOT NULL DEFAULT 'unidad',
   "minStock" INTEGER NOT NULL DEFAULT 0,
   "isActive" BOOLEAN NOT NULL DEFAULT TRUE,
-  "manualStockStatus" TEXT NOT NULL DEFAULT 'normal'
-    CHECK ("manualStockStatus" IN ('normal','low','out')),
-  "manualStockReason" TEXT,
-  "manualStatusUpdatedAt" TIMESTAMPTZ,
   "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -1149,9 +1140,6 @@ ALTER TABLE public.users
   ADD COLUMN IF NOT EXISTS "firstNameSalt" TEXT,
   ADD COLUMN IF NOT EXISTS "lastNameSalt" TEXT,
   ADD COLUMN IF NOT EXISTS "phoneSalt" TEXT;
-
-ALTER TABLE public.users
-  ADD COLUMN IF NOT EXISTS "rewardEarned" BOOLEAN NOT NULL DEFAULT FALSE;
 
 ALTER TABLE public.orders
   ADD COLUMN IF NOT EXISTS items JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -1379,8 +1367,7 @@ ALTER TABLE public.tickets
   ALTER COLUMN "paymentMethod" DROP NOT NULL;
 
 
-ALTER TABLE public.orders
-  ADD COLUMN IF NOT EXISTS "queuedPaymentMethod" TEXT;
+--ALTER TABLE orders ADD COLUMN "queuedPaymentMethod" text;
 
 
 -- Extensiones
@@ -1439,11 +1426,7 @@ CREATE TABLE IF NOT EXISTS public.inventory_stock_entry_items (
 ALTER TABLE public.inventory_items
   ADD COLUMN IF NOT EXISTS "lastRestockAt" TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS "lastRestockQty" NUMERIC(12,3),
-  ADD COLUMN IF NOT EXISTS "avgCost" NUMERIC(12,4),
-  ADD COLUMN IF NOT EXISTS "manualStockStatus" TEXT DEFAULT 'normal'
-    CHECK ("manualStockStatus" IN ('normal','low','out')),
-  ADD COLUMN IF NOT EXISTS "manualStockReason" TEXT,
-  ADD COLUMN IF NOT EXISTS "manualStatusUpdatedAt" TIMESTAMPTZ;
+  ADD COLUMN IF NOT EXISTS "avgCost" NUMERIC(12,4);
 
 ALTER TABLE public.inventory_stock
   ADD COLUMN IF NOT EXISTS "lastUpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW();
@@ -1902,6 +1885,89 @@ FROM (
 ) lp
 WHERE u.id = lp."userId"
   AND u."loyaltyActivatedAt" IS NULL;
+
+-- 1. Bitácora de Higiene (Baños, Cocina, Área Común)
+CREATE TABLE IF NOT EXISTS public.hygiene_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "area" TEXT NOT NULL CHECK (area IN ('BAÑO', 'COCINA', 'BARRA', 'MESAS')),
+  "staffId" TEXT REFERENCES public.staff_users(id),
+  "is_clean" BOOLEAN DEFAULT TRUE,
+  "supplies_refilled" BOOLEAN DEFAULT TRUE, -- Papel, jabón, gel
+  "observations" TEXT,
+  "createdAt" TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 2. Control de Plagas (Documentación NOM-251)
+CREATE TABLE IF NOT EXISTS public.pest_control_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "service_date" DATE NOT NULL,
+  "provider_name" TEXT,
+  "certificate_number" TEXT, -- Folio del certificado de fumigación
+  "next_service_date" DATE,
+  "staffId" TEXT REFERENCES public.staff_users(id),
+  "observations" TEXT,
+  "createdAt" TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3. Bitácora de residuos y limpieza profunda
+CREATE TABLE IF NOT EXISTS public.waste_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "organicBeveragesKg" NUMERIC(10,2) NOT NULL DEFAULT 0,
+  "organicFoodsKg" NUMERIC(10,2) NOT NULL DEFAULT 0,
+  "inorganicKg" NUMERIC(10,2) NOT NULL DEFAULT 0,
+  "trashRemoved" BOOLEAN NOT NULL DEFAULT FALSE,
+  "binsWashed" BOOLEAN NOT NULL DEFAULT FALSE,
+  "branchId" TEXT REFERENCES public.branches(id) ON DELETE SET NULL,
+  "staffId" TEXT REFERENCES public.staff_users(id) ON DELETE SET NULL,
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 4. Recetas (Unión Venta-Inventario)
+CREATE TABLE IF NOT EXISTS public.product_recipes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "productId" TEXT NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+  "inventoryItemId" TEXT NOT NULL REFERENCES public.inventory_items(id) ON DELETE CASCADE,
+  "quantityUsed" NUMERIC(12,3) NOT NULL, -- Gramos o ml
+  "createdAt" TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 4. Banderas de Stock para App de Clientes
+ALTER TABLE public.products 
+ADD COLUMN IF NOT EXISTS "is_low_stock" BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS "out_of_stock_reason" TEXT;
+
+
+-- 1. Eliminar la tabla antigua para recrearla limpia con la nueva estructura
+DROP TABLE IF EXISTS public.addresses CASCADE;
+
+-- 2. Crear la tabla con soporte para encriptación
+CREATE TABLE public.addresses (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  "userId" TEXT NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  nickname TEXT,
+  type TEXT NOT NULL,
+  payload TEXT NOT NULL, -- Aquí irán street, city, etc. encriptados
+  payload_iv TEXT NOT NULL,
+  payload_tag TEXT NOT NULL,
+  payload_salt TEXT NOT NULL,
+  "isDefault" BOOLEAN NOT NULL DEFAULT FALSE,
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 3. Índices y Triggers (necesarios para el funcionamiento)
+CREATE INDEX IF NOT EXISTS addresses_user_id_idx ON public.addresses ("userId");
+
+DROP TRIGGER IF EXISTS trg_addresses_touch_updated_at ON public.addresses;
+CREATE TRIGGER trg_addresses_touch_updated_at
+  BEFORE UPDATE ON public.addresses
+  FOR EACH ROW
+  EXECUTE FUNCTION public.touch_users_updated_at();
+
+ALTER TABLE public.products 
+ADD COLUMN IF NOT EXISTS metadata JSONB,
+ADD COLUMN IF NOT EXISTS items JSONB;
 
 -- 1. Bitácora de Higiene (Baños, Cocina, Área Común)
 CREATE TABLE IF NOT EXISTS public.hygiene_logs (

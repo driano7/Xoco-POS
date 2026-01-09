@@ -41,24 +41,24 @@ type SmartInventoryAction = 'ingress' | 'sale' | 'status';
 
 type SmartInventoryRequest =
   | {
-      action: 'ingress';
-      itemId: string;
-      quantity: number;
-      unitSize: number;
-      branchId?: string;
-      expiresAt?: string;
-      reference?: string;
-      staffId?: string;
-    }
+    action: 'ingress';
+    itemId: string;
+    quantity: number;
+    unitSize: number;
+    branchId?: string;
+    expiresAt?: string;
+    reference?: string;
+    staffId?: string;
+  }
   | {
-      action: 'sale';
-      branchId?: string;
-      staffId?: string;
-      saleItems: Array<{ productId: string; quantity: number }>;
-    }
+    action: 'sale';
+    branchId?: string;
+    staffId?: string;
+    saleItems: Array<{ productId: string; quantity: number }>;
+  }
   | {
-      action: 'status';
-    };
+    action: 'status';
+  };
 
 const toNumber = (value: unknown, fallback = 0) => {
   const parsed = Number(value);
@@ -74,7 +74,7 @@ const fetchInventoryStatus = async () => {
   const [{ data: items, error: itemsError }, { data: stock, error: stockError }] = await Promise.all([
     supabaseAdmin
       .from(ITEMS_TABLE)
-      .select('id,name,unit,"minStock","isCritical"')
+      .select('id,name,unit,"minStock"')
       .order('name', { ascending: true }),
     supabaseAdmin.from(STOCK_TABLE).select('id,itemId,branchId,quantity'),
   ]);
@@ -90,7 +90,7 @@ const fetchInventoryStatus = async () => {
         name: item.name,
         minStock: toNumber(item.minStock ?? 0),
         unit: item.unit ?? 'unidad',
-        isCritical: Boolean((item as { isCritical?: boolean }).isCritical ?? toNumber(item.minStock ?? 0) > 0),
+        isCritical: toNumber(item.minStock ?? 0) > 0,
       },
     ])
   );
@@ -124,7 +124,7 @@ const fetchInventoryStatus = async () => {
 const getItem = async (itemId: string) => {
   const { data, error } = await supabaseAdmin
     .from(ITEMS_TABLE)
-    .select('id,name,unit,"minStock","isCritical"')
+    .select('id,name,unit,"minStock"')
     .eq('id', itemId)
     .maybeSingle();
   if (error) {
@@ -138,7 +138,7 @@ const getItem = async (itemId: string) => {
     name: data.name,
     minStock: toNumber(data.minStock ?? 0),
     unit: data.unit ?? 'unidad',
-    isCritical: Boolean((data as { isCritical?: boolean }).isCritical ?? toNumber(data.minStock ?? 0) > 0),
+    isCritical: toNumber(data.minStock ?? 0) > 0,
   };
 };
 
