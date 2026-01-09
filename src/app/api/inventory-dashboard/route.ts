@@ -120,7 +120,7 @@ export async function GET() {
       stockByItem.set(row.itemId, entry);
     });
 
-    const enrichedItems = (items ?? []).map((item) => {
+    const enrichedItems = ((items as any[]) ?? []).map((item) => {
       const stock = stockByItem.get(item.id) || { total: 0, branches: [] };
       const minStock = toNumber(item.minStock);
       const manualStatus = normalizeManualStatus(
