@@ -873,14 +873,9 @@ CREATE TRIGGER trg_prep_queue_touch_updated_at
   FOR EACH ROW
   EXECUTE FUNCTION public.touch_users_updated_at();
 
-CREATE OR REPLACE FUNCTION public.enqueue_order_item()
-RETURNS TRIGGER AS $$
-BEGIN
-  INSERT INTO public.prep_queue (id, "orderItemId", status)
-  VALUES (gen_random_uuid()::TEXT, NEW.id, 'pending');
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+DROP FUNCTION IF EXISTS public.enqueue_order_item();
+-- Nota: la cola de producción ahora se alimenta únicamente desde el POS vía /api/orders/:id/queue,
+-- evitando que los pedidos se marquen como "En preparación" automáticamente al insertarse los artículos.
 
 -- ---------------------------------------------------------------------
 -- Turnos de caja y ventas (corte NOM-251)
@@ -938,10 +933,6 @@ END$$;
 CREATE INDEX IF NOT EXISTS ventas_turno_id_idx ON public.ventas (turno_id);
 
 DROP TRIGGER IF EXISTS trg_order_items_enqueue ON public.order_items;
-CREATE TRIGGER trg_order_items_enqueue
-  AFTER INSERT ON public.order_items
-  FOR EACH ROW
-  EXECUTE FUNCTION public.enqueue_order_item();
 
 CREATE TABLE IF NOT EXISTS public.inventory_categories (
   id TEXT PRIMARY KEY,

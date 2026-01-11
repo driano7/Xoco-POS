@@ -94,6 +94,25 @@ const detectPaymentReferenceType = (reference: string | null) => {
   return 'text';
 };
 
+const toTrimmedString = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed || null;
+};
+
+const coerceOptionalNumber = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
 const coerceMetadataObject = (value: unknown): Record<string, unknown> => {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return { ...(value as Record<string, unknown>) };
@@ -134,6 +153,8 @@ export async function POST(request: Request, context: { params: { orderId?: stri
       paymentReference?: string | null;
       staffName?: string | null;
       paymentMethod?: string | null;
+      cashTendered?: number | null;
+      cashChange?: number | null;
     };
     let parsedBody: QueuePayload | null = null;
     try {
@@ -174,6 +195,14 @@ export async function POST(request: Request, context: { params: { orderId?: stri
       sanitizePaymentReference(paymentReferenceHeader) ??
       sanitizePaymentReference(parsedBody?.paymentReference ?? null);
     const paymentReferenceType = detectPaymentReferenceType(sanitizedPaymentReference);
+    const incomingCashTendered =
+      parsedBody && Object.prototype.hasOwnProperty.call(parsedBody, 'cashTendered')
+        ? coerceOptionalNumber(parsedBody.cashTendered)
+        : null;
+    const incomingCashChange =
+      parsedBody && Object.prototype.hasOwnProperty.call(parsedBody, 'cashChange')
+        ? coerceOptionalNumber(parsedBody.cashChange)
+        : null;
     const statusForQueue = assignedStaffId ? 'in_progress' : 'pending';
 
     const ensureOrderItemsSnapshot = async () => {
@@ -255,13 +284,93 @@ export async function POST(request: Request, context: { params: { orderId?: stri
       error: existingOrderError,
     } = await supabaseAdmin
       .from(ORDERS_TABLE)
-      .select('metadata')
+      .select(
+        'metadata,"queuedPaymentMethod","queuedPaymentReference","queuedPaymentReferenceType","paymentMethod","montoRecibido","cambioEntregado",total,totals'
+      )
       .eq('id', orderId)
       .maybeSingle();
 
     if (existingOrderError) {
       console.warn('No se pudo recuperar metadatos del pedido:', existingOrderError);
     }
+
+    const metadataDraft = coerceMetadataObject(existingOrderRecord?.metadata ?? null);
+    const metadataPayment =
+      metadataDraft.payment && typeof metadataDraft.payment === 'object'
+        ? (metadataDraft.payment as Record<string, unknown>)
+        : null;
+    const fallbackPaymentMethod = sanitizePaymentMethod(
+      toTrimmedString(existingOrderRecord?.queuedPaymentMethod) ??
+        toTrimmedString(existingOrderRecord?.paymentMethod) ??
+        null
+    );
+    const paymentMethodForQueue = trackedPaymentMethod ?? fallbackPaymentMethod;
+    const fallbackReference =
+      sanitizePaymentReference(
+        toTrimmedString(existingOrderRecord?.queuedPaymentReference) ??
+          toTrimmedString(metadataPayment?.reference ?? null)
+      ) ?? null;
+    const paymentReferenceForQueue = sanitizedPaymentReference ?? fallbackReference;
+    const fallbackReferenceType =
+      paymentReferenceType ??
+      toTrimmedString(existingOrderRecord?.queuedPaymentReferenceType ?? null) ??
+      (typeof metadataPayment?.referenceType === 'string'
+        ? metadataPayment.referenceType
+        : null);
+    const paymentReferenceTypeForQueue = paymentReferenceForQueue
+      ? fallbackReferenceType ?? detectPaymentReferenceType(paymentReferenceForQueue)
+      : null;
+    const totalsRecord =
+      existingOrderRecord?.totals && typeof existingOrderRecord.totals === 'object'
+        ? (existingOrderRecord.totals as Record<string, unknown>)
+        : null;
+    const orderTotalAmount =
+      coerceOptionalNumber(existingOrderRecord?.total) ??
+      coerceOptionalNumber(totalsRecord?.total) ??
+      coerceOptionalNumber(totalsRecord?.totalAmount);
+    const existingCashTendered =
+      incomingCashTendered ??
+      coerceOptionalNumber(existingOrderRecord?.montoRecibido) ??
+      coerceOptionalNumber(metadataPayment?.cashTendered);
+    const existingCashChange =
+      incomingCashChange ??
+      coerceOptionalNumber(existingOrderRecord?.cambioEntregado) ??
+      coerceOptionalNumber(metadataPayment?.cashChange);
+    if (!paymentMethodForQueue) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Registra el método de pago antes de mover el pedido a preparación.',
+        },
+        { status: 400 }
+      );
+    }
+    const isCashMethod = paymentMethodForQueue === 'efectivo';
+    if (!isCashMethod && !paymentReferenceForQueue) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Necesitamos la referencia del pago (terminal, transferencia o wallet).',
+        },
+        { status: 400 }
+      );
+    }
+    const cashTenderedForQueue = isCashMethod ? existingCashTendered : null;
+    if (isCashMethod && (cashTenderedForQueue === null || cashTenderedForQueue <= 0)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Captura el monto recibido en efectivo antes de mover el pedido.',
+        },
+        { status: 400 }
+      );
+    }
+    const cashChangeForQueue =
+      isCashMethod && cashTenderedForQueue !== null && orderTotalAmount !== null
+        ? Math.max(cashTenderedForQueue - orderTotalAmount, 0)
+        : isCashMethod
+          ? existingCashChange
+          : null;
 
     let tasksToCreate = orderItemIds;
 
@@ -364,8 +473,8 @@ export async function POST(request: Request, context: { params: { orderId?: stri
       status: 'pending',
       updatedAt: now,
     };
-    if (trackedPaymentMethod) {
-      orderUpdatePayload.queuedPaymentMethod = trackedPaymentMethod;
+    if (paymentMethodForQueue) {
+      orderUpdatePayload.queuedPaymentMethod = paymentMethodForQueue;
     }
     if (assignedStaffId) {
       orderUpdatePayload.queuedByStaffId = assignedStaffId;
@@ -373,12 +482,15 @@ export async function POST(request: Request, context: { params: { orderId?: stri
     if (assignedStaffName) {
       orderUpdatePayload.queuedByStaffName = assignedStaffName;
     }
-    if (sanitizedPaymentReference) {
-      orderUpdatePayload.queuedPaymentReference = sanitizedPaymentReference;
-      orderUpdatePayload.queuedPaymentReferenceType = paymentReferenceType ?? null;
+    if (paymentReferenceForQueue) {
+      orderUpdatePayload.queuedPaymentReference = paymentReferenceForQueue;
+      orderUpdatePayload.queuedPaymentReferenceType = paymentReferenceTypeForQueue ?? null;
+    }
+    if (isCashMethod) {
+      orderUpdatePayload.montoRecibido = cashTenderedForQueue ?? null;
+      orderUpdatePayload.cambioEntregado = cashChangeForQueue ?? null;
     }
 
-    const metadataDraft = coerceMetadataObject(existingOrderRecord?.metadata ?? null);
     let metadataChanged = false;
     if (assignedStaffId || assignedStaffName) {
       const previousAssignment =
@@ -398,18 +510,31 @@ export async function POST(request: Request, context: { params: { orderId?: stri
       metadataChanged = true;
     }
 
-    if (trackedPaymentMethod || sanitizedPaymentReference) {
+    if (
+      paymentMethodForQueue ||
+      paymentReferenceForQueue ||
+      (isCashMethod && (cashTenderedForQueue !== null || cashChangeForQueue !== null))
+    ) {
       const previousPayment =
         metadataDraft.payment && typeof metadataDraft.payment === 'object'
           ? (metadataDraft.payment as Record<string, unknown>)
           : {};
-      const previousMethod =
-        typeof previousPayment.method === 'string' ? previousPayment.method : null;
       metadataDraft.payment = {
         ...previousPayment,
-        method: trackedPaymentMethod ?? previousMethod ?? null,
-        reference: sanitizedPaymentReference ?? previousPayment.reference ?? null,
-        referenceType: paymentReferenceType ?? previousPayment.referenceType ?? null,
+        method: paymentMethodForQueue ?? (previousPayment.method as string | null) ?? null,
+        reference: paymentReferenceForQueue ?? (previousPayment.reference as string | null) ?? null,
+        referenceType:
+          paymentReferenceTypeForQueue ??
+          (previousPayment.referenceType as string | null) ??
+          null,
+        cashTendered:
+          isCashMethod && cashTenderedForQueue !== null
+            ? cashTenderedForQueue
+            : (previousPayment.cashTendered as number | null) ?? null,
+        cashChange:
+          isCashMethod && cashChangeForQueue !== null
+            ? cashChangeForQueue
+            : (previousPayment.cashChange as number | null) ?? null,
       };
       metadataChanged = true;
     }

@@ -70,6 +70,7 @@ import type {
   ForecastPayload,
   MarketingInsights,
   TicketDetail,
+  ManualStockStatus,
 } from '@/lib/api';
 import {
   enqueueOrder,
@@ -81,6 +82,7 @@ import {
   updateCustomerPreferences,
   fetchReservationDetail,
   fetchPestControlStatus,
+  updateManualStockStatus,
 } from '@/lib/api';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode, WheelEvent } from 'react';
@@ -162,6 +164,110 @@ const extractNotesFromMetadata = (metadata: unknown): string | null => {
     }
   }
   return null;
+};
+
+const dedupeProductList = (items: MenuItem[]) => {
+  const map = new Map<string, MenuItem>();
+  items.forEach((item) => {
+    const key = item.productId ?? item.id;
+    if (!key || map.has(key)) {
+      return;
+    }
+    map.set(key, item);
+  });
+  return Array.from(map.values());
+};
+
+interface ProductStockStatusPanelProps {
+  beverages: MenuItem[];
+  foods: MenuItem[];
+  packages: MenuItem[];
+  stockStatusMap: Record<string, ManualStockStatus>;
+  onStatusChange: (productId: string, status: ManualStockStatus) => void;
+  canEdit: boolean;
+}
+
+const ProductStockStatusPanel = ({
+  beverages,
+  foods,
+  packages,
+  stockStatusMap,
+  onStatusChange,
+  canEdit,
+}: ProductStockStatusPanelProps) => {
+  const sections = [
+    { title: 'Bebidas del menú', items: dedupeProductList(beverages) },
+    { title: 'Alimentos', items: dedupeProductList(foods) },
+    { title: 'Paquetes editoriales', items: dedupeProductList(packages) },
+  ];
+
+  return (
+    <div className="space-y-4 rounded-3xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+          Disponibilidad del menú
+        </p>
+        <p className="text-xs text-[var(--brand-muted)]">
+          Marca productos como agotados o con stock bajo; el POS reflejará la alerta.
+        </p>
+      </div>
+      {sections.map((section) => (
+        <div key={section.title} className="space-y-2 rounded-2xl border border-primary-50/80 p-3 dark:border-white/10">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-semibold text-primary-700 dark:text-primary-100">
+              {section.title}
+            </h4>
+            <span className="text-xs text-[var(--brand-muted)]">
+              {section.items.length} productos
+            </span>
+          </div>
+          {section.items.length === 0 ? (
+            <p className="text-xs text-[var(--brand-muted)]">Sin productos sincronizados.</p>
+          ) : (
+            section.items.slice(0, 8).map((item) => {
+              const productId = item.productId ?? item.id;
+              const status = stockStatusMap[productId] ?? 'normal';
+              return (
+                <div
+                  key={productId}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary-50/70 px-3 py-2 dark:border-white/10"
+                >
+                  <div>
+                    <p className="font-semibold">{item.label}</p>
+                    <p className="text-xs text-[var(--brand-muted)]">{item.category ?? 'Sin categoría'}</p>
+                  </div>
+                  <div className="flex flex-col items-end gap-1 text-xs">
+                    <StockStatusBadge status={status} />
+                    {canEdit && (
+                      <div className="flex flex-wrap gap-1">
+                        {STOCK_STATUS_OPTIONS.map((option) => {
+                          const isSelected = option.value === status;
+                          return (
+                            <button
+                              type="button"
+                              key={`${productId}-${option.value}`}
+                              className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold transition ${
+                                isSelected
+                                  ? `${option.tone} bg-white`
+                                  : 'border-primary-50/80 text-[var(--brand-muted)] hover:border-primary-200'
+                              }`}
+                              onClick={() => onStatusChange(productId, option.value)}
+                            >
+                              {option.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      ))}
+    </div>
+  );
 };
 
 const extractOrderNotes = (
@@ -1661,6 +1767,7 @@ const BARISTA_NAV_EXCLUSIONS: NavSection[] = ['employees', 'payments'];
 const GERENTE_NAV_EXCLUSIONS: NavSection[] = ['employees', 'payments'];
 
 const HOURLY_RATE = 38.1;
+const STOCK_STATUS_STORAGE_KEY = 'xoco-pos-stock-flags';
 
 const MX_HOLIDAYS = new Set(['01-01', '02-05', '03-21', '05-01', '09-16', '11-20', '12-25']);
 
@@ -1983,6 +2090,7 @@ export function PosDashboard() {
   const {
     beverageOptions,
     foodOptions,
+    packageOptions,
     isLoading: menuLoading,
     error: menuError,
     refresh: refreshMenu,
@@ -2008,8 +2116,45 @@ export function PosDashboard() {
     distributionNote: 'Registrar transferencias manuales en corte.',
     lastModified: null,
   });
+  const [inventoryStockStatus, setInventoryStockStatus] = useState<Record<string, ManualStockStatus>>(
+    {}
+  );
+  const [productStockStatus, setProductStockStatus] = useState<Record<string, ManualStockStatus>>(
+    {}
+  );
   const [tipsInitialized, setTipsInitialized] = useState(false);
   const [pestAlertMessage, setPestAlertMessage] = useState<string | null>(null);
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(STOCK_STATUS_STORAGE_KEY);
+      if (!stored) {
+        return;
+      }
+      const parsed = JSON.parse(stored) as {
+        inventory?: Record<string, ManualStockStatus>;
+        products?: Record<string, ManualStockStatus>;
+      };
+      if (parsed.inventory) {
+        setInventoryStockStatus(parsed.inventory);
+      }
+      if (parsed.products) {
+        setProductStockStatus(parsed.products);
+      }
+    } catch (error) {
+      console.warn('No pudimos restaurar las banderas de inventario:', error);
+    }
+  }, []);
+  useEffect(() => {
+    try {
+      const payload = JSON.stringify({
+        inventory: inventoryStockStatus,
+        products: productStockStatus,
+      });
+      localStorage.setItem(STOCK_STATUS_STORAGE_KEY, payload);
+    } catch {
+      // ignore persistence errors
+    }
+  }, [inventoryStockStatus, productStockStatus]);
 
   const refreshPublicSales = useCallback(async () => {
     setPublicSalesLoading(true);
@@ -2120,6 +2265,10 @@ export function PosDashboard() {
     user?.role === 'superuser' || (user?.email && SUPER_USER_EMAILS.has(user.email.toLowerCase()))
   );
   const isSocio = Boolean(user?.role === 'socio' || isSuperUser);
+  const isManagerRole = user?.role === 'gerente';
+  const canManageInventory = Boolean(
+    (user?.role && user.role === 'barista') || isManagerRole || isSocio
+  );
   const governanceWatcherList =
     GOVERNANCE_REVIEWERS.size > 0 ? Array.from(GOVERNANCE_REVIEWERS) : ['governance@xoco.local'];
   const [governanceRequests, setGovernanceRequests] = useState<GovernanceRequest[]>([
@@ -2392,7 +2541,12 @@ export function PosDashboard() {
   const [detail, setDetail] = useState<DetailState>(null);
   const [pendingQueue, setPendingQueue] = useState<{
     order: Order;
-    options?: { paymentMethod?: string | null; paymentReference?: string | null };
+    options?: {
+      paymentMethod?: string | null;
+      paymentReference?: string | null;
+      cashTendered?: number | null;
+      cashChange?: number | null;
+    };
   } | null>(null);
   const [showReservationHistory, setShowReservationHistory] = useState(false);
   const [showReservationCompletedHistory, setShowReservationCompletedHistory] = useState(false);
@@ -2769,6 +2923,86 @@ export function PosDashboard() {
     },
     []
   );
+  const handleInventoryStockStatusChange = useCallback(
+    async (itemId: string, status: ManualStockStatus) => {
+      const previousStatus = inventoryStockStatus[itemId] ?? 'normal';
+      setInventoryStockStatus((prev) => {
+        const next = { ...prev };
+        if (status === 'normal') {
+          delete next[itemId];
+        } else {
+          next[itemId] = status;
+        }
+        return next;
+      });
+      try {
+        await updateManualStockStatus({ target: 'inventory', id: itemId, status });
+        enqueueSnackbar(
+          status === 'normal'
+            ? 'Estado de inventario restaurado.'
+            : status === 'low'
+              ? 'Marcaste este insumo como stock bajo.'
+              : 'Marcaste este insumo como agotado.'
+        );
+      } catch (error) {
+        setInventoryStockStatus((prev) => {
+          const next = { ...prev };
+          if (previousStatus === 'normal') {
+            delete next[itemId];
+          } else {
+            next[itemId] = previousStatus;
+          }
+          return next;
+        });
+        enqueueSnackbar(
+          error instanceof Error
+            ? error.message
+            : 'No pudimos actualizar el estado del insumo.'
+        );
+      }
+    },
+    [enqueueSnackbar, inventoryStockStatus]
+  );
+  const handleProductStockStatusChange = useCallback(
+    async (productId: string, status: ManualStockStatus) => {
+      const previousStatus = productStockStatus[productId] ?? 'normal';
+      setProductStockStatus((prev) => {
+        const next = { ...prev };
+        if (status === 'normal') {
+          delete next[productId];
+        } else {
+          next[productId] = status;
+        }
+        return next;
+      });
+      try {
+        await updateManualStockStatus({ target: 'product', id: productId, status });
+        enqueueSnackbar(
+          status === 'normal'
+            ? 'Eliminarte la bandera del producto.'
+            : status === 'low'
+              ? 'Producto marcado como stock bajo.'
+              : 'Producto marcado como agotado.'
+        );
+      } catch (error) {
+        setProductStockStatus((prev) => {
+          const next = { ...prev };
+          if (previousStatus === 'normal') {
+            delete next[productId];
+          } else {
+            next[productId] = previousStatus;
+          }
+          return next;
+        });
+        enqueueSnackbar(
+          error instanceof Error
+            ? error.message
+            : 'No pudimos actualizar el estado del producto.'
+        );
+      }
+    },
+    [enqueueSnackbar, productStockStatus]
+  );
 
   const inventoryAccidentStats = useMemo(() => {
     const allItems: InventoryTopEntry[] = [];
@@ -2799,6 +3033,77 @@ export function PosDashboard() {
       topPercent,
     };
   }, [managerInventory]);
+
+  const metricsChartData = useMemo(() => {
+    const source =
+      (overallSalesHistory && overallSalesHistory.length > 0 ? overallSalesHistory : null) ??
+      (publicSalesHistory && publicSalesHistory.length > 0 ? publicSalesHistory : null) ??
+      [];
+    if (source.length) {
+      return source.slice(0, 8).map((entry) => ({
+        name: entry.label ?? entry.month,
+        value: entry.totalSales ?? 0,
+      }));
+    }
+    return [
+      { name: 'Pendientes', value: pending.length },
+      { name: 'En preparación', value: baseActivePrep.length },
+      { name: 'Completados', value: completed.length },
+    ].filter((entry) => entry.value > 0);
+  }, [overallSalesHistory, publicSalesHistory, pending.length, baseActivePrep.length, completed.length]);
+
+  const cofeprisChartData = useMemo(() => {
+    const summary: Array<{ name: string; value: number }> = [];
+    (Object.entries(managerInventory) as Array<[InventoryCategoryId, InventoryEntry[]]>).forEach(
+      ([category, items]) => {
+        const totalAccidents = items.reduce((sum, item) => sum + (item.accidents ?? 0), 0);
+        if (totalAccidents > 0) {
+          summary.push({
+            name: INVENTORY_CATEGORY_META[category]?.label ?? category,
+            value: totalAccidents,
+          });
+        }
+      }
+    );
+    if (summary.length > 0) {
+      return summary;
+    }
+    return (Object.entries(managerInventory) as Array<[InventoryCategoryId, InventoryEntry[]]>).map(
+      ([category, items]) => ({
+        name: INVENTORY_CATEGORY_META[category]?.label ?? category,
+        value: items.length,
+      })
+    );
+  }, [managerInventory]);
+
+  const employeeChartData = useMemo(() => {
+    const roles = staffData?.metrics?.roles ?? [];
+    const baseRoles =
+      roles.length > 0
+        ? roles
+        : (staffData?.staff ?? []).reduce(
+            (acc, member) => {
+              const key = member.role ?? 'otro';
+              acc[key] = (acc[key] ?? 0) + 1;
+              return acc;
+            },
+            {} as Record<string, number>
+          );
+    if (Array.isArray(baseRoles)) {
+      return baseRoles
+        .map((role) => ({
+          name: role.role ? role.role.charAt(0).toUpperCase() + role.role.slice(1) : 'Rol',
+          value: role.count ?? 0,
+        }))
+        .filter((entry) => entry.value > 0);
+    }
+    return Object.entries(baseRoles)
+      .map((role) => ({
+        name: role[0] ? role[0].charAt(0).toUpperCase() + role[0].slice(1) : 'Rol',
+        value: role[1],
+      }))
+      .filter((entry) => entry.value > 0);
+  }, [staffData?.metrics?.roles, staffData?.staff]);
 
   const handleInventorySyncFromMenu = useCallback(() => {
     setManagerInventory((prev) => ({
@@ -3305,7 +3610,12 @@ export function PosDashboard() {
   const handleMoveOrderToQueue = useCallback(
     async (
       order: Order,
-      options?: { paymentMethod?: string | null; paymentReference?: string | null }
+      options?: {
+        paymentMethod?: string | null;
+        paymentReference?: string | null;
+        cashTendered?: number | null;
+        cashChange?: number | null;
+      }
     ) => {
       if (!user) {
         return false;
@@ -3317,6 +3627,8 @@ export function PosDashboard() {
           staffName: getCurrentStaffName(),
           paymentMethod: options?.paymentMethod ?? null,
           paymentReference: options?.paymentReference ?? null,
+          cashTendered: options?.cashTendered ?? null,
+          cashChange: options?.cashChange ?? null,
         });
         void refresh();
         void refreshPrep();
@@ -3343,7 +3655,15 @@ export function PosDashboard() {
   );
 
   const handleQueuePreviewRequest = useCallback(
-    (order: Order, options?: { paymentMethod?: string | null; paymentReference?: string | null }) => {
+    (
+      order: Order,
+      options?: {
+        paymentMethod?: string | null;
+        paymentReference?: string | null;
+        cashTendered?: number | null;
+        cashChange?: number | null;
+      }
+    ) => {
       setPendingQueue({ order, options });
     },
     []
@@ -3362,7 +3682,12 @@ export function PosDashboard() {
   const handleReturnOrderToQueue = useCallback(
     async (
       order: Order,
-      options?: { paymentMethod?: string | null; paymentReference?: string | null }
+      options?: {
+        paymentMethod?: string | null;
+        paymentReference?: string | null;
+        cashTendered?: number | null;
+        cashChange?: number | null;
+      }
     ) => {
       if (!user) {
         return;
@@ -3374,6 +3699,8 @@ export function PosDashboard() {
           staffName: getCurrentStaffName(),
           paymentMethod: options?.paymentMethod ?? null,
           paymentReference: options?.paymentReference ?? null,
+          cashTendered: options?.cashTendered ?? null,
+          cashChange: options?.cashChange ?? null,
         });
         void refresh();
         void refreshPrep();
@@ -3923,6 +4250,12 @@ export function PosDashboard() {
         secureSnapshot={secureSnapshot}
         superUserQueue={superUserQueue}
         onCreateSuperUserAction={handleSuperUserAction}
+        inventoryStockStatus={inventoryStockStatus}
+        onInventoryStockStatusChange={handleInventoryStockStatusChange}
+        productStockStatus={productStockStatus}
+        onProductStockStatusChange={handleProductStockStatusChange}
+        menuOptions={{ beverages: beverageOptions, foods: foodOptions, packages: packageOptions }}
+        canManageInventory={canManageInventory}
       />
       <main className="mx-auto flex max-w-6xl flex-col gap-8 px-4 pb-16">
         {activeSection === 'home' && (
@@ -3997,6 +4330,7 @@ export function PosDashboard() {
                   prefillClientId={prefilledClientId}
                   onWalletScanRequest={handleWalletScanRequest}
                   resolveLoyaltyCustomer={resolveLoyaltyCustomerByIdentifier}
+                  productStockStatus={productStockStatus}
                   onSuccess={async () => {
                     await refresh();
                     enqueueSnackbar('Nuevo pedido creado manualmente.');
@@ -4245,8 +4579,14 @@ export function PosDashboard() {
                     order.queuedPaymentMethod ??
                     order.paymentMethod ??
                     null;
-                  const cashTendered = order.montoRecibido ?? null;
-                  const cashChange = order.cambioEntregado ?? null;
+                  const cashTendered =
+                    pendingQueue.options?.cashTendered ??
+                    order.montoRecibido ??
+                    null;
+                  const cashChange =
+                    pendingQueue.options?.cashChange ??
+                    order.cambioEntregado ??
+                    null;
                   const paymentReference =
                     pendingQueue.options?.paymentReference ??
                     order.queuedPaymentReference ??
@@ -4277,6 +4617,56 @@ export function PosDashboard() {
                           order={queueVirtualTicketOrder}
                           orderStatus={order.status}
                         />
+                      </div>
+                      <div className="rounded-2xl border border-primary-100/70 bg-white/70 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+                        <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">
+                          Resumen de pago
+                        </p>
+                        <ul className="mt-2 space-y-1 text-sm">
+                          <li>
+                            Método:{' '}
+                            <span className="font-semibold text-primary-700 dark:text-primary-100">
+                              {ticketMethod ? getPaymentMethodLabel(ticketMethod) : 'Pendiente'}
+                            </span>
+                          </li>
+                          <li>
+                            Referencia:{' '}
+                            <span className="font-semibold text-primary-900 dark:text-primary-200">
+                              {(() => {
+                                if (!paymentReference) {
+                                  return ticketMethod === 'efectivo' ? 'No aplica' : 'Pendiente';
+                                }
+                                const lowered = ticketMethod?.toLowerCase();
+                                if (lowered === 'cripto') {
+                                  return summarizeWalletReference(paymentReference) ?? paymentReference;
+                                }
+                                if (
+                                  lowered === 'debito' ||
+                                  lowered === 'credito' ||
+                                  lowered === 'transferencia'
+                                ) {
+                                  const digits = extractReferenceLastDigits(paymentReference);
+                                  return digits ? `••••${digits}` : paymentReference;
+                                }
+                                return paymentReference;
+                              })()}
+                            </span>
+                          </li>
+                          {ticketMethod === 'efectivo' && (
+                            <>
+                              <li>
+                                Monto recibido:{' '}
+                                <span className="font-semibold">{formatCurrency(cashTendered ?? 0)}</span>
+                              </li>
+                              <li>
+                                Cambio:{' '}
+                                <span className="font-semibold">
+                                  {formatCurrency(Math.max(cashChange ?? 0, 0))}
+                                </span>
+                              </li>
+                            </>
+                          )}
+                        </ul>
                       </div>
                       {actionState?.error && (
                         <p className="rounded-2xl border border-danger-200/80 bg-danger-50/60 px-3 py-2 text-xs text-danger-700 dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
@@ -4339,9 +4729,18 @@ export function PosDashboard() {
                   <span className="badge">Resumen diario</span>
                   <h2 className="mt-3 text-2xl font-semibold">Corte del día</h2>
                 </div>
-                <div className="text-right text-sm text-[var(--brand-muted)]">
-                  <p>Turno: Matutino</p>
-                  <p>POS Matriz Roma Norte</p>
+                <div className="flex flex-col items-end gap-2 text-right text-sm text-[var(--brand-muted)]">
+                  <div>
+                    <p>Turno: Matutino</p>
+                    <p>POS Matriz Roma Norte</p>
+                  </div>
+                  {metricsChartData.length > 0 && (
+                    <ChartButton
+                      title="Ventas recientes"
+                      data={metricsChartData}
+                      yAxisLabel="MXN"
+                    />
+                  )}
                 </div>
               </div>
               <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
@@ -4415,7 +4814,16 @@ export function PosDashboard() {
                   Panel completo de higiene, plagas, inventario y residuos · exportable en CSV / Excel.
                 </p>
               </div>
-              <p className="text-xs text-[var(--brand-muted)]">Acceso disponible para baristas y gerentes.</p>
+              <div className="flex items-center gap-3 text-xs text-[var(--brand-muted)]">
+                <p>Acceso disponible para baristas y gerentes.</p>
+                {cofeprisChartData.length > 0 && (
+                  <ChartButton
+                    title="Bitácoras COFEPRIS"
+                    data={cofeprisChartData}
+                    yAxisLabel="Registros"
+                  />
+                )}
+              </div>
             </div>
             <CofeprisPanel
               staffId={user.id}
@@ -4537,6 +4945,13 @@ export function PosDashboard() {
                 >
                   Actualizar staff
                 </button>
+                {employeeChartData.length > 0 && (
+                  <ChartButton
+                    title="Roles activos"
+                    data={employeeChartData}
+                    yAxisLabel="Colaboradores"
+                  />
+                )}
               </div>
             </div>
 
@@ -5480,24 +5895,29 @@ const parseMetadataRecord = (value: unknown): Record<string, unknown> | null => 
   return null;
 };
 
-const buildAddressDetails = (record?: Record<string, unknown> | null) => {
+const buildAddressDetails = (
+  record?: Record<string, unknown> | null
+): OrderShippingInfo['address'] | null => {
   if (!record) {
     return null;
   }
   const street =
     toTrimmedString(record.street) ??
     toTrimmedString(record.addressLine1) ??
-    toTrimmedString(record.line1);
-  const city = toTrimmedString(record.city) ?? toTrimmedString(record.locality);
-  const state = toTrimmedString(record.state) ?? toTrimmedString(record.region);
+    toTrimmedString(record.line1) ??
+    undefined;
+  const city = toTrimmedString(record.city) ?? toTrimmedString(record.locality) ?? undefined;
+  const state = toTrimmedString(record.state) ?? toTrimmedString(record.region) ?? undefined;
   const postalCode =
     toTrimmedString(record.postalCode) ??
     toTrimmedString(record.zip) ??
-    toTrimmedString(record.cp);
+    toTrimmedString(record.cp) ??
+    undefined;
   const reference =
     toTrimmedString(record.reference) ??
     toTrimmedString(record.references) ??
-    toTrimmedString(record.note);
+    toTrimmedString(record.note) ??
+    undefined;
   if (street || city || state || postalCode || reference) {
     return {
       street,
@@ -5510,7 +5930,9 @@ const buildAddressDetails = (record?: Record<string, unknown> | null) => {
   return null;
 };
 
-const buildShippingFromMetadata = (metadata?: Record<string, unknown> | null) => {
+const buildShippingFromMetadata = (
+  metadata?: Record<string, unknown> | null
+): OrderShippingInfo | null => {
   if (!metadata) {
     return null;
   }
@@ -5537,7 +5959,8 @@ const buildShippingFromMetadata = (metadata?: Record<string, unknown> | null) =>
   const contactPhone =
     toTrimmedString(shippingRecord['contactPhone']) ??
     toTrimmedString(shippingRecord['contact_phone']) ??
-    toTrimmedString(shippingRecord['phone']);
+    toTrimmedString(shippingRecord['phone']) ??
+    null;
   const isWhatsapp =
     typeof shippingRecord['isWhatsapp'] === 'boolean'
       ? (shippingRecord['isWhatsapp'] as boolean)
@@ -5568,7 +5991,7 @@ const buildShippingFromMetadata = (metadata?: Record<string, unknown> | null) =>
       }
       : null;
   return {
-    address: buildAddressDetails(addressRecord),
+    address: buildAddressDetails(addressRecord) ?? undefined,
     contactPhone,
     isWhatsapp,
     addressId,
@@ -5843,7 +6266,15 @@ const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null })
     : 'Dirección no disponible';
 
   const hasAddress = !!address;
-  const hasTip = !!(deliveryTip?.amount && deliveryTip.amount > 0);
+  const deliveryTipAmount =
+    typeof deliveryTip?.amount === 'number' && Number.isFinite(deliveryTip.amount)
+      ? deliveryTip.amount
+      : null;
+  const deliveryTipPercent =
+    typeof deliveryTip?.percent === 'number' && Number.isFinite(deliveryTip.percent)
+      ? deliveryTip.percent
+      : null;
+  const hasTip = deliveryTipAmount !== null && deliveryTipAmount > 0;
 
   return (
     <div className="mb-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
@@ -5880,7 +6311,8 @@ const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null })
           <div className="text-right">
             <p className="text-xs text-[var(--brand-muted)]">Propina envío</p>
             <p className="font-semibold text-emerald-600 dark:text-emerald-400">
-              ${deliveryTip!.amount?.toFixed(2)}
+              {formatCurrency(deliveryTipAmount ?? 0)}
+              {deliveryTipPercent !== null ? ` (${deliveryTipPercent.toFixed(1)}%)` : ''}
             </p>
           </div>
         )}
@@ -5952,11 +6384,21 @@ const OrderDetailContent = ({
   order: Order;
   onMoveToQueue?: (
     order: Order,
-    options?: { paymentMethod?: string | null; paymentReference?: string | null }
+    options?: {
+      paymentMethod?: string | null;
+      paymentReference?: string | null;
+      cashTendered?: number | null;
+      cashChange?: number | null;
+    }
   ) => void;
   onReturnToQueue?: (
     order: Order,
-    options?: { paymentMethod?: string | null; paymentReference?: string | null }
+    options?: {
+      paymentMethod?: string | null;
+      paymentReference?: string | null;
+      cashTendered?: number | null;
+      cashChange?: number | null;
+    }
   ) => void;
   onCompletePrepOrder?: (order: Order) => void;
   actionState?: DetailActionState;
@@ -5975,6 +6417,39 @@ const OrderDetailContent = ({
   const paymentMetadataRecord = extractPaymentMetadata(order.metadata);
   const metadataObject = useMemo(() => parseMetadataRecord(order.metadata), [order.metadata]);
   const fallbackShipping = useMemo(() => buildShippingFromMetadata(metadataObject), [metadataObject]);
+  const shippingInfo = useMemo(
+    () => order.shipping ?? fallbackShipping ?? null,
+    [fallbackShipping, order.shipping]
+  );
+  const normalizedShippingInfo = useMemo(() => {
+    if (!shippingInfo) {
+      return null;
+    }
+    return {
+      address: shippingInfo.address
+        ? {
+            street: shippingInfo.address.street ?? null,
+            city: shippingInfo.address.city ?? null,
+            state: shippingInfo.address.state ?? null,
+            postalCode: shippingInfo.address.postalCode ?? null,
+            reference: shippingInfo.address.reference ?? null,
+          }
+        : null,
+      contactPhone: shippingInfo.contactPhone ?? null,
+      isWhatsapp:
+        typeof shippingInfo.isWhatsapp === 'boolean' ? shippingInfo.isWhatsapp : null,
+      addressId: shippingInfo.addressId ?? null,
+      deliveryTip:
+        shippingInfo.deliveryTip &&
+        (typeof shippingInfo.deliveryTip.amount === 'number' ||
+          typeof shippingInfo.deliveryTip.percent === 'number')
+          ? {
+              amount: shippingInfo.deliveryTip.amount ?? null,
+              percent: shippingInfo.deliveryTip.percent ?? null,
+            }
+          : null,
+    };
+  }, [shippingInfo]);
   const metadataPaymentMethod = toTrimmedString(paymentMetadataRecord?.method) ?? null;
   const metadataPaymentReference = toTrimmedString(paymentMetadataRecord?.reference) ?? null;
   const metadataPaymentReferenceType =
@@ -5989,6 +6464,7 @@ const OrderDetailContent = ({
   const [paymentReference, setPaymentReference] = useState<string>(
     order.queuedPaymentReference ?? ''
   );
+  const [cashTenderedInput, setCashTenderedInput] = useState<string>('');
   const ticketRef = useRef<HTMLDivElement | null>(null);
   const [isDownloadingTicket, setIsDownloadingTicket] = useState(false);
   const editingPaymentMethodLabel = selectedPaymentMethod
@@ -6009,7 +6485,14 @@ const OrderDetailContent = ({
     setSelectedPaymentMethod(order.queuedPaymentMethod ?? null);
     setShowPaymentSelector(!order.queuedPaymentMethod);
     setPaymentReference(order.queuedPaymentReference ?? '');
-  }, [order]);
+    const tendered =
+      typeof order.montoRecibido === 'number'
+        ? order.montoRecibido
+        : typeof metadataCashTendered === 'number'
+          ? metadataCashTendered
+          : null;
+    setCashTenderedInput(tendered !== null && Number.isFinite(tendered) ? String(tendered) : '');
+  }, [metadataCashTendered, order]);
 
   useEffect(() => {
     if (order.queuedPaymentReference || !prefilledPaymentReference) {
@@ -6067,6 +6550,7 @@ const OrderDetailContent = ({
     };
   }, [items.length, order.id, order.orderNumber, order.ticketCode]);
 
+  const resolvedTotalAmount = typeof order.total === 'number' ? order.total : null;
   const resolvedPaymentMethod =
     order.metodoPago ??
     order.paymentMethod ??
@@ -6077,14 +6561,41 @@ const OrderDetailContent = ({
     order.queuedPaymentReference ?? metadataPaymentReference ?? null;
   const resolvedPaymentReferenceType =
     order.queuedPaymentReferenceType ?? metadataPaymentReferenceType ?? null;
-  const resolvedCashTendered = order.montoRecibido ?? metadataCashTendered ?? null;
-  const resolvedCashChange = order.cambioEntregado ?? metadataCashChange ?? null;
+  const orderCashTendered = order.montoRecibido ?? metadataCashTendered ?? null;
+  const orderCashChange = order.cambioEntregado ?? metadataCashChange ?? null;
   const paymentMethodDisplayLabel = resolvedPaymentMethod
     ? getPaymentMethodLabel(resolvedPaymentMethod)
     : null;
   const normalizedPaymentMethod = resolvedPaymentMethod
     ? resolvedPaymentMethod.toLowerCase()
     : null;
+  const parsedCashTendered = useMemo(() => {
+    if (!cashTenderedInput.trim()) {
+      return null;
+    }
+    const parsed = Number.parseFloat(cashTenderedInput.replace(/,/g, '.'));
+    return Number.isFinite(parsed) ? parsed : null;
+  }, [cashTenderedInput]);
+  const cashInputInsufficient =
+    parsedCashTendered !== null &&
+    resolvedTotalAmount !== null &&
+    parsedCashTendered < resolvedTotalAmount;
+  const cashChangePreview =
+    parsedCashTendered !== null && resolvedTotalAmount !== null
+      ? Math.max(parsedCashTendered - resolvedTotalAmount, 0)
+      : null;
+  const currentCashTendered =
+    normalizedPaymentMethod === 'efectivo'
+      ? parsedCashTendered ?? orderCashTendered ?? null
+      : orderCashTendered ?? null;
+  const currentCashChange =
+    normalizedPaymentMethod === 'efectivo'
+      ? currentCashTendered !== null && resolvedTotalAmount !== null
+        ? Math.max(currentCashTendered - resolvedTotalAmount, 0)
+        : null
+      : orderCashChange ?? (orderCashTendered !== null && resolvedTotalAmount !== null
+          ? Math.max(orderCashTendered - resolvedTotalAmount, 0)
+          : null);
 
   const totalItemsFromList = items.reduce((sum, item) => sum + safeQuantity(item.quantity), 0);
   const totalItems =
@@ -6103,6 +6614,14 @@ const OrderDetailContent = ({
       : typeof order.totals?.tipAmount === 'number'
         ? (order.totals?.tipAmount as number)
         : null;
+  const deliveryTipAmount =
+    typeof order.deliveryTipAmount === 'number'
+      ? order.deliveryTipAmount
+      : shippingInfo?.deliveryTip?.amount ?? null;
+  const deliveryTipPercent =
+    typeof order.deliveryTipPercent === 'number'
+      ? order.deliveryTipPercent
+      : shippingInfo?.deliveryTip?.percent ?? null;
   const assignedStaffDisplay = order.queuedByStaffName ?? order.queuedByStaffId ?? null;
   const paymentReferenceTypeLabel = resolvedPaymentReferenceType
     ? PAYMENT_REFERENCE_TYPE_LABELS[resolvedPaymentReferenceType] ??
@@ -6140,8 +6659,7 @@ const OrderDetailContent = ({
       : typeof ticketTotals.totalAmount === 'number'
         ? ticketTotals.totalAmount
         : 0;
-  const totalAmount = typeof order.total === 'number' ? order.total : null;
-  const ticketTotal = totalAmount ?? fallbackTicketTotal;
+  const ticketTotal = resolvedTotalAmount ?? fallbackTicketTotal;
   const virtualTicketOrder = useMemo(
     () =>
       buildVirtualTicketOrderPayload({
@@ -6152,13 +6670,14 @@ const OrderDetailContent = ({
         ticketTax,
         tipAmount: tipValue,
         metadataObject,
-        fallbackShipping,
+        fallbackShipping: shippingInfo ?? fallbackShipping ?? undefined,
       }),
     [
-      fallbackShipping,
       hydratedItems,
       metadataObject,
       order,
+      shippingInfo,
+      fallbackShipping,
       ticketSubtotal,
       ticketTax,
       ticketTotal,
@@ -6169,15 +6688,21 @@ const OrderDetailContent = ({
   const isPublicSale = isPublicSaleOrder(order);
   const shouldShowLoyaltyPanel = allowPaymentEditing && !isPublicSale;
   const tipAmountValue = typeof tipValue === 'number' ? tipValue : 0;
+  const deliveryTipValue = typeof deliveryTipAmount === 'number' ? deliveryTipAmount : 0;
   const showTipDetails = tipAmountValue > 0;
+  const hasDeliveryTip = deliveryTipValue > 0;
+  const hasAnyTip = showTipDetails || hasDeliveryTip;
   const subtotalAmount =
-    showTipDetails && totalAmount !== null ? Math.max(totalAmount - tipAmountValue, 0) : null;
+    resolvedTotalAmount !== null && hasAnyTip
+      ? Math.max(
+          resolvedTotalAmount -
+            (showTipDetails ? tipAmountValue : 0) -
+            (hasDeliveryTip ? deliveryTipValue : 0),
+          0
+        )
+      : null;
   const resolvedCashChangeAmount =
-    resolvedCashChange !== null
-      ? Math.max(resolvedCashChange, 0)
-      : resolvedCashTendered !== null && totalAmount !== null
-        ? Math.max(resolvedCashTendered - totalAmount, 0)
-        : null;
+    currentCashChange !== null ? Math.max(currentCashChange, 0) : null;
   const ticketIdentifier = order.ticketCode ?? order.orderNumber ?? order.id;
   const handleTicketDownload = useCallback(async () => {
     if (!ticketRef.current) {
@@ -6216,8 +6741,8 @@ const OrderDetailContent = ({
       if (resolvedCashChangeAmount !== null) {
         return `Cambio entregado: ${formatCurrency(resolvedCashChangeAmount)}`;
       }
-      if (resolvedCashTendered !== null) {
-        return `Monto recibido: ${formatCurrency(resolvedCashTendered)}`;
+      if (currentCashTendered !== null) {
+        return `Monto recibido: ${formatCurrency(currentCashTendered)}`;
       }
       return null;
     }
@@ -6249,14 +6774,55 @@ const OrderDetailContent = ({
     }
     return null;
   })();
-  const paymentReferenceDisplayValue =
-    resolvedPaymentReference ?? (normalizedPaymentMethod === 'efectivo' ? 'No aplica' : 'Pendiente');
+  const paymentReferenceDisplayValue = (() => {
+    if (normalizedPaymentMethod === 'efectivo') {
+      if (currentCashTendered !== null) {
+        return formatCurrency(currentCashTendered);
+      }
+      return 'Pendiente';
+    }
+    if (!resolvedPaymentReference) {
+      return normalizedPaymentMethod ? 'Pendiente' : 'No aplica';
+    }
+    if (normalizedPaymentMethod === 'cripto') {
+      return (
+        summarizeWalletReference(resolvedPaymentReference) ?? resolvedPaymentReference ?? 'Wallet'
+      );
+    }
+    if (
+      normalizedPaymentMethod === 'debito' ||
+      normalizedPaymentMethod === 'credito' ||
+      normalizedPaymentMethod === 'transferencia'
+    ) {
+      const digits = extractReferenceLastDigits(resolvedPaymentReference);
+      return digits ? `•••• ${digits}` : 'Referencia registrada';
+    }
+    return resolvedPaymentReference;
+  })();
   const paymentMethodLabel = paymentMethodDisplayLabel ?? 'Pendiente por definir';
   const handledStatusBadge = isInPrepQueue
     ? 'En preparación'
     : order.status === 'completed'
       ? 'Entregado'
       : null;
+  const requiresPaymentReferenceField =
+    normalizedPaymentMethod && normalizedPaymentMethod !== 'efectivo';
+  const trimmedPaymentReference = paymentReference.trim();
+  const hasReferenceValue = !requiresPaymentReferenceField || Boolean(trimmedPaymentReference);
+  const needsCashInput = normalizedPaymentMethod === 'efectivo';
+  const hasCashValue = !needsCashInput || currentCashTendered !== null;
+  let paymentValidationMessage: string | null = null;
+  if (!selectedPaymentMethod) {
+    paymentValidationMessage = 'Selecciona el método de pago para continuar.';
+  } else if (!hasReferenceValue) {
+    paymentValidationMessage =
+      selectedPaymentMethod === 'cripto'
+        ? 'Captura la wallet, hash o factura Lightning.'
+        : 'Captura la referencia del pago.';
+  } else if (!hasCashValue) {
+    paymentValidationMessage = 'Ingresa el monto recibido en efectivo.';
+  }
+  const canSubmitPayment = !paymentValidationMessage;
   return (
     <div className="space-y-5 text-base">
       <header>
@@ -6304,7 +6870,7 @@ const OrderDetailContent = ({
           />
         )}
         <DetailRow label="Ticket POS" value={order.ticketCode ?? 'Sin ticket'} />
-        {showTipDetails && subtotalAmount !== null && (
+        {hasAnyTip && subtotalAmount !== null && (
           <DetailRow
             label="Subtotal"
             value={
@@ -6315,10 +6881,10 @@ const OrderDetailContent = ({
           />
         )}
         <DetailRow
-          label={showTipDetails ? 'Total con propina' : 'Total'}
+          label={hasAnyTip ? 'Total con propinas' : 'Total'}
           value={
             <span className="font-bold text-primary-900 dark:text-white">
-              {formatCurrency(totalAmount ?? order.total ?? 0)}
+              {formatCurrency(resolvedTotalAmount ?? order.total ?? 0)}
             </span>
           }
         />
@@ -6330,6 +6896,19 @@ const OrderDetailContent = ({
                 {formatCurrency(tipAmountValue)}
                 {typeof order.tipPercent === 'number'
                   ? ` (${order.tipPercent.toFixed(1)}%)`
+                  : ''}
+              </span>
+            }
+          />
+        )}
+        {hasDeliveryTip && (
+          <DetailRow
+            label="Propina de envío"
+            value={
+              <span className="font-bold text-emerald-700 dark:text-emerald-300">
+                {formatCurrency(deliveryTipValue)}
+                {typeof deliveryTipPercent === 'number'
+                  ? ` (${deliveryTipPercent.toFixed(1)}%)`
                   : ''}
               </span>
             }
@@ -6422,7 +7001,7 @@ const OrderDetailContent = ({
       {fallbackNotes && (
         <OrderNotesCard note={fallbackNotes} label="Comentarios adicionales" />
       )}
-      {order.shipping && <ShippingInfoCard shipping={order.shipping} />}
+      {shippingInfo && <ShippingInfoCard shipping={shippingInfo} />}
       <ConsumptionSummary items={items} />
       {itemsLoading && (
         <p className="rounded-xl border border-dashed border-primary-200/60 bg-white/60 px-3 py-2 text-xs text-[var(--brand-muted)] dark:border-white/10 dark:bg-white/5">
@@ -6499,6 +7078,36 @@ const OrderDetailContent = ({
               </div>
             </div>
           )}
+          {selectedPaymentMethod === 'efectivo' && (
+            <div className="rounded-2xl border border-primary-100/70 bg-white/70 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+              <label className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+                ¿Con cuánto pagó?
+              </label>
+              <input
+                value={cashTenderedInput}
+                onChange={(event) => setCashTenderedInput(event.target.value)}
+                placeholder="Ej. 500"
+                inputMode="decimal"
+                className="mt-2 w-full rounded-xl border border-primary-100/70 bg-transparent px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/5 dark:text-white"
+              />
+              {parsedCashTendered === null ? (
+                <p className="mt-1 text-xs text-[var(--brand-muted)]">
+                  Captura la cantidad recibida para calcular el cambio.
+                </p>
+              ) : cashInputInsufficient ? (
+                <p className="mt-1 text-xs font-semibold text-danger-600">
+                  El monto es menor al total del pedido.
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-[var(--brand-muted)]">
+                  Cambio sugerido:{' '}
+                  <span className="font-semibold text-primary-700 dark:text-primary-100">
+                    {formatCurrency(cashChangePreview ?? 0)}
+                  </span>
+                </p>
+              )}
+            </div>
+          )}
           <div className="rounded-2xl border border-primary-100/70 bg-white/70 p-4 text-sm dark:border-white/10 dark:bg-white/5">
             <label className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
               Referencia de pago
@@ -6529,15 +7138,20 @@ const OrderDetailContent = ({
               </p>
             )}
           </div>
+          {!canSubmitPayment && (
+            <p className="text-xs font-semibold text-danger-600">{paymentValidationMessage}</p>
+          )}
           <DetailActionFooter
             label="Mover a En preparación"
             onClick={() =>
               onMoveToQueue?.(order, {
                 paymentMethod: selectedPaymentMethod,
-                paymentReference: paymentReference || undefined,
+                paymentReference: trimmedPaymentReference || undefined,
+                cashTendered: needsCashInput ? currentCashTendered ?? null : null,
+                cashChange: needsCashInput ? resolvedCashChangeAmount ?? null : null,
               })
             }
-            disabled={!selectedPaymentMethod || actionState?.isLoading}
+            disabled={!canSubmitPayment || actionState?.isLoading}
             actionState={actionState}
           />
         </div>
@@ -6555,7 +7169,10 @@ const OrderDetailContent = ({
           label="Regresar a En preparación"
           onClick={() =>
             onReturnToQueue?.(order, {
-              paymentReference: paymentReference || order.queuedPaymentReference || null,
+              paymentMethod: selectedPaymentMethod,
+              paymentReference: trimmedPaymentReference || order.queuedPaymentReference || null,
+              cashTendered: needsCashInput ? currentCashTendered ?? null : null,
+              cashChange: needsCashInput ? resolvedCashChangeAmount ?? null : null,
             })
           }
           disabled={actionState?.isLoading}
@@ -9994,6 +10611,7 @@ const StaffUtilityDrawer = ({
   const isManager = user.role === 'gerente';
   const isSocio = user.role === 'socio' || user.role === 'superuser';
   const isSuperUser = user.role === 'superuser' || SUPER_USER_EMAILS.has(user.email.toLowerCase());
+  const canManageInventory = isManager || isSocio || user.role === 'barista';
   return (
     <aside
       className={`fixed right-4 top-12 z-30 w-64 max-h-[85vh] overflow-y-auto rounded-3xl border border-primary-100/70 bg-white/95 p-4 shadow-2xl transition transform dark:border-white/10 dark:bg-neutral-900/90 ${open ? 'translate-x-0 opacity-100' : 'pointer-events-none translate-x-[120%] opacity-0'
@@ -10050,6 +10668,15 @@ const StaffUtilityDrawer = ({
         >
           Bitácora de limpieza
         </button>
+        {canManageInventory && (
+          <button
+            type="button"
+            className="rounded-2xl border border-amber-200/80 bg-amber-50/70 px-3 py-2 text-left font-semibold text-amber-900 transition hover:border-amber-300 dark:border-amber-300/40 dark:bg-amber-900/20 dark:text-amber-50"
+            onClick={() => onSelect('inventory')}
+          >
+            Registro de mercancía
+          </button>
+        )}
         <div className="mt-4 border-t border-primary-100/50 pt-4 dark:border-white/10">
           <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">Tema</p>
           <div className="mt-2">
@@ -10059,13 +10686,6 @@ const StaffUtilityDrawer = ({
         {(isManager || isSocio) && (
           <div className="mt-4 space-y-2 border-t border-primary-100/50 pt-4 text-xs dark:border-white/10">
             <p className="uppercase tracking-[0.3em] text-[var(--brand-muted)]">Gerencia</p>
-            <button
-              type="button"
-              className="w-full rounded-2xl border border-amber-300 bg-amber-100 px-3 py-2 text-left font-semibold text-amber-900 shadow-sm transition hover:border-amber-400 hover:bg-amber-100 dark:border-amber-300/40 dark:bg-amber-900/20 dark:text-amber-200"
-              onClick={() => onSelect('inventory')}
-            >
-              Inventarios
-            </button>
             <button
               type="button"
               className="w-full rounded-2xl border border-emerald-300 bg-emerald-100 px-3 py-2 text-left font-semibold text-emerald-900 shadow-sm transition hover:border-emerald-400 hover:bg-emerald-100 dark:border-emerald-300/40 dark:bg-emerald-900/20 dark:text-emerald-100"
@@ -10213,6 +10833,16 @@ interface StaffSidePanelProps {
   secureSnapshot: Record<string, string>;
   superUserQueue: SuperUserAction[];
   onCreateSuperUserAction: (payload: { email: string; role: StaffRole; note?: string }) => void;
+  inventoryStockStatus: Record<string, ManualStockStatus>;
+  onInventoryStockStatusChange: (itemId: string, status: ManualStockStatus) => void;
+  productStockStatus: Record<string, ManualStockStatus>;
+  onProductStockStatusChange: (productId: string, status: ManualStockStatus) => void;
+  menuOptions: {
+    beverages: MenuItem[];
+    foods: MenuItem[];
+    packages: MenuItem[];
+  };
+  canManageInventory: boolean;
 }
 
 const StaffSidePanel = ({
@@ -10256,6 +10886,12 @@ const StaffSidePanel = ({
   secureSnapshot,
   superUserQueue,
   onCreateSuperUserAction,
+  inventoryStockStatus,
+  onInventoryStockStatusChange,
+  productStockStatus,
+  onProductStockStatusChange,
+  menuOptions,
+  canManageInventory,
 }: StaffSidePanelProps) => {
   if (!view) {
     return null;
@@ -10300,6 +10936,7 @@ const StaffSidePanel = ({
               shiftType={shiftType}
               onChangePassword={onChangePassword}
               isManager={isManager}
+              canManageInventory={canManageInventory}
               onOpenInventory={() => onSwitchView('inventory')}
             />
           )}
@@ -10321,14 +10958,27 @@ const StaffSidePanel = ({
           {view === 'salary' && <StaffSalaryPanel salary={salary} shiftType={shiftType} />}
           {view === 'cleaning' && <CleaningLogPanel cleaning={cleaning} />}
           {view === 'inventory' && (
-            <ManagerInventoryPanel
-              inventory={managerInventory}
-              onQuantityChange={onInventoryChange}
-              onAccidentChange={onInventoryAccidentChange}
-              onSyncMenu={onInventorySync}
-              branchName={branchName}
-              canEdit={isSocio || isManager}
-            />
+            <div className="space-y-4">
+              <ManagerInventoryPanel
+                inventory={managerInventory}
+                onQuantityChange={onInventoryChange}
+                onAccidentChange={onInventoryAccidentChange}
+                onSyncMenu={onInventorySync}
+                branchName={branchName}
+                canEdit={isSocio || isManager}
+                canMarkStockStatus={canManageInventory}
+                stockStatusMap={inventoryStockStatus}
+                onStockStatusChange={onInventoryStockStatusChange}
+              />
+              <ProductStockStatusPanel
+                beverages={menuOptions.beverages}
+                foods={menuOptions.foods}
+                packages={menuOptions.packages}
+                stockStatusMap={productStockStatus}
+                onStatusChange={onProductStockStatusChange}
+                canEdit={canManageInventory}
+              />
+            </div>
           )}
           {view === 'managerSalaries' && (
             <ManagerPayrollPanel
@@ -10399,12 +11049,14 @@ const StaffProfilePanel = ({
   shiftType,
   onChangePassword,
   isManager,
+  canManageInventory,
   onOpenInventory,
 }: {
   profile: StaffSidePanelProps['profile'];
   shiftType: ShiftType;
   onChangePassword: StaffSidePanelProps['onChangePassword'];
   isManager: boolean;
+  canManageInventory: boolean;
   onOpenInventory: () => void;
 }) => {
   const [currentPassword, setCurrentPassword] = useState('');
@@ -10463,7 +11115,7 @@ const StaffProfilePanel = ({
           </div>
         </div>
       </div>
-      {isManager && (
+      {canManageInventory && (
         <button
           type="button"
           className="w-full rounded-2xl border border-amber-200/80 bg-amber-50/70 px-4 py-3 text-left text-sm font-semibold text-amber-900 transition hover:border-amber-300 dark:border-amber-300/40 dark:bg-amber-900/30 dark:text-amber-50"
@@ -10767,6 +11419,9 @@ interface ManagerInventoryPanelProps {
   onSyncMenu: () => void;
   branchName: string;
   canEdit: boolean;
+  canMarkStockStatus: boolean;
+  stockStatusMap: Record<string, ManualStockStatus>;
+  onStockStatusChange: (itemId: string, status: ManualStockStatus) => void;
 }
 
 const INVENTORY_CATEGORY_META: Record<
@@ -10779,6 +11434,34 @@ const INVENTORY_CATEGORY_META: Record<
   disposables: { label: 'Desechables', description: 'Vasos, tapas, removedores, servilletas.', accent: 'border-amber-100/70' },
 };
 
+const STOCK_STATUS_OPTIONS: Array<{ value: ManualStockStatus; label: string; tone: string }> = [
+  { value: 'normal', label: 'Disponible', tone: 'border-emerald-200 text-emerald-700' },
+  { value: 'low', label: 'Stock bajo', tone: 'border-amber-200 text-amber-700' },
+  { value: 'out', label: 'Agotado', tone: 'border-danger-200 text-danger-600' },
+];
+
+const StockStatusBadge = ({ status }: { status: ManualStockStatus }) => {
+  if (status === 'out') {
+    return (
+      <span className="rounded-full bg-danger-100 px-2 py-0.5 text-xs font-semibold text-danger-700 dark:bg-danger-800/40 dark:text-danger-200">
+        Agotado
+      </span>
+    );
+  }
+  if (status === 'low') {
+    return (
+      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700 dark:bg-amber-800/30 dark:text-amber-200">
+        Stock bajo
+      </span>
+    );
+  }
+  return (
+    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-200">
+      Disponible
+    </span>
+  );
+};
+
 const ManagerInventoryPanel = ({
   inventory,
   onQuantityChange,
@@ -10786,6 +11469,9 @@ const ManagerInventoryPanel = ({
   onSyncMenu,
   branchName,
   canEdit,
+  canMarkStockStatus,
+  stockStatusMap,
+  onStockStatusChange,
 }: ManagerInventoryPanelProps) => {
   const [editing, setEditing] = useState<
     { category: InventoryCategoryId; id: string; field: 'quantity' | 'accidents' } | null
@@ -10884,6 +11570,7 @@ const ManagerInventoryPanel = ({
                 <p className="py-2 text-xs text-[var(--brand-muted)]">Sin insumos sincronizados.</p>
               ) : (
                 items.map((item) => {
+                  const status = stockStatusMap[item.id] ?? 'normal';
                   const isEditing =
                     isCategoryEditing &&
                     editing?.category === category &&
@@ -10901,6 +11588,30 @@ const ManagerInventoryPanel = ({
                         <p className="text-xs text-[var(--brand-muted)]">
                           Accidentes registrados: {item.accidents ?? 0}
                         </p>
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                          <StockStatusBadge status={status} />
+                          {canMarkStockStatus && (
+                            <div className="flex flex-wrap gap-1">
+                              {STOCK_STATUS_OPTIONS.map((option) => {
+                                const isSelected = option.value === status;
+                                return (
+                                  <button
+                                    type="button"
+                                    key={`${item.id}-${option.value}`}
+                                    className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold transition ${
+                                      isSelected
+                                        ? `${option.tone} bg-white`
+                                        : 'border-primary-50/80 text-[var(--brand-muted)] hover:border-primary-200'
+                                    }`}
+                                    onClick={() => onStockStatusChange(item.id, option.value)}
+                                  >
+                                    {option.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
                       </div>
                       {isEditing ? (
                         <div className="flex items-center gap-2">

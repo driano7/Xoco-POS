@@ -67,6 +67,20 @@ El sistema ha sido adaptado, rediseñado y programado específicamente para Xoco
 - **EN:** Added a dedicated COFEPRIS compliance tab (COFEPRIS is Mexico’s federal sanitary authority) so staff can review hygiene logs, pest control certificates, smart inventory for food handling, and waste logs. The panel includes a monthly filter plus CSV/XLSX exports that gather all COFEPRIS records for the selected period.  
 - Acceso habilitado para roles Barista y Gerente directamente desde la navegación principal del POS.  
 
+## 🚀 Actualizaciones recientes (ES/EN)
+- **ES:** El módulo que mueve pedidos a preparación ahora valida el método de pago: efectivo exige monto y cambio; tarjetas, transferencias y cripto requieren referencia antes de encolar.  
+  **EN:** Moving an order into prep now enforces payment requirements: cash needs tendered amount plus change, card/transfer/crypto must include a reference before the queue accepts it.
+- **ES:** El endpoint `/api/customers/addresses` descifra y normaliza direcciones, teléfonos y propinas de entrega para auto llenar pedidos nuevos o mostrar detalles históricos.  
+  **EN:** `/api/customers/addresses` decrypts and normalizes shipping data so the POS can auto-fill saved addresses and delivery tips for each customer.
+- **ES:** Las órdenes almacenan y muestran dirección de envío, teléfono, indicador de WhatsApp y propina de entrega en los paneles de detalle y tickets virtuales.  
+  **EN:** Orders now surface shipping address, contact phone, WhatsApp flag, and delivery tip inside the POS detail/ticket views.
+- **ES:** El resumen de cobro en POS resume referencias según el método (últimos 4 dígitos, ENS, hash abreviado) y muestra efectivo recibido/cambio entregado.  
+  **EN:** Payment summaries adapt to the method (masked last digits, ENS/wallet previews, or cash received/change) for quick verification.
+- **ES:** Las banderas manuales de stock bajo/agotado se reflejan en el selector de productos y bloquean la selección cuando el artículo está fuera de stock.  
+  **EN:** Manual low/out-of-stock flags propagate to dropdowns so unavailable products show badges or become unselectable.
+- **ES:** Las pestañas de métricas, COFEPRIS y empleados integran el nuevo botón de gráficas con exportación PNG para análisis rápidos.  
+  **EN:** Metrics, COFEPRIS, and staff tabs include the reusable chart modal with PNG export for quick sharing.  
+
 ---
 
 # 💻 Tecnologías  

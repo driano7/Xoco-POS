@@ -39,6 +39,7 @@ import {
   type PendingOperation,
 } from '@/lib/offline-sync';
 import { withDecryptedUserNames } from '@/lib/customer-decrypt';
+import { decryptAddressRow, type DecryptedAddressPayload } from '@/lib/address-decrypt';
 import { sqlite } from '@/lib/sqlite';
 
 const ORDERS_TABLE = process.env.SUPABASE_ORDERS_TABLE ?? 'orders';
@@ -48,6 +49,7 @@ const ORDER_ITEMS_TABLE = process.env.SUPABASE_ORDER_ITEMS_TABLE ?? 'order_items
 const PRODUCTS_TABLE = process.env.SUPABASE_PRODUCTS_TABLE ?? 'products';
 const USERS_TABLE = process.env.SUPABASE_USERS_TABLE ?? 'users';
 const VENTAS_TABLE = process.env.SUPABASE_VENTAS_TABLE ?? 'ventas';
+const ADDRESSES_TABLE = process.env.SUPABASE_ADDRESSES_TABLE ?? 'addresses';
 const ORDER_CLIENT_ID_COLUMN =
   process.env.SUPABASE_ORDERS_CLIENT_ID_COLUMN?.trim() || null;
 
@@ -318,6 +320,57 @@ const parseStoredItemsValue = (value: unknown) => {
   return null;
 };
 
+const normalizeShippingPayload = (value: unknown) => {
+  const record = coerceRecord(value);
+  if (!record) {
+    return null;
+  }
+  const addressRecord = coerceRecord(record.address) ?? null;
+  const normalizedAddress =
+    addressRecord &&
+    ['street', 'city', 'state', 'postalCode', 'reference'].some((key) => {
+      const raw = addressRecord?.[key];
+      return typeof raw === 'string' && raw.trim().length > 0;
+    })
+      ? {
+          street: toTrimmedString(addressRecord.street) ?? undefined,
+          city: toTrimmedString(addressRecord.city) ?? undefined,
+          state: toTrimmedString(addressRecord.state) ?? undefined,
+          postalCode: toTrimmedString(addressRecord.postalCode) ?? undefined,
+          reference: toTrimmedString(addressRecord.reference) ?? undefined,
+        }
+      : null;
+  const contactPhone =
+    toTrimmedString(record.contactPhone) ?? toTrimmedString(record.contact_phone);
+  const isWhatsapp =
+    typeof record.isWhatsapp === 'boolean'
+      ? (record.isWhatsapp as boolean)
+      : typeof record.whatsapp === 'boolean'
+        ? (record.whatsapp as boolean)
+        : null;
+  const addressId =
+    toTrimmedString(record.addressId) ?? toTrimmedString(record.address_id) ?? null;
+  const deliveryTipRecord = coerceRecord(record.deliveryTip) ?? coerceRecord(record.delivery_tip);
+  const deliveryTipAmount =
+    coerceNumber(deliveryTipRecord?.amount) ??
+    coerceNumber(deliveryTipRecord?.a) ??
+    null;
+  const deliveryTipPercent =
+    coerceNumber(deliveryTipRecord?.percent) ??
+    coerceNumber(deliveryTipRecord?.p) ??
+    null;
+  return {
+    address: normalizedAddress,
+    addressId,
+    contactPhone,
+    isWhatsapp,
+    deliveryTip:
+      deliveryTipAmount !== null || deliveryTipPercent !== null
+        ? { amount: deliveryTipAmount, percent: deliveryTipPercent }
+        : null,
+  };
+};
+
 type ProductRecord = {
   id?: string | null;
   name?: string | null;
@@ -336,6 +389,18 @@ type EnrichedOrderRecord = Record<string, unknown> & {
   paymentMethod?: string | null;
 };
 
+type ShippingAddressDetails = {
+  address?: {
+    street?: string | null;
+    city?: string | null;
+    state?: string | null;
+    postalCode?: string | null;
+    reference?: string | null;
+  } | null;
+  contactPhone?: string | null;
+  isWhatsapp?: boolean | null;
+};
+
 type OrdersDataLoader = {
   loadProducts: (productIds: Set<string>) => Promise<Map<string, ProductRecord>>;
   loadTicketsAndCodes: (
@@ -346,6 +411,7 @@ type OrdersDataLoader = {
     qrMap: Map<string, unknown>;
   }>;
   loadCashSales?: (orderIds: string[]) => Promise<Map<string, CashSaleRecord>>;
+  loadAddresses?: (addressIds: string[]) => Promise<Map<string, ShippingAddressDetails>>;
 };
 
 const collectProductIds = (rawItems: unknown, target: Set<string>) => {
@@ -846,6 +912,117 @@ const mapOrdersPayload = async (
     return enriched;
   }
 
+  const addressIdsToHydrate = new Set<string>();
+  enriched.forEach((order) => {
+    const shipping = (order.shipping ?? null) as Record<string, unknown> | null;
+    if (!shipping) {
+      return;
+    }
+    const rawAddressId = shipping['addressId'];
+    const legacyAddressId = shipping['address_id'];
+    const addressId =
+      toTrimmedString(
+        typeof rawAddressId === 'string'
+          ? rawAddressId
+          : typeof legacyAddressId === 'string'
+            ? legacyAddressId
+            : null
+      ) ?? null;
+    if (!addressId) {
+      return;
+    }
+    const addressObject = isPlainObject(shipping.address) ? (shipping.address as Record<string, unknown>) : null;
+    const hasAddressDetails =
+      addressObject &&
+      ['street', 'city', 'state', 'postalCode', 'reference'].some((key) => {
+        const value = addressObject?.[key];
+        return typeof value === 'string' && value.trim().length > 0;
+      });
+    if (!hasAddressDetails) {
+      addressIdsToHydrate.add(addressId);
+    }
+  });
+
+  if (addressIdsToHydrate.size && loader.loadAddresses) {
+    try {
+      const addressMap = await loader.loadAddresses(Array.from(addressIdsToHydrate));
+      if (addressMap.size) {
+        enriched = enriched.map((order) => {
+          const shipping = (order.shipping ?? null) as Record<string, unknown> | null;
+          if (!shipping) {
+            return order;
+          }
+          const rawAddressId = shipping['addressId'];
+          const legacyAddressId = shipping['address_id'];
+          const addressId =
+            toTrimmedString(
+              typeof rawAddressId === 'string'
+                ? rawAddressId
+                : typeof legacyAddressId === 'string'
+                  ? legacyAddressId
+                  : null
+            ) ?? null;
+          if (!addressId) {
+            return order;
+          }
+          const lookup = addressMap.get(addressId);
+          if (!lookup) {
+            return order;
+          }
+          const shippingAddressValue = shipping['address'];
+          const addressObject = isPlainObject(shippingAddressValue)
+            ? (shippingAddressValue as Record<string, unknown>)
+            : null;
+          const fallbackAddress = lookup.address ?? null;
+          const normalizedAddress =
+            addressObject || fallbackAddress
+              ? {
+                  street:
+                    toTrimmedString(addressObject?.street) ?? toTrimmedString(fallbackAddress?.street),
+                  city: toTrimmedString(addressObject?.city) ?? toTrimmedString(fallbackAddress?.city),
+                  state: toTrimmedString(addressObject?.state) ?? toTrimmedString(fallbackAddress?.state),
+                  postalCode:
+                    toTrimmedString(addressObject?.postalCode) ??
+                    toTrimmedString(fallbackAddress?.postalCode),
+                  reference:
+                    toTrimmedString(addressObject?.reference) ??
+                    toTrimmedString(fallbackAddress?.reference),
+                }
+              : undefined;
+          const contactPhoneValue =
+            typeof shipping['contactPhone'] === 'string'
+              ? shipping['contactPhone']
+              : typeof shipping['contact_phone'] === 'string'
+                ? shipping['contact_phone']
+                : null;
+          const mergedShipping = {
+            ...shipping,
+            address: normalizedAddress,
+            contactPhone:
+              toTrimmedString(contactPhoneValue) ??
+              lookup.contactPhone ??
+              null,
+            isWhatsapp:
+              typeof shipping['isWhatsapp'] === 'boolean'
+                ? (shipping['isWhatsapp'] as boolean)
+                : typeof lookup.isWhatsapp === 'boolean'
+                  ? lookup.isWhatsapp
+                  : typeof shipping['whatsapp'] === 'boolean'
+                    ? (shipping['whatsapp'] as boolean)
+                    : null,
+            addressId,
+          };
+          return {
+            ...order,
+            shipping: mergedShipping,
+          };
+        });
+      }
+    } catch (error) {
+      console.warn('No pudimos hidratar direcciones de envío:', error);
+    }
+  }
+
   const orderIds = enriched
     .map((order) => order.id)
     .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
@@ -1078,6 +1255,44 @@ const sqliteOrdersLoader: OrdersDataLoader = {
     };
   },
   loadCashSales: async () => new Map<string, CashSaleRecord>(),
+  loadAddresses: async (addressIds) => {
+    const map = new Map<string, ShippingAddressDetails>();
+    if (!addressIds.length) {
+      return map;
+    }
+    const { placeholders, bindings } = buildSqliteInClause(addressIds, 'addr');
+    const rows = await sqlite.all<{
+      id?: string | null;
+      street?: string | null;
+      city?: string | null;
+      state?: string | null;
+      postalCode?: string | null;
+      country?: string | null;
+      reference?: string | null;
+    }>(
+      `SELECT id, street, city, state, postalCode, country, reference
+       FROM addresses
+       WHERE id IN (${placeholders.join(',')})`,
+      bindings
+    );
+    rows.forEach((row) => {
+      if (!row?.id) {
+        return;
+      }
+      map.set(row.id, {
+        address: {
+          street: row.street ?? null,
+          city: row.city ?? null,
+          state: row.state ?? null,
+          postalCode: row.postalCode ?? null,
+          reference: row.reference ?? null,
+        },
+        contactPhone: null,
+        isWhatsapp: null,
+      });
+    });
+    return map;
+  },
 };
 
 const supabaseOrdersLoader: OrdersDataLoader = {
@@ -1153,6 +1368,88 @@ const supabaseOrdersLoader: OrdersDataLoader = {
           cambio_entregado: row.cambio_entregado,
         });
       }
+    });
+    return map;
+  },
+  loadAddresses: async (addressIds) => {
+    const map = new Map<string, ShippingAddressDetails>();
+    if (!addressIds.length) {
+      return map;
+    }
+    type AddressRowResponse = {
+      id: string;
+      userId?: string | null;
+      label?: string | null;
+      nickname?: string | null;
+      type?: string | null;
+      payload?: string | null;
+      payload_iv?: string | null;
+      payload_tag?: string | null;
+      payload_salt?: string | null;
+      street?: string | null;
+      city?: string | null;
+      state?: string | null;
+      postalCode?: string | null;
+      country?: string | null;
+      reference?: string | null;
+      isDefault?: boolean | null;
+      user?:
+        | { id?: string | null; email?: string | null }
+        | { id?: string | null; email?: string | null }[]
+        | null;
+    };
+    const { data, error } = await supabaseAdmin
+      .from(ADDRESSES_TABLE)
+      .select(
+        'id,"userId",label,nickname,type,payload,payload_iv,payload_tag,payload_salt,street,city,state,"postalCode",country,reference,"isDefault",user:users(id,email)'
+      )
+      .in('id', addressIds)
+      .returns<AddressRowResponse[] | null>();
+    if (error) {
+      console.error('No pudimos recuperar direcciones de envío:', error);
+      return map;
+    }
+    (data ?? []).forEach((row) => {
+      if (!row?.id) {
+        return;
+      }
+      const userRecord = Array.isArray(row?.user) ? row.user[0] : row?.user ?? null;
+      const email = typeof userRecord?.email === 'string' ? userRecord.email : null;
+      const normalized = decryptAddressRow(
+        {
+          id: row.id,
+          userId: row.userId ?? (typeof userRecord?.id === 'string' ? userRecord.id : null),
+          label: row.label,
+          nickname: row.nickname,
+          type: row.type,
+          payload: row.payload,
+          payload_iv: row.payload_iv,
+          payload_tag: row.payload_tag,
+          payload_salt: row.payload_salt,
+          street: row.street,
+          city: row.city,
+          state: row.state,
+          postalCode: row.postalCode,
+          country: row.country,
+          reference: row.reference,
+          isDefault: row.isDefault,
+        },
+        email
+      );
+      if (!normalized) {
+        return;
+      }
+      map.set(row.id, {
+        address: {
+          street: normalized.street ?? null,
+          city: normalized.city ?? null,
+          state: normalized.state ?? null,
+          postalCode: normalized.postalCode ?? null,
+          reference: normalized.reference ?? null,
+        },
+        contactPhone: normalized.contactPhone ?? null,
+        isWhatsapp: normalized.isWhatsapp ?? null,
+      });
     });
     return map;
   },
@@ -1551,6 +1848,7 @@ export async function POST(request: Request) {
       payload.metadata && typeof payload.metadata === 'object'
         ? { ...(payload.metadata as Record<string, unknown>) }
         : null;
+    let shippingSnapshot: Record<string, unknown> | null = null;
 
     const paymentMetadata =
       metadataPayload?.payment && typeof metadataPayload.payment === 'object'
@@ -1595,10 +1893,59 @@ export async function POST(request: Request) {
       }
     }
 
+    const incomingShipping = normalizeShippingPayload(payload.shipping);
+    if (incomingShipping) {
+      shippingSnapshot = {};
+      if (incomingShipping.address) {
+        shippingSnapshot.address = incomingShipping.address;
+      }
+      if (incomingShipping.addressId) {
+        shippingSnapshot.addressId = incomingShipping.addressId;
+        orderRecord.shipping_address_id = incomingShipping.addressId;
+      }
+      if (incomingShipping.contactPhone) {
+        shippingSnapshot.contactPhone = incomingShipping.contactPhone;
+        orderRecord.shipping_contact_phone = incomingShipping.contactPhone;
+      }
+      if (typeof incomingShipping.isWhatsapp === 'boolean') {
+        shippingSnapshot.isWhatsapp = incomingShipping.isWhatsapp;
+        orderRecord.shipping_contact_is_whatsapp = incomingShipping.isWhatsapp;
+      }
+      if (incomingShipping.deliveryTip) {
+        shippingSnapshot.deliveryTip = incomingShipping.deliveryTip;
+      }
+      if (!metadataPayload) {
+        metadataPayload = {};
+      }
+      metadataPayload.shipping = shippingSnapshot;
+      if (incomingShipping.deliveryTip) {
+        metadataPayload.deliveryTip = incomingShipping.deliveryTip;
+        metadataPayload.deliveryTipAmount = incomingShipping.deliveryTip.amount;
+        metadataPayload.deliveryTipPercent = incomingShipping.deliveryTip.percent;
+      }
+      const normalizedDeliveryTipAmount =
+        normalizeNumber(incomingShipping.deliveryTip?.amount) ?? null;
+      const normalizedDeliveryTipPercent =
+        normalizeNumber(incomingShipping.deliveryTip?.percent) ?? null;
+      if (normalizedDeliveryTipAmount !== null) {
+        orderRecord.deliveryTipAmount = normalizedDeliveryTipAmount;
+      }
+      if (normalizedDeliveryTipPercent !== null) {
+        orderRecord.deliveryTipPercent = normalizedDeliveryTipPercent;
+      }
+    }
+
     if (metadataPayload) {
       orderRecord.metadata = metadataPayload;
     } else if (typeof payload.metadata === 'string' && payload.metadata.trim()) {
       orderRecord.metadata = payload.metadata.trim();
+    }
+
+    if (shippingSnapshot) {
+      orderRecord.items = {
+        list: orderItemsSnapshot,
+        shipping: shippingSnapshot,
+      };
     }
 
     if (noteValue) {

@@ -855,12 +855,22 @@ export async function enqueueOrder(
     staffName?: string | null;
     paymentMethod?: string | null;
     paymentReference?: string | null;
+    cashTendered?: number | null;
+    cashChange?: number | null;
   }
 ): Promise<void> {
   const staffId = params?.staffId?.trim() ? params.staffId.trim() : null;
   const staffName = params?.staffName?.trim() ? params.staffName.trim() : null;
   const paymentMethod = params?.paymentMethod?.trim() ? params.paymentMethod.trim() : null;
   const paymentReference = params?.paymentReference?.trim() ? params.paymentReference.trim() : null;
+  const cashTendered =
+    typeof params?.cashTendered === 'number' && Number.isFinite(params.cashTendered)
+      ? params.cashTendered
+      : null;
+  const cashChange =
+    typeof params?.cashChange === 'number' && Number.isFinite(params.cashChange)
+      ? params.cashChange
+      : null;
   const url = buildApiUrl(`/api/orders/${orderId}/queue`, staffId ? { staffId } : undefined);
   const headers: Record<string, string> = {};
   if (staffId) {
@@ -876,17 +886,35 @@ export async function enqueueOrder(
   if (paymentReference) {
     headers['X-XOCO-Payment-Reference'] = paymentReference;
   }
+  const payload: Record<string, unknown> = {};
+  if (staffId) {
+    payload.staffId = staffId;
+  }
+  if (paymentReference) {
+    payload.paymentReference = paymentReference;
+  }
+  if (paymentMethod) {
+    payload.paymentMethod = paymentMethod;
+  }
+  if (staffName) {
+    payload.staffName = staffName;
+  }
+  if (cashTendered !== null) {
+    payload.cashTendered = cashTendered;
+  }
+  if (cashChange !== null) {
+    payload.cashChange = cashChange;
+  }
 
+  const finalHeaders = { ...headers };
+  if (Object.keys(payload).length) {
+    finalHeaders['Content-Type'] = 'application/json';
+  }
   const response = await fetch(url, {
     method: 'POST',
     keepalive: true,
-    headers: Object.keys(headers).length ? headers : undefined,
-    body: staffId
-      ? JSON.stringify({
-          staffId,
-          paymentReference: paymentReference ?? undefined,
-        })
-      : undefined,
+    headers: Object.keys(finalHeaders).length ? finalHeaders : undefined,
+    body: Object.keys(payload).length ? JSON.stringify(payload) : undefined,
   });
 
   if (!response.ok) {

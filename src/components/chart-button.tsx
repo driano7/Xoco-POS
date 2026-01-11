@@ -46,7 +46,7 @@ export const ChartButton = ({
         } catch (err) {
             console.error('Error downloading chart image', err);
         }
-    }, [title]);
+    }, [resolvedTheme, title]);
 
     if (!data || data.length === 0) return null;
 

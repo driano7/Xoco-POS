@@ -30,6 +30,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
+import type { ManualStockStatus } from '@/lib/api';
 import type { MenuItem } from '@/hooks/use-menu-options';
 
 const normalize = (text: string) =>
@@ -248,6 +249,13 @@ export function SearchableDropdown({
               {formatCurrency(selectedOption.price)}
             </span>
           )}
+          {selectedOption?.stockStatus && selectedOption.stockStatus !== 'normal' && (
+            <span
+              className={`text-[10px] font-semibold ${STATUS_LABELS[selectedOption.stockStatus].className}`}
+            >
+              {STATUS_LABELS[selectedOption.stockStatus].label}
+            </span>
+          )}
         </span>
         <svg
           className={`h-4 w-4 transition ${isOpen ? 'rotate-180' : ''}`}
@@ -297,6 +305,9 @@ export function SearchableDropdown({
                 filteredOptions.map((option, index) => {
                   const isActive = index === activeIndex;
                   const isSelected = option.id === value;
+                  const optionStatus = option.stockStatus ?? 'normal';
+                  const statusMeta = STATUS_LABELS[optionStatus];
+                  const isOutOfStock = optionStatus === 'out';
                   return (
                     <button
                       type="button"
@@ -305,15 +316,20 @@ export function SearchableDropdown({
                       data-index={index}
                       aria-selected={isSelected}
                       key={option.id}
-                        onClick={() => handleOptionClick(option.id)}
+                      onClick={() => handleOptionClick(option.id)}
+                      disabled={isOutOfStock}
                       className={`flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left transition focus:outline-none ${
                         isActive
                           ? 'border-primary-400 bg-primary-50 text-primary-700'
                           : 'border-transparent hover:border-primary-200 hover:bg-primary-50/80'
-                      } ${isSelected ? 'font-semibold' : ''}`}
+                      } ${isSelected ? 'font-semibold' : ''} ${
+                        isOutOfStock ? 'cursor-not-allowed opacity-60' : ''
+                      }`}
                     >
                       <div>
-                        <p className="font-semibold text-primary-700 dark:text-primary-100">{option.label}</p>
+                        <p className="font-semibold text-primary-700 dark:text-primary-100">
+                          {option.label}
+                        </p>
                         <p className="text-xs text-[var(--brand-muted)]">
                           {option.sizeLabel ? `${option.sizeLabel} · ` : ''}
                           {typeof option.price === 'number'
@@ -331,6 +347,11 @@ export function SearchableDropdown({
                             {option.subcategory}
                           </p>
                         )}
+                        {optionStatus !== 'normal' && (
+                          <p className={`text-[10px] font-semibold ${statusMeta.className}`}>
+                            {statusMeta.label}
+                          </p>
+                        )}
                       </div>
                     </button>
                   );
@@ -343,3 +364,8 @@ export function SearchableDropdown({
     </div>
   );
 }
+const STATUS_LABELS: Record<ManualStockStatus, { label: string; className: string }> = {
+  normal: { label: 'Disponible', className: 'text-emerald-600' },
+  low: { label: 'Stock bajo', className: 'text-amber-600' },
+  out: { label: 'Agotado', className: 'text-danger-600' },
+};

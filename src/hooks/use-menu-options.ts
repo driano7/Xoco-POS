@@ -30,7 +30,7 @@
 
 import { useMemo, useCallback } from 'react';
 import { useCatalog } from '@/hooks/use-catalog';
-import type { CatalogProduct } from '@/lib/api';
+import type { CatalogProduct, ManualStockStatus } from '@/lib/api';
 import { FALLBACK_BEVERAGES } from '@/data/fallback-beverages';
 
 export interface MenuItem {
@@ -43,6 +43,7 @@ export interface MenuItem {
   calories?: number | null;
   sizeId?: string | null;
   sizeLabel?: string | null;
+  stockStatus?: ManualStockStatus;
 }
 
 const randomPackagePrice = () => {

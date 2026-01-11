@@ -28,7 +28,7 @@
 
 'use client';
 
-import { useState, useEffect, useMemo, useCallback, type FormEvent } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, type FormEvent } from 'react';
 import { SearchableDropdown } from '@/components/searchable-dropdown';
 import {
   useMenuOptions,
@@ -38,7 +38,7 @@ import {
   getFallbackVariantsForProduct,
 } from '@/hooks/use-menu-options';
 import { useCartStore, type CartItem } from '@/hooks/use-cart-store';
-import type { LoyaltyCustomer } from '@/lib/api';
+import type { LoyaltyCustomer, ManualStockStatus } from '@/lib/api';
 import {
   LOYALTY_STAMPS_TARGET,
   PUBLIC_SALE_CLIENT_ID,
@@ -50,6 +50,7 @@ const formatCurrency = (value?: number | null) =>
   new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(value ?? 0);
 
 const TIP_PRESETS = [5, 10, 15, 20];
+const DELIVERY_TIP_PRESETS = [5, 10, 15];
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const DIGITS = '0123456789';
 const PUBLIC_SALE_CLIENT_ID_LOWER = PUBLIC_SALE_CLIENT_ID.toLowerCase();
@@ -176,6 +177,21 @@ type ValidatedCustomer = {
   email: string | null;
   firstName: string | null;
   lastName: string | null;
+  phone?: string | null;
+};
+
+type CustomerAddress = {
+  id: string;
+  label: string;
+  street: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string;
+  reference?: string | null;
+  contactPhone?: string | null;
+  isWhatsapp?: boolean | null;
+  isDefault?: boolean | null;
 };
 
 interface NewOrderModalProps {
@@ -184,6 +200,7 @@ interface NewOrderModalProps {
   prefillClientId?: string | null;
   onWalletScanRequest?: (onCapture: (value: string) => void) => void;
   resolveLoyaltyCustomer?: (identifier: string) => LoyaltyCustomer | null;
+  productStockStatus?: Record<string, ManualStockStatus>;
 }
 
 export function NewOrderModal({
@@ -192,6 +209,7 @@ export function NewOrderModal({
   prefillClientId,
   onWalletScanRequest,
   resolveLoyaltyCustomer,
+  productStockStatus = {},
 }: NewOrderModalProps) {
   const {
     items,
@@ -234,6 +252,23 @@ export function NewOrderModal({
   const [cashTenderedInput, setCashTenderedInput] = useState('');
   const [loyaltyMatch, setLoyaltyMatch] = useState<LoyaltyCustomer | null>(null);
   const [loyaltyBaseCoffees, setLoyaltyBaseCoffees] = useState<number | null>(null);
+  const [shippingEnabled, setShippingEnabled] = useState(false);
+  const [shippingForm, setShippingForm] = useState({
+    street: '',
+    city: '',
+    state: '',
+    postalCode: '',
+    country: 'México',
+    reference: '',
+  });
+  const [shippingContactPhone, setShippingContactPhone] = useState('');
+  const [shippingIsWhatsapp, setShippingIsWhatsapp] = useState(true);
+  const [deliveryTipPercent, setDeliveryTipPercent] = useState<number | null>(null);
+  const [savedAddresses, setSavedAddresses] = useState<CustomerAddress[]>([]);
+  const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null);
+  const [addressesLoading, setAddressesLoading] = useState(false);
+  const [shippingMessage, setShippingMessage] = useState<string | null>(null);
+  const hasPrefilledAddress = useRef(false);
   const [availableBeverageSizes, setAvailableBeverageSizes] = useState<MenuItem[]>([]);
   const [selectedBeverageSize, setSelectedBeverageSize] = useState<string | null>(null);
   const beverageOptionIds = useMemo(
@@ -244,6 +279,15 @@ export function NewOrderModal({
   const packageOptionIds = useMemo(
     () => new Set(packageOptions.map((item) => item.id)),
     [packageOptions]
+  );
+  const getProductStatus = useCallback(
+    (productId?: string | null) => {
+      if (!productId) {
+        return 'normal';
+      }
+      return productStockStatus[productId] ?? 'normal';
+    },
+    [productStockStatus]
   );
   const resolveItemKind = useCallback(
     (menuItemId?: string | null): CartItem['kind'] => {
@@ -316,6 +360,138 @@ export function NewOrderModal({
   }, [normalizedClientIdLower, resolveLoyaltyCustomer, isPublicSaleContext]);
 
   useEffect(() => {
+    if (!validatedCustomer) {
+      setSavedAddresses([]);
+      setSelectedAddressId(null);
+      setShippingContactPhone('');
+      hasPrefilledAddress.current = false;
+      return;
+    }
+    if (validatedCustomer.phone) {
+      setShippingContactPhone(validatedCustomer.phone);
+    }
+    hasPrefilledAddress.current = false;
+  }, [validatedCustomer]);
+
+  useEffect(() => {
+    if (!validatedCustomer?.id) {
+      setSavedAddresses([]);
+      setSelectedAddressId(null);
+      setAddressesLoading(false);
+      return;
+    }
+    hasPrefilledAddress.current = false;
+    let cancelled = false;
+    const loadAddresses = async () => {
+      setAddressesLoading(true);
+      setShippingMessage(null);
+      try {
+        const response = await fetch(
+          `/api/customers/addresses?userId=${encodeURIComponent(validatedCustomer.id!)}`,
+          { cache: 'no-store' }
+        );
+        const payload = (await response.json()) as {
+          success: boolean;
+          error?: string;
+          data?: CustomerAddress[];
+        };
+        if (!response.ok || !payload.success) {
+          throw new Error(payload.error || 'No pudimos cargar las direcciones.');
+        }
+        if (cancelled) {
+          return;
+        }
+        const normalized = (payload.data ?? []).map((entry) => ({
+          ...entry,
+          street: entry.street ?? '',
+          city: entry.city ?? '',
+          state: entry.state ?? '',
+          postalCode: entry.postalCode ?? '',
+          country: entry.country ?? 'México',
+          reference: entry.reference ?? '',
+        }));
+        setSavedAddresses(normalized);
+        setShippingMessage(
+          normalized.length === 0 ? 'El cliente no tiene direcciones guardadas.' : null
+        );
+      } catch (error) {
+        if (!cancelled) {
+          setSavedAddresses([]);
+          setShippingMessage(
+            error instanceof Error
+              ? error.message
+              : 'No pudimos cargar las direcciones guardadas.'
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setAddressesLoading(false);
+        }
+      }
+    };
+    void loadAddresses();
+    return () => {
+      cancelled = true;
+    };
+  }, [validatedCustomer?.id]);
+
+  useEffect(() => {
+    if (!savedAddresses.length || hasPrefilledAddress.current) {
+      return;
+    }
+    const preferred =
+      savedAddresses.find((address) => address.isDefault) ?? savedAddresses[0] ?? null;
+    if (preferred) {
+      setSelectedAddressId(preferred.id);
+      setShippingForm({
+        street: preferred.street ?? '',
+        city: preferred.city ?? '',
+        state: preferred.state ?? '',
+        postalCode: preferred.postalCode ?? '',
+        country: preferred.country ?? 'México',
+        reference: preferred.reference ?? '',
+      });
+      if (preferred.contactPhone) {
+        setShippingContactPhone(preferred.contactPhone);
+      }
+      if (typeof preferred.isWhatsapp === 'boolean') {
+        setShippingIsWhatsapp(preferred.isWhatsapp);
+      }
+      hasPrefilledAddress.current = true;
+    }
+  }, [savedAddresses]);
+
+  useEffect(() => {
+    if (!selectedAddressId) {
+      return;
+    }
+    const active = savedAddresses.find((entry) => entry.id === selectedAddressId);
+    if (!active) {
+      return;
+    }
+    setShippingForm({
+      street: active.street ?? '',
+      city: active.city ?? '',
+      state: active.state ?? '',
+      postalCode: active.postalCode ?? '',
+      country: active.country ?? 'México',
+      reference: active.reference ?? '',
+    });
+    if (active.contactPhone) {
+      setShippingContactPhone(active.contactPhone);
+    }
+    if (typeof active.isWhatsapp === 'boolean') {
+      setShippingIsWhatsapp(active.isWhatsapp);
+    }
+  }, [selectedAddressId, savedAddresses]);
+
+  useEffect(() => {
+    if (isPublicSaleContext) {
+      setShippingEnabled(false);
+    }
+  }, [isPublicSaleContext]);
+
+  useEffect(() => {
     if (paymentMethod === 'efectivo') {
       setPaymentReference('');
     }
@@ -375,6 +551,11 @@ export function NewOrderModal({
       setFormError('No encontramos ese producto en el menú.');
       return;
     }
+    const status = getProductStatus(menuItem.productId ?? menuItem.id);
+    if (status === 'out') {
+      setFormError('Este producto está marcado como agotado en el POS.');
+      return;
+    }
     addMenuItemToCart(menuItem);
   };
 
@@ -419,8 +600,9 @@ export function NewOrderModal({
       label: entry.label,
       sizeId: null,
       sizeLabel: null,
+      stockStatus: getProductStatus(productId),
     }));
-  }, [beverageOptions]);
+  }, [beverageOptions, getProductStatus]);
 
   const handleBeverageSelection = (productId: string | null) => {
     setSelectedBeverage(productId);
@@ -480,7 +662,12 @@ export function NewOrderModal({
       setAvailableBeverageSizes([]);
       return;
     }
-    setAvailableBeverageSizes(normalizedVariants);
+    setAvailableBeverageSizes(
+      normalizedVariants.map((variant) => ({
+        ...variant,
+        stockStatus: getProductStatus(variant.productId ?? variant.id),
+      }))
+    );
   };
 
   const handleBeverageSizeSelection = (variantId: string | null) => {
@@ -501,8 +688,25 @@ export function NewOrderModal({
       availableBeverageSizes.map((variant) => ({
         ...variant,
         label: variant.sizeLabel ?? variant.label,
+        stockStatus: variant.stockStatus ?? getProductStatus(variant.productId ?? variant.id),
       })),
-    [availableBeverageSizes]
+    [availableBeverageSizes, getProductStatus]
+  );
+  const foodOptionsWithStatus = useMemo(
+    () =>
+      foodOptions.map((option) => ({
+        ...option,
+        stockStatus: getProductStatus(option.productId ?? option.id),
+      })),
+    [foodOptions, getProductStatus]
+  );
+  const packageOptionsWithStatus = useMemo(
+    () =>
+      packageOptions.map((option) => ({
+        ...option,
+        stockStatus: getProductStatus(option.productId ?? option.id),
+      })),
+    [getProductStatus, packageOptions]
   );
 
   const tipComputation = useMemo(() => {
@@ -536,7 +740,14 @@ export function NewOrderModal({
   ]);
   const { tipAmount, appliedPercent } = tipComputation;
 
-  const totalWithTip = subtotal + tipAmount;
+  const deliveryTipAmount = useMemo(() => {
+    if (!shippingEnabled || typeof deliveryTipPercent !== 'number' || deliveryTipPercent <= 0) {
+      return 0;
+    }
+    return subtotal * (deliveryTipPercent / 100);
+  }, [deliveryTipPercent, shippingEnabled, subtotal]);
+
+  const totalWithTip = subtotal + tipAmount + deliveryTipAmount;
   const isCashPayment = paymentMethod === 'efectivo';
   const parsedCashTendered = useMemo(
     () => parsePositiveNumber(cashTenderedInput),
@@ -617,6 +828,21 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
     setLoyaltyMatch(null);
     setLoyaltyBaseCoffees(null);
     setCashTenderedInput('');
+    setShippingEnabled(false);
+    setShippingForm({
+      street: '',
+      city: '',
+      state: '',
+      postalCode: '',
+      country: 'México',
+      reference: '',
+    });
+    setShippingContactPhone('');
+    setShippingIsWhatsapp(true);
+    setDeliveryTipPercent(null);
+    setSavedAddresses([]);
+    setSelectedAddressId(null);
+    setShippingMessage(null);
   };
 
   const handleClientLookup = async () => {
@@ -644,6 +870,12 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
       setValidatedCustomer(result.data);
       setValidatedIdentifier(trimmed.toLowerCase());
       setClientLookupState('success');
+      setShippingContactPhone(result.data.phone ?? '');
+      setShippingEnabled(false);
+      setDeliveryTipPercent(null);
+      setSavedAddresses([]);
+      setSelectedAddressId(null);
+      setShippingMessage(null);
     } catch (error) {
       setValidatedCustomer(null);
       setValidatedIdentifier(null);
@@ -714,6 +946,18 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
       }
     }
 
+    if (shippingEnabled) {
+      if (
+        shippingForm.street.trim().length < 4 ||
+        shippingForm.city.trim().length < 2 ||
+        shippingForm.postalCode.trim().length < 4 ||
+        shippingContactPhone.trim().length < 10
+      ) {
+        setFormError('Completa la dirección y el teléfono de envío antes de continuar.');
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     setFormError(null);
 
@@ -740,6 +984,30 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
     if (Object.keys(paymentMetadata).length > 0) {
       metadataPayload.payment = paymentMetadata;
     }
+    const shippingPayload =
+      shippingEnabled
+        ? {
+            address: {
+              street: shippingForm.street.trim(),
+              city: shippingForm.city.trim(),
+              state: shippingForm.state.trim() || undefined,
+              postalCode: shippingForm.postalCode.trim(),
+              country: shippingForm.country.trim() || 'México',
+              reference: shippingForm.reference.trim() || undefined,
+            },
+            addressId: selectedAddressId ?? undefined,
+            contactPhone: shippingContactPhone.trim(),
+            isWhatsapp: shippingIsWhatsapp,
+            deliveryTip:
+              deliveryTipAmount > 0
+                ? {
+                    amount: Math.round(deliveryTipAmount * 100) / 100,
+                    percent: deliveryTipPercent ?? null,
+                  }
+                : null,
+          }
+        : null;
+
     const trimmedNotes = notes.trim();
     const payload: Record<string, unknown> = {
       ticketCode,
@@ -777,12 +1045,17 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
         amount: tipAmount,
         percent: appliedPercent,
       },
+      shipping: shippingPayload ?? undefined,
+      deliveryTip: shippingPayload?.deliveryTip ?? undefined,
       userId: validatedCustomer?.id ?? fallbackUserId ?? undefined,
       clientId: trimmedClientId || undefined,
       paymentMethod,
     };
     if (trimmedNotes) {
       payload.notes = trimmedNotes;
+    }
+    if (shippingPayload) {
+      metadataPayload.shipping = shippingPayload;
     }
     if (Object.keys(metadataPayload).length > 0) {
       payload.metadata = metadataPayload;
@@ -863,7 +1136,7 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
         <SearchableDropdown
           id="new-order-food"
           label="Alimentos"
-          options={foodOptions}
+          options={foodOptionsWithStatus}
           placeholder="Busca snacks, postres o brunch"
           helperText="Agrega panadería, postres o brunch"
           value={selectedFood}
@@ -875,7 +1148,7 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
         <SearchableDropdown
           id="new-order-packages"
           label="Paquetes"
-          options={packageOptions}
+          options={packageOptionsWithStatus}
           placeholder="Combos, kits u ofertas del menú editorial"
           helperText="Basado en xococafe.netlify.app/uses"
           value={selectedPackage}
@@ -1073,11 +1346,199 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
             <span>Propina</span>
             <span className="font-semibold text-primary-600">{formatCurrency(tipAmount)}</span>
           </div>
+          {shippingEnabled && (
+            <div className="flex items-center justify-between">
+              <span>Propina de envío</span>
+              <span className="font-semibold text-emerald-700 dark:text-emerald-300">
+                {formatCurrency(deliveryTipAmount)}
+              </span>
+            </div>
+          )}
           <div className="flex items-center justify-between text-base font-semibold text-primary-700 dark:text-primary-100">
-            <span>Total con propina</span>
+            <span>Total con propinas</span>
             <span>{formatCurrency(totalWithTip)}</span>
           </div>
         </div>
+      </div>
+
+      <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-primary-700 dark:text-primary-100">Envío y entrega</p>
+            <p className="text-xs text-[var(--brand-muted)]">
+              Registra la dirección si el pedido requiere entrega a domicilio.
+            </p>
+          </div>
+          <label className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--brand-muted)]">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-primary-300 text-primary-600 focus:ring-primary-500"
+              checked={shippingEnabled}
+              onChange={(event) => setShippingEnabled(event.target.checked)}
+              disabled={isPublicSaleContext}
+            />
+            Requiere envío
+          </label>
+        </div>
+        {isPublicSaleContext && (
+          <p className="mt-2 text-xs text-[var(--brand-muted)]">
+            Las ventas al público general no solicitan dirección de envío.
+          </p>
+        )}
+        {shippingMessage && (
+          <p className="mt-2 text-xs text-[var(--brand-muted)]">{shippingMessage}</p>
+        )}
+        {shippingEnabled && (
+          <div className="mt-4 space-y-3">
+            {addressesLoading ? (
+              <p className="text-xs text-[var(--brand-muted)]">Buscando direcciones guardadas…</p>
+            ) : savedAddresses.length > 0 ? (
+              <label className="flex flex-col text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+                Dirección guardada
+                <select
+                  value={selectedAddressId ?? ''}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setSelectedAddressId(value || null);
+                  }}
+                  className="mt-1 rounded-xl border border-primary-100/70 bg-transparent px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/10 dark:text-white"
+                >
+                  <option value="">Capturar manualmente</option>
+                  {savedAddresses.map((address) => (
+                    <option key={address.id} value={address.id}>
+                      {address.label} · {address.street}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="flex flex-col text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+                Calle y número
+                <input
+                  value={shippingForm.street}
+                  onChange={(event) =>
+                    setShippingForm((prev) => ({ ...prev, street: event.target.value }))
+                  }
+                  className="mt-1 rounded-xl border border-primary-100/70 bg-transparent px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/10 dark:text-white"
+                  placeholder="Ej. Orizaba 39"
+                />
+              </label>
+              <label className="flex flex-col text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+                Código postal
+                <input
+                  value={shippingForm.postalCode}
+                  onChange={(event) =>
+                    setShippingForm((prev) => ({ ...prev, postalCode: event.target.value }))
+                  }
+                  className="mt-1 rounded-xl border border-primary-100/70 bg-transparent px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/10 dark:text-white"
+                  placeholder="01000"
+                />
+              </label>
+              <label className="flex flex-col text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+                Ciudad
+                <input
+                  value={shippingForm.city}
+                  onChange={(event) =>
+                    setShippingForm((prev) => ({ ...prev, city: event.target.value }))
+                  }
+                  className="mt-1 rounded-xl border border-primary-100/70 bg-transparent px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/10 dark:text-white"
+                  placeholder="Ciudad de México"
+                />
+              </label>
+              <label className="flex flex-col text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+                Estado
+                <input
+                  value={shippingForm.state}
+                  onChange={(event) =>
+                    setShippingForm((prev) => ({ ...prev, state: event.target.value }))
+                  }
+                  className="mt-1 rounded-xl border border-primary-100/70 bg-transparent px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/10 dark:text-white"
+                  placeholder="CDMX"
+                />
+              </label>
+              <label className="flex flex-col text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+                País
+                <input
+                  value={shippingForm.country}
+                  onChange={(event) =>
+                    setShippingForm((prev) => ({ ...prev, country: event.target.value }))
+                  }
+                  className="mt-1 rounded-xl border border-primary-100/70 bg-transparent px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/10 dark:text-white"
+                  placeholder="México"
+                />
+              </label>
+              <label className="flex flex-col text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)] md:col-span-2">
+                Referencias
+                <input
+                  value={shippingForm.reference}
+                  onChange={(event) =>
+                    setShippingForm((prev) => ({ ...prev, reference: event.target.value }))
+                  }
+                  className="mt-1 rounded-xl border border-primary-100/70 bg-transparent px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/10 dark:text-white"
+                  placeholder="Color de puerta, entrecalles, etc."
+                />
+              </label>
+            </div>
+            <div className="grid gap-3 md:grid-cols-[2fr,1fr]">
+              <label className="flex flex-col text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+                Teléfono de contacto
+                <input
+                  value={shippingContactPhone}
+                  onChange={(event) => setShippingContactPhone(event.target.value)}
+                  className="mt-1 rounded-xl border border-primary-100/70 bg-transparent px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/10 dark:text-white"
+                  placeholder="5511223344"
+                />
+              </label>
+              <label className="mt-4 inline-flex items-center gap-2 text-xs font-semibold text-[var(--brand-muted)]">
+                <input
+                  type="checkbox"
+                  checked={shippingIsWhatsapp}
+                  onChange={(event) => setShippingIsWhatsapp(event.target.checked)}
+                  className="h-4 w-4 rounded border-primary-300 text-primary-600 focus:ring-primary-500"
+                />
+                Usa WhatsApp
+              </label>
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-[var(--brand-muted)]">
+                Propina para entrega
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                {DELIVERY_TIP_PRESETS.map((percent) => {
+                  const isActive = deliveryTipPercent === percent;
+                  return (
+                    <button
+                      type="button"
+                      key={`delivery-tip-${percent}`}
+                      onClick={() => setDeliveryTipPercent(percent)}
+                      className={`rounded-2xl border px-3 py-1 font-semibold transition ${
+                        isActive
+                          ? 'border-emerald-500 bg-emerald-100 text-emerald-800'
+                          : 'border-primary-50 hover:border-primary-200'
+                      }`}
+                    >
+                      {percent}%
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => setDeliveryTipPercent(null)}
+                  className="rounded-2xl border border-primary-100 px-3 py-1 font-semibold text-[var(--brand-muted)] hover:border-primary-200"
+                >
+                  Sin propina
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-[var(--brand-muted)]">
+                Propina asignada:{' '}
+                <span className="font-semibold text-primary-700 dark:text-primary-100">
+                  {formatCurrency(deliveryTipAmount)}
+                </span>
+              </p>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
