@@ -1586,12 +1586,21 @@ const supabaseOrdersLoader: OrdersDataLoader = {
       userId?: string | null;
       label?: string | null;
       nickname?: string | null;
-      type?: string | null;
+    type?: string | null;
+      street?: string | null;
+      city?: string | null;
+      state?: string | null;
+      postalCode?: string | null;
+      country?: string | null;
+      reference?: string | null;
+      additionalInfo?: string | null;
       payload?: string | null;
       payload_iv?: string | null;
       payload_tag?: string | null;
       payload_salt?: string | null;
       isDefault?: boolean | null;
+      contactPhone?: string | null;
+      isWhatsapp?: boolean | null;
       createdAt?: string | null;
       updatedAt?: string | null;
       user?:
@@ -1602,7 +1611,7 @@ const supabaseOrdersLoader: OrdersDataLoader = {
     const { data, error } = await supabaseAdmin
       .from(ADDRESSES_TABLE)
       .select(
-        'id,"userId",label,nickname,type,"isDefault","createdAt","updatedAt",payload,payload_iv,payload_tag,payload_salt,user:users(id,email)'
+        'id,"userId",label,nickname,type,"isDefault","createdAt","updatedAt",street,city,state,"postalCode",country,reference,"additionalInfo",payload,payload_iv,payload_tag,payload_salt,contactPhone,"isWhatsapp",user:users(id,email)'
       )
       .in('id', addressIds)
       .returns<AddressRowResponse[] | null>();
@@ -1623,11 +1632,20 @@ const supabaseOrdersLoader: OrdersDataLoader = {
           label: row.label,
           nickname: row.nickname,
           type: row.type,
+          street: row.street,
+          city: row.city,
+          state: row.state,
+          postalCode: row.postalCode,
+          country: row.country,
+          reference: row.reference,
+          additionalInfo: row.additionalInfo,
           payload: row.payload,
           payload_iv: row.payload_iv,
           payload_tag: row.payload_tag,
           payload_salt: row.payload_salt,
           isDefault: row.isDefault,
+          contactPhone: row.contactPhone,
+          isWhatsapp: typeof row.isWhatsapp === 'boolean' ? row.isWhatsapp : null,
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
         },
@@ -1892,13 +1910,6 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
-
-    const preferSupabase = shouldPreferSupabase();
-
-    if (!preferSupabase) {
-      const localData = await loadOrdersFromSqlite(status);
-      return NextResponse.json({ success: true, data: localData });
-    }
 
     try {
       const remoteData = await loadOrdersFromSupabase(status);

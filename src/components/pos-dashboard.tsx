@@ -6477,7 +6477,7 @@ const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null })
   if (!shipping) {
     return null;
   }
-  const { address, deliveryTip, contactPhone, isWhatsapp, label, lines } = shipping;
+  const { address, deliveryTip, contactPhone, isWhatsapp, label, lines, addressId } = shipping;
   const hasAddress =
     Boolean(address?.street) ||
     Boolean(address?.city) ||
@@ -6495,30 +6495,27 @@ const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null })
     return null;
   }
 
-  const resolvedLines = (() => {
-    const normalizeLines = (value: unknown) => {
-      if (!Array.isArray(value)) {
-        return null;
-      }
-      const formatted = value
-        .map((line) => (typeof line === 'string' ? line.trim() : ''))
-        .filter((line) => Boolean(line));
-      return formatted.length ? formatted : null;
-    };
-    const explicitLines = normalizeLines(lines) ?? normalizeLines(address?.lines);
-    if (explicitLines) {
-      return explicitLines;
+  const normalizeLines = (value: unknown) => {
+    if (!Array.isArray(value)) {
+      return null;
     }
-    if (!hasAddress) {
-      return [];
-    }
-    const fallback = [address?.street, address?.city, address?.state]
-      .filter((value) => Boolean(value && value.trim()))
-      .join(', ');
-    const postal = address?.postalCode ? `CP ${address.postalCode}` : null;
-    const reference = address?.reference ?? null;
-    return [fallback, postal, reference].filter((value): value is string => Boolean(value && value.trim()));
-  })();
+    const formatted = value
+      .map((line) => (typeof line === 'string' ? line.trim() : ''))
+      .filter((line) => Boolean(line));
+    return formatted.length ? formatted : null;
+  };
+
+  const resolvedLines =
+    normalizeLines(lines) ??
+    normalizeLines(address?.lines) ??
+    (hasAddress
+      ? [
+          [address?.street, address?.city, address?.state]
+            .filter((value) => Boolean(value && value.trim()))
+            .join(', '),
+          address?.postalCode ? `CP ${address.postalCode}` : null,
+        ].filter((value): value is string => Boolean(value && value.trim()))
+      : []);
 
   const deliveryTipAmount =
     typeof deliveryTip?.amount === 'number' && Number.isFinite(deliveryTip.amount)
@@ -6530,44 +6527,45 @@ const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null })
       : null;
 
   return (
-    <div className="mb-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
-      <div className="mb-2 flex items-start gap-4">
-        <div className="rounded-full bg-primary-100 p-2 text-primary-600 dark:bg-primary-900/30 dark:text-primary-300">
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            className="h-5 w-5"
-          >
-            <path
-              fillRule="evenodd"
-              d="M11.54 22.351l.07.04.028.016a.76.76 0 00.723 0l.028-.015.071-.041a16.975 16.975 0 001.144-.742 19.58 19.58 0 002.683-2.282c1.944-1.99 3.963-4.98 3.963-8.827a8.25 8.25 0 00-16.5 0c0 3.846 2.02 6.837 3.963 8.827a19.58 19.58 0 002.682 2.282 16.975 16.975 0 001.145.742zM12 13.5a3 3 0 100-6 3 3 0 000 6z"
-              clipRule="evenodd"
-            />
-          </svg>
-        </div>
-        <div className="flex-1">
-          <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">Entrega a domicilio</p>
+    <div className="mb-4 rounded-3xl border border-primary-100/60 bg-gradient-to-br from-white to-primary-50/60 p-4 text-sm text-primary-900 shadow-sm dark:border-white/10 dark:from-white/5 dark:to-primary-900/20 dark:text-primary-100">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.35em] text-primary-600 dark:text-primary-200">
+            Entrega a domicilio
+          </p>
           {label && (
-            <p className="mt-1 text-sm font-semibold text-primary-900 dark:text-primary-50">
-              Alias: {label}
+            <p className="text-base font-semibold text-primary-900 dark:text-primary-50">{label}</p>
+          )}
+          {addressId && (
+            <p className="text-xs uppercase tracking-[0.3em] text-primary-500 dark:text-primary-200">
+              ID: {addressId}
             </p>
           )}
-          {resolvedLines.length > 0 ? (
-            <ul className="mt-1 space-y-0.5 text-sm text-primary-800 dark:text-primary-100">
-              {resolvedLines.map((line) => (
-                <li key={line}>{line}</li>
-              ))}
-            </ul>
-          ) : null}
-          {address?.reference && !resolvedLines.some((line) => line.includes(address.reference!)) && (
-            <p className="mt-1 text-xs text-[var(--brand-muted)]">Ref: {address.reference}</p>
-          )}
         </div>
+        <span className="rounded-full bg-primary-100 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.3em] text-primary-700 dark:bg-primary-900/40 dark:text-primary-200">
+          Delivery
+        </span>
+      </div>
+      <div className="mt-3 space-y-1 text-primary-900 dark:text-primary-50">
+        {resolvedLines.length ? (
+          resolvedLines.map((line) => (
+            <p className="text-sm" key={line}>
+              {line}
+            </p>
+          ))
+        ) : (
+          <p className="text-sm text-primary-800/80 dark:text-primary-100/70">Sin dirección registrada.</p>
+        )}
+        {address?.reference && (
+          <p className="text-sm font-semibold text-primary-900 dark:text-primary-50">
+            Referencia: <span className="font-normal">{address.reference}</span>
+          </p>
+        )}
       </div>
       {contactPhone && (
-        <p className="text-sm text-primary-900 dark:text-primary-50">
-          <span className="font-semibold">Contacto:</span> {contactPhone}
+        <p className="mt-3 text-sm font-semibold text-primary-900 dark:text-primary-50">
+          Contacto:{' '}
+          <span className="font-normal text-primary-800 dark:text-primary-100">{contactPhone}</span>
           {isWhatsapp && (
             <span className="ml-2 inline-flex items-center rounded-full bg-success-100 px-2 py-[2px] text-[10px] font-semibold uppercase tracking-[0.2em] text-success-700 dark:bg-success-900/30 dark:text-success-200">
               WhatsApp
@@ -6576,18 +6574,22 @@ const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null })
         </p>
       )}
       {hasDeliveryTip && (
-        <p className="mt-2 text-sm text-primary-900 dark:text-primary-50">
-          <span className="font-semibold">Propina de entrega:</span>{' '}
-          {deliveryTipAmount !== null ? formatCurrency(deliveryTipAmount) : '—'}
-          {deliveryTipPercent !== null && (
-            <span className="ml-2 text-xs font-semibold text-primary-700/80 dark:text-primary-200/80">
-              {deliveryTipPercent}% cliente
-            </span>
-          )}
-        </p>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-primary-100/70 bg-primary-50/60 px-3 py-2 text-sm font-semibold text-primary-800 dark:border-primary-600/40 dark:bg-primary-900/20 dark:text-primary-100">
+          <span className="text-xs uppercase tracking-[0.35em] text-primary-600 dark:text-primary-200">
+            Propina de entrega
+          </span>
+          <span>
+            {deliveryTipAmount !== null ? formatCurrency(deliveryTipAmount) : '—'}
+            {deliveryTipPercent !== null && (
+              <span className="ml-2 text-xs font-semibold text-primary-700/80 dark:text-primary-200/80">
+                {deliveryTipPercent}% cliente
+              </span>
+            )}
+          </span>
+        </div>
       )}
       {!contactPhone && !hasDeliveryTip && (
-        <p className="mt-2 text-xs text-[var(--brand-muted)]">Sin detalles adicionales de contacto.</p>
+        <p className="mt-2 text-xs text-[var(--brand-muted)]">Sin detalles adicionales de entrega.</p>
       )}
     </div>
   );
@@ -6735,6 +6737,45 @@ const OrderDetailContent = ({
           : null,
     };
   }, [shippingInfo]);
+  const shippingSummaryLines = useMemo(() => {
+    if (!normalizedShippingInfo) {
+      return [];
+    }
+    const explicitLines =
+      Array.isArray(normalizedShippingInfo.lines) && normalizedShippingInfo.lines.length
+        ? normalizedShippingInfo.lines
+        : Array.isArray(normalizedShippingInfo.address?.lines) &&
+            normalizedShippingInfo.address.lines.length
+          ? normalizedShippingInfo.address.lines
+          : null;
+    if (explicitLines) {
+      return explicitLines
+        .map((line) => (typeof line === 'string' ? line.trim() : ''))
+        .filter((line) => Boolean(line));
+    }
+    const fallbackPieces: string[] = [];
+    const composedLine = [
+      normalizedShippingInfo.address?.street,
+      normalizedShippingInfo.address?.city,
+      normalizedShippingInfo.address?.state,
+    ]
+      .filter((value) => Boolean(value && value.trim()))
+      .join(', ');
+    if (composedLine) {
+      fallbackPieces.push(composedLine);
+    }
+    if (normalizedShippingInfo.address?.postalCode) {
+      fallbackPieces.push(`CP ${normalizedShippingInfo.address.postalCode}`);
+    }
+    return fallbackPieces;
+  }, [normalizedShippingInfo]);
+  const shippingSummaryLabel = normalizedShippingInfo?.label ?? null;
+  const shippingSummaryReference = normalizedShippingInfo?.address?.reference ?? null;
+  const shippingSummaryContact = normalizedShippingInfo?.contactPhone ?? null;
+  const shippingSummaryIsWhatsapp =
+    typeof normalizedShippingInfo?.isWhatsapp === 'boolean'
+      ? normalizedShippingInfo.isWhatsapp
+      : false;
   const metadataPaymentMethod = toTrimmedString(paymentMetadataRecord?.method) ?? null;
   const metadataPaymentReference = toTrimmedString(paymentMetadataRecord?.reference) ?? null;
   const metadataPaymentReferenceType =
@@ -6789,8 +6830,18 @@ const OrderDetailContent = ({
     }
   }, [order.queuedPaymentReference, paymentReference, prefilledPaymentReference]);
 
+  const hasShippingData = useMemo(
+    () => Boolean(order.shipping ?? fallbackShipping ?? detailSnapshot?.shipping ?? null),
+    [detailSnapshot?.shipping, fallbackShipping, order.shipping]
+  );
+
+  const needsTicketHydration = useMemo(
+    () => items.length === 0 || !hasShippingData,
+    [hasShippingData, items.length]
+  );
+
   useEffect(() => {
-    if (items.length > 0) {
+    if (!needsTicketHydration) {
       return;
     }
     const identifier = order.ticketCode ?? order.orderNumber ?? order.id;
@@ -6807,12 +6858,10 @@ const OrderDetailContent = ({
           return;
         }
         const fallback = buildOrderFromTicketDetail(detail);
-        setDetailSnapshot(fallback);
+        setDetailSnapshot((previous) => previous ?? fallback);
         const resolvedItems = Array.isArray(fallback.items) ? fallback.items : [];
-        if (resolvedItems.length) {
-          setItems(resolvedItems);
-        } else {
-          setItems([]);
+        if (items.length === 0) {
+          setItems(resolvedItems.length ? resolvedItems : []);
         }
         setItemsError(null);
       } catch (error) {
@@ -6835,7 +6884,7 @@ const OrderDetailContent = ({
     return () => {
       cancelled = true;
     };
-  }, [items.length, order.id, order.orderNumber, order.ticketCode]);
+  }, [items.length, needsTicketHydration, order.id, order.orderNumber, order.ticketCode]);
 
   const resolvedTotalAmount =
     typeof detailSnapshot?.total === 'number'
@@ -7238,6 +7287,48 @@ const OrderDetailContent = ({
           label="Artículos"
           value={`${totalItems} ${totalItems === 1 ? 'artículo' : 'artículos'}`}
         />
+        {normalizedShippingInfo && (shippingSummaryLabel || shippingSummaryLines.length) && (
+          <DetailRow
+            label="Entrega a domicilio"
+            value={
+              <span className="flex flex-col items-end text-right text-sm text-primary-900 dark:text-primary-100">
+                {shippingSummaryLabel && (
+                  <span className="font-semibold">{shippingSummaryLabel}</span>
+                )}
+                {shippingSummaryLines.map((line) => (
+                  <span className="text-xs text-[var(--brand-muted)]" key={line}>
+                    {line}
+                  </span>
+                ))}
+              </span>
+            }
+          />
+        )}
+        {normalizedShippingInfo && shippingSummaryReference && (
+          <DetailRow
+            label="Referencia de entrega"
+            value={
+              <span className="text-sm font-semibold text-primary-900 dark:text-primary-100">
+                {shippingSummaryReference}
+              </span>
+            }
+          />
+        )}
+        {normalizedShippingInfo && shippingSummaryContact && (
+          <DetailRow
+            label="Contacto de entrega"
+            value={
+              <span className="inline-flex items-center gap-2 text-sm font-semibold text-primary-900 dark:text-primary-100">
+                {shippingSummaryContact}
+                {shippingSummaryIsWhatsapp && (
+                  <span className="rounded-full bg-success-100 px-2 py-[2px] text-[10px] font-semibold uppercase tracking-[0.2em] text-success-700 dark:bg-success-900/30 dark:text-success-200">
+                    WhatsApp
+                  </span>
+                )}
+              </span>
+            }
+          />
+        )}
         <DetailRow
           label="Atendió"
           value={

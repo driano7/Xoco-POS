@@ -31,6 +31,32 @@
 
 PRAGMA foreign_keys = ON;
 
+-- Reset existing tables to keep the local snapshot in sync with Supabase.
+DROP TABLE IF EXISTS addresses;
+DROP TABLE IF EXISTS loyalty_points;
+DROP TABLE IF EXISTS order_items;
+DROP TABLE IF EXISTS orders;
+DROP TABLE IF EXISTS products;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS staff_users;
+DROP TABLE IF EXISTS staff_sessions;
+DROP TABLE IF EXISTS prep_queue;
+DROP TABLE IF EXISTS tickets;
+DROP TABLE IF EXISTS payments;
+DROP TABLE IF EXISTS reservations;
+DROP TABLE IF EXISTS inventory_categories;
+DROP TABLE IF EXISTS inventory_items;
+DROP TABLE IF EXISTS inventory_stock;
+DROP TABLE IF EXISTS inventory_movements;
+DROP TABLE IF EXISTS pos_action_logs;
+DROP TABLE IF EXISTS report_requests;
+DROP TABLE IF EXISTS marketing_cluster_snapshots;
+DROP TABLE IF EXISTS marketing_product_suggestions;
+DROP TABLE IF EXISTS marketing_markov_edges;
+DROP TABLE IF EXISTS marketing_inventory_insights;
+DROP TABLE IF EXISTS marketing_anomalies;
+
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
