@@ -1703,14 +1703,30 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
               className="w-full rounded-xl border border-primary-100/70 bg-transparent px-3 py-2 text-sm text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/20 dark:bg-white/5 dark:text-white"
             />
             {parsedCashTendered !== null ? (
-              <p className="text-xs text-[var(--brand-muted)]">
-                Cambio sugerido:{' '}
-                <span className={parsedCashTendered < totalWithTip ? 'text-danger-500' : 'text-primary-700 dark:text-primary-100'}>
-                  {parsedCashTendered < totalWithTip
-                    ? 'Insuficiente'
-                    : formatCurrency(cashChangePreview ?? 0)}
-                </span>
-              </p>
+              parsedCashTendered < totalWithTip ? (
+                <p className="text-xs font-semibold text-danger-600">El monto es menor al total.</p>
+              ) : (
+                <div className="space-y-1 text-xs text-[var(--brand-muted)]">
+                  <p>
+                    Total:{' '}
+                    <span className="font-semibold text-primary-700 dark:text-primary-100">
+                      {formatCurrency(totalWithTip)}
+                    </span>
+                  </p>
+                  <p>
+                    Pago:{' '}
+                    <span className="font-semibold text-primary-700 dark:text-primary-100">
+                      {formatCurrency(parsedCashTendered)}
+                    </span>
+                  </p>
+                  <p>
+                    Cambio:{' '}
+                    <span className="font-semibold text-primary-700 dark:text-primary-100">
+                      {formatCurrency(cashChangePreview ?? 0)}
+                    </span>
+                  </p>
+                </div>
+              )
             ) : (
               <p className="text-xs text-[var(--brand-muted)]">
                 Captura la cantidad recibida para calcular el cambio.

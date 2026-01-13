@@ -112,4 +112,15 @@ Cuando no haya conexión con Supabase, las mutaciones se persisten en SQLite den
 - Si un reintento vuelve a fallar por red, el estado se marca como offline y se respeta un intervalo (`SUPABASE_RETRY_DELAY_MS`, 30s por defecto) antes de volver a intentarlo.
 - Una vez que todas las operaciones pendientes terminan sin errores, `markSupabaseHealthy` restaura la prioridad de Supabase y las nuevas escrituras se hacen directo en la nube (los pendientes se limpian automáticamente).
 
+### Herramienta CLI para revisar/limpiar la cola
+
+Usa `node scripts/pending-queue.mjs` para inspeccionar o limpiar `pos_pending_queue` sin abrir el archivo SQLite manualmente:
+
+- `node scripts/pending-queue.mjs list` — muestra los registros pendientes (comando por defecto).
+- `node scripts/pending-queue.mjs show <id>` — imprime el payload JSON de una operación específica.
+- `node scripts/pending-queue.mjs clear <id>` — elimina la operación indicada.
+- `node scripts/pending-queue.mjs clear all --force` — limpia toda la cola (requiere `--force` para evitar accidentes).
+
+Esto te permite validar qué pedidos se reintentarán y descartar pruebas antes de volver a levantar el servidor local.
+
 Esto garantiza que los pedidos creados offline no se pierdan y que Supabase retome el control apenas la red vuelva sin intervención manual.

@@ -1468,32 +1468,93 @@ const sqliteOrdersLoader: OrdersDataLoader = {
     const { placeholders, bindings } = buildSqliteInClause(addressIds, 'addr');
     const rows = await sqlite.all<{
       id?: string | null;
+      userId?: string | null;
       street?: string | null;
       city?: string | null;
       state?: string | null;
       postalCode?: string | null;
       country?: string | null;
       reference?: string | null;
+      additionalInfo?: string | null;
+      label?: string | null;
+      nickname?: string | null;
+      payload?: string | null;
+      payload_iv?: string | null;
+      payload_tag?: string | null;
+      payload_salt?: string | null;
+      contactPhone?: string | null;
+      isWhatsapp?: number | null;
+      createdAt?: string | null;
+      updatedAt?: string | null;
+      email?: string | null;
     }>(
-      `SELECT id, street, city, state, postalCode, country, reference
-       FROM addresses
-       WHERE id IN (${placeholders.join(',')})`,
+      `SELECT a.id,
+              a.userId,
+              a.street,
+              a.city,
+              a.state,
+              a.postalCode,
+              a.country,
+              a.reference,
+              a.additionalInfo,
+              a.label,
+              a.nickname,
+              a.payload,
+              a.payload_iv,
+              a.payload_tag,
+              a.payload_salt,
+              a.contactPhone,
+              a.isWhatsapp,
+              a.createdAt,
+              a.updatedAt,
+              u.email
+       FROM addresses a
+       LEFT JOIN users u ON u.id = a.userId
+       WHERE a.id IN (${placeholders.join(',')})`,
       bindings
     );
     rows.forEach((row) => {
       if (!row?.id) {
         return;
       }
+      const normalized = decryptAddressRow(
+        {
+          id: row.id,
+          userId: row.userId,
+          street: row.street,
+          city: row.city,
+          state: row.state,
+          postalCode: row.postalCode,
+          country: row.country,
+          reference: row.reference,
+          additionalInfo: row.additionalInfo,
+          label: row.label,
+          nickname: row.nickname,
+          payload: row.payload,
+          payload_iv: row.payload_iv,
+          payload_tag: row.payload_tag,
+          payload_salt: row.payload_salt,
+          contactPhone: row.contactPhone,
+          isWhatsapp:
+            typeof row.isWhatsapp === 'number' ? row.isWhatsapp === 1 : row.isWhatsapp ?? null,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+        },
+        row.email ?? null
+      );
+      if (!normalized) {
+        return;
+      }
       map.set(row.id, {
         address: {
-          street: row.street ?? null,
-          city: row.city ?? null,
-          state: row.state ?? null,
-          postalCode: row.postalCode ?? null,
-          reference: row.reference ?? null,
+          street: normalized.street ?? null,
+          city: normalized.city ?? null,
+          state: normalized.state ?? null,
+          postalCode: normalized.postalCode ?? null,
+          reference: normalized.reference ?? null,
         },
-        contactPhone: null,
-        isWhatsapp: null,
+        contactPhone: normalized.contactPhone ?? null,
+        isWhatsapp: normalized.isWhatsapp ?? null,
       });
     });
     return map;

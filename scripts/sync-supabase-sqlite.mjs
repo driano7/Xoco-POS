@@ -92,6 +92,27 @@ const all = promisify(sqliteDb.all.bind(sqliteDb));
 const run = promisify(sqliteDb.run.bind(sqliteDb));
 
 const tableColumnsCache = new Map();
+const isDateInstance = (value) => Object.prototype.toString.call(value) === '[object Date]';
+
+const normalizeSqliteValue = (value) => {
+  if (value === undefined) {
+    return null;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (isDateInstance(value)) {
+    return value.toISOString();
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return value;
+};
 
 const SYNC_TABLES = [
   { name: 'users', pk: 'id', updatedColumn: 'updatedAt' },
@@ -124,6 +145,100 @@ const SYNC_TABLES = [
   { name: 'waste_logs', pk: 'id', updatedColumn: 'createdAt' },
   { name: 'product_recipes', pk: 'id', updatedColumn: 'createdAt' },
 ];
+
+const SCHEMA_PATCHES = {};
+
+const ADDRESS_COLUMNS = [
+  'id',
+  'userId',
+  'type',
+  'street',
+  'city',
+  'state',
+  'postalCode',
+  'country',
+  'isDefault',
+  'label',
+  'nickname',
+  'reference',
+  'additionalInfo',
+  'payload',
+  'payload_iv',
+  'payload_tag',
+  'payload_salt',
+  'contactPhone',
+  'isWhatsapp',
+  'createdAt',
+  'updatedAt',
+];
+
+const ADDRESS_NULLABLE_COLUMNS = ['street', 'city', 'postalCode', 'country'];
+
+const ADDRESS_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS addresses (
+  id TEXT PRIMARY KEY,
+  userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  street TEXT,
+  city TEXT,
+  state TEXT,
+  postalCode TEXT,
+  country TEXT,
+  isDefault INTEGER NOT NULL DEFAULT 0,
+  label TEXT,
+  nickname TEXT,
+  reference TEXT,
+  additionalInfo TEXT,
+  payload TEXT,
+  payload_iv TEXT,
+  payload_tag TEXT,
+  payload_salt TEXT,
+  contactPhone TEXT,
+  isWhatsapp INTEGER,
+  createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+`;
+
+async function tableExists(tableName) {
+  const rows = await all(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND lower(name) = lower(?) LIMIT 1`,
+    [tableName]
+  );
+  return rows.length > 0;
+}
+
+async function ensureAddressesTableDefinition() {
+  const exists = await tableExists('addresses');
+  if (!exists) {
+    await run(ADDRESS_TABLE_SQL);
+    tableColumnsCache.delete('addresses');
+    return;
+  }
+  const info = await all(`PRAGMA table_info(addresses)`);
+  const existingColumns = info.map((column) => column.name);
+  const missingColumns = ADDRESS_COLUMNS.filter((column) => !existingColumns.includes(column));
+  const hasStrictNulls = info.some(
+    (column) => ADDRESS_NULLABLE_COLUMNS.includes(column.name) && column.notnull === 1
+  );
+  if (!missingColumns.length && !hasStrictNulls) {
+    return;
+  }
+  const backupTable = `addresses_backup_${Date.now()}`;
+  await run(`ALTER TABLE addresses RENAME TO ${backupTable}`);
+  await run(ADDRESS_TABLE_SQL);
+  const oldColumnSet = new Set(existingColumns);
+  const copyColumns = ADDRESS_COLUMNS.filter((column) => oldColumnSet.has(column));
+  if (copyColumns.length) {
+    await run(
+      `INSERT INTO addresses (${copyColumns.join(',')})
+       SELECT ${copyColumns.join(',')} FROM ${backupTable}`
+    );
+  }
+  await run(`DROP TABLE ${backupTable}`);
+  tableColumnsCache.delete('addresses');
+  console.log('ℹ️ Reconstruimos la tabla addresses para permitir campos opcionales.');
+}
 
 async function ensureSyncStateTable() {
   await run(`
@@ -167,12 +282,31 @@ async function getColumnSet(tableName) {
   return columnSet;
 }
 
+async function ensureColumn(tableName, columnName, definition) {
+  const columns = await getColumnSet(tableName);
+  if (columns.has(columnName)) {
+    return;
+  }
+  await run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  tableColumnsCache.delete(tableName);
+  console.log(`ℹ️ Agregamos la columna faltante ${columnName} en ${tableName}.`);
+}
+
+async function applySchemaPatches() {
+  await ensureAddressesTableDefinition();
+  for (const [tableName, patches] of Object.entries(SCHEMA_PATCHES)) {
+    for (const patch of patches) {
+      await ensureColumn(tableName, patch.column, patch.definition);
+    }
+  }
+}
+
 function filterRowForTable(row, columnSet) {
   if (!columnSet) return row;
   const filtered = {};
   for (const [key, value] of Object.entries(row)) {
     if (columnSet.has(key)) {
-      filtered[key] = value;
+      filtered[key] = normalizeSqliteValue(value);
     }
   }
   return filtered;
@@ -259,6 +393,7 @@ async function pushSqliteChanges(table, since) {
 }
 
 async function main() {
+  await applySchemaPatches();
   await ensureSyncStateTable();
   for (const table of SYNC_TABLES) {
     console.log(`\n⏳ Syncing ${table.name}...`);

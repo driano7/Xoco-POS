@@ -4700,6 +4700,11 @@ export function PosDashboard() {
                     order.queuedPaymentMethod ??
                     order.paymentMethod ??
                     null;
+                  const summaryTotalAmount =
+                    totalAmount ??
+                    (typeof totals.totalAmount === 'number' ? totals.totalAmount : null) ??
+                    order.total ??
+                    0;
                   const cashTendered =
                     pendingQueue.options?.cashTendered ??
                     order.montoRecibido ??
@@ -4707,6 +4712,7 @@ export function PosDashboard() {
                   const cashChange =
                     pendingQueue.options?.cashChange ??
                     order.cambioEntregado ??
+                    (cashTendered !== null ? Math.max(cashTendered - summaryTotalAmount, 0) : null) ??
                     null;
                   const paymentReference =
                     pendingQueue.options?.paymentReference ??
@@ -4745,6 +4751,12 @@ export function PosDashboard() {
                         </p>
                         <ul className="mt-2 space-y-1 text-sm">
                           <li>
+                            Total:{' '}
+                            <span className="font-semibold text-primary-900 dark:text-primary-200">
+                              {formatCurrency(summaryTotalAmount)}
+                            </span>
+                          </li>
+                          <li>
                             Método:{' '}
                             <span className="font-semibold text-primary-700 dark:text-primary-100">
                               {ticketMethod ? getPaymentMethodLabel(ticketMethod) : 'Pendiente'}
@@ -4777,12 +4789,18 @@ export function PosDashboard() {
                             <>
                               <li>
                                 Monto recibido:{' '}
-                                <span className="font-semibold">{formatCurrency(cashTendered ?? 0)}</span>
+                                <span className="font-semibold">
+                                  {cashTendered === null
+                                    ? 'Pendiente'
+                                    : formatCurrency(cashTendered)}
+                                </span>
                               </li>
                               <li>
                                 Cambio:{' '}
                                 <span className="font-semibold">
-                                  {formatCurrency(Math.max(cashChange ?? 0, 0))}
+                                  {cashChange === null
+                                    ? 'Pendiente'
+                                    : formatCurrency(Math.max(cashChange, 0))}
                                 </span>
                               </li>
                             </>
@@ -6473,7 +6491,13 @@ const OrderItemsSection = ({ items }: { items: OrderItemEntry[] }) => (
   </div>
 );
 
-const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null }) => {
+const ShippingInfoCard = ({
+  shipping,
+  customerName,
+}: {
+  shipping?: OrderShippingInfo | null;
+  customerName?: string | null;
+}) => {
   if (!shipping) {
     return null;
   }
@@ -6534,19 +6558,25 @@ const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null })
             Entrega a domicilio
           </p>
           {label && (
-            <p className="text-base font-semibold text-primary-900 dark:text-primary-50">{label}</p>
+            <p className="text-base font-semibold text-primary-900 dark:text-white">{label}</p>
           )}
           {addressId && (
-            <p className="text-xs uppercase tracking-[0.3em] text-primary-500 dark:text-primary-200">
+            <p className="text-xs uppercase tracking-[0.3em] text-primary-500 dark:text-primary-100">
               ID: {addressId}
             </p>
           )}
+          {customerName && (
+            <p className="mt-2 text-xs font-semibold text-primary-700 dark:text-white">
+              Cliente:{' '}
+              <span className="font-normal text-primary-900 dark:text-white">{customerName}</span>
+            </p>
+          )}
         </div>
-        <span className="rounded-full bg-primary-100 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.3em] text-primary-700 dark:bg-primary-900/40 dark:text-primary-200">
+        <span className="rounded-full bg-primary-100 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.3em] text-primary-700 dark:bg-primary-900/40 dark:text-primary-100">
           Delivery
         </span>
       </div>
-      <div className="mt-3 space-y-1 text-primary-900 dark:text-primary-50">
+      <div className="mt-3 space-y-1 text-primary-900 dark:text-white">
         {resolvedLines.length ? (
           resolvedLines.map((line) => (
             <p className="text-sm" key={line}>
@@ -6554,18 +6584,18 @@ const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null })
             </p>
           ))
         ) : (
-          <p className="text-sm text-primary-800/80 dark:text-primary-100/70">Sin dirección registrada.</p>
+          <p className="text-sm text-primary-800/80 dark:text-white/70">Sin dirección registrada.</p>
         )}
         {address?.reference && (
-          <p className="text-sm font-semibold text-primary-900 dark:text-primary-50">
+          <p className="text-sm font-semibold text-primary-900 dark:text-white">
             Referencia: <span className="font-normal">{address.reference}</span>
           </p>
         )}
       </div>
       {contactPhone && (
-        <p className="mt-3 text-sm font-semibold text-primary-900 dark:text-primary-50">
+        <p className="mt-3 text-sm font-semibold text-primary-900 dark:text-white">
           Contacto:{' '}
-          <span className="font-normal text-primary-800 dark:text-primary-100">{contactPhone}</span>
+          <span className="font-normal text-primary-800 dark:text-white">{contactPhone}</span>
           {isWhatsapp && (
             <span className="ml-2 inline-flex items-center rounded-full bg-success-100 px-2 py-[2px] text-[10px] font-semibold uppercase tracking-[0.2em] text-success-700 dark:bg-success-900/30 dark:text-success-200">
               WhatsApp
@@ -6575,7 +6605,7 @@ const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null })
       )}
       {hasDeliveryTip && (
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-primary-100/70 bg-primary-50/60 px-3 py-2 text-sm font-semibold text-primary-800 dark:border-primary-600/40 dark:bg-primary-900/20 dark:text-primary-100">
-          <span className="text-xs uppercase tracking-[0.35em] text-primary-600 dark:text-primary-200">
+          <span className="text-xs uppercase tracking-[0.35em] text-primary-600 dark:text-primary-100">
             Propina de entrega
           </span>
           <span>
@@ -6589,7 +6619,9 @@ const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null })
         </div>
       )}
       {!contactPhone && !hasDeliveryTip && (
-        <p className="mt-2 text-xs text-[var(--brand-muted)]">Sin detalles adicionales de entrega.</p>
+        <p className="mt-2 text-xs text-[var(--brand-muted)] dark:text-white/70">
+          Sin detalles adicionales de entrega.
+        </p>
       )}
     </div>
   );
@@ -7291,12 +7323,22 @@ const OrderDetailContent = ({
           <DetailRow
             label="Entrega a domicilio"
             value={
-              <span className="flex flex-col items-end text-right text-sm text-primary-900 dark:text-primary-100">
+              <span className="flex flex-col items-end text-right text-sm text-primary-900 dark:text-white">
+                {customerName && (
+                  <span className="text-xs text-[var(--brand-muted)] dark:text-white/80">
+                    Cliente:{' '}
+                    <span className="font-semibold text-primary-900 dark:text-white">
+                      {customerName}
+                    </span>
+                  </span>
+                )}
                 {shippingSummaryLabel && (
-                  <span className="font-semibold">{shippingSummaryLabel}</span>
+                  <span className="font-semibold text-primary-900 dark:text-white">
+                    {shippingSummaryLabel}
+                  </span>
                 )}
                 {shippingSummaryLines.map((line) => (
-                  <span className="text-xs text-[var(--brand-muted)]" key={line}>
+                  <span className="text-xs text-[var(--brand-muted)] dark:text-white/80" key={line}>
                     {line}
                   </span>
                 ))}
@@ -7412,7 +7454,7 @@ const OrderDetailContent = ({
       {fallbackNotes && (
         <OrderNotesCard note={fallbackNotes} label="Comentarios adicionales" />
       )}
-      {shippingInfo && <ShippingInfoCard shipping={shippingInfo} />}
+      {shippingInfo && <ShippingInfoCard shipping={shippingInfo} customerName={customerName} />}
       <ConsumptionSummary items={items} />
       {itemsLoading && (
         <p className="rounded-xl border border-dashed border-primary-200/60 bg-white/60 px-3 py-2 text-xs text-[var(--brand-muted)] dark:border-white/10 dark:bg-white/5">
@@ -7439,6 +7481,12 @@ const OrderDetailContent = ({
             {isDownloadingTicket ? 'Generando…' : 'Descargar PNG'}
           </button>
         </div>
+        {customerName && (
+          <p className="mt-2 text-xs text-[var(--brand-muted)] dark:text-white/80">
+            Cliente:{' '}
+            <span className="font-semibold text-primary-900 dark:text-white">{customerName}</span>
+          </p>
+        )}
         <div className="mt-4 flex justify-center">
           <VirtualTicket
             ref={ticketRef}
@@ -7455,7 +7503,7 @@ const OrderDetailContent = ({
               <p className="mt-2 text-sm">{editingPaymentMethodLabel ?? selectedPaymentMethod}</p>
               <button
                 type="button"
-                className="mt-3 text-xs font-semibold text-primary-600 underline-offset-2 hover:underline dark:text-primary-200"
+                className="mt-3 inline-flex items-center rounded-full border border-primary-200 px-3 py-1 text-xs font-semibold text-primary-700 transition hover:bg-primary-50 dark:border-white/30 dark:text-white dark:hover:bg-white/10"
                 onClick={() => setShowPaymentSelector(true)}
               >
                 Cambiar método
@@ -7510,12 +7558,26 @@ const OrderDetailContent = ({
                   El monto es menor al total del pedido.
                 </p>
               ) : (
-                <p className="mt-1 text-xs text-[var(--brand-muted)]">
-                  Cambio sugerido:{' '}
-                  <span className="font-semibold text-primary-700 dark:text-primary-100">
-                    {formatCurrency(cashChangePreview ?? 0)}
-                  </span>
-                </p>
+                <div className="mt-2 space-y-1 text-xs text-[var(--brand-muted)]">
+                  <p>
+                    Total:{' '}
+                    <span className="font-semibold text-primary-700 dark:text-primary-100">
+                      {formatCurrency(resolvedTotalAmount ?? order.total ?? 0)}
+                    </span>
+                  </p>
+                  <p>
+                    Pago:{' '}
+                    <span className="font-semibold text-primary-700 dark:text-primary-100">
+                      {formatCurrency(currentCashTendered ?? 0)}
+                    </span>
+                  </p>
+                  <p>
+                    Cambio:{' '}
+                    <span className="font-semibold text-primary-700 dark:text-primary-100">
+                      {formatCurrency(cashChangePreview ?? 0)}
+                    </span>
+                  </p>
+                </div>
               )}
             </div>
           )}

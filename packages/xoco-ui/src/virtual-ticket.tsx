@@ -709,6 +709,7 @@ const VirtualTicket = forwardRef<HTMLDivElement, VirtualTicketProps>(
               .some((value) => Boolean((value as string).trim().length));
           const hasLines = Boolean(normalizedLines && normalizedLines.length);
           const contactPhone = order.shipping?.contactPhone?.trim();
+          const shippingCustomerName = (order.customerName ?? order.userEmail ?? '').trim();
           if (!hasAddressDetails && !hasLines && !contactPhone && !label) {
             return null;
           }
@@ -718,6 +719,11 @@ const VirtualTicket = forwardRef<HTMLDivElement, VirtualTicketProps>(
                 Entrega
               </p>
               {label && <p className="mt-1 text-sm font-semibold text-primary-800">Alias: {label}</p>}
+              {shippingCustomerName && (
+                <p className="text-xs font-semibold text-primary-700">
+                  Cliente: {shippingCustomerName}
+                </p>
+              )}
               {hasLines ? (
                 <ul className="mt-1 space-y-0.5">
                   {normalizedLines!.map((line) => (

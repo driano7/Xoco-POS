@@ -154,6 +154,66 @@ const resolveHandlerName = (handler?: NormalizedStaffRecord | null, staffId?: st
   return DEMO_STAFF_NAME_OVERRIDES[normalizedId] ?? staffId;
 };
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const toTrimmedString = (value: unknown) => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  return null;
+};
+
+const coerceRecord = (value: unknown): Record<string, unknown> | null => {
+  if (isPlainObject(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return isPlainObject(parsed) ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+};
+
+const coerceMetadataObject = (value: unknown): Record<string, unknown> | null => {
+  if (!value) {
+    return null;
+  }
+  return coerceRecord(value);
+};
+
+const hasManualQueueSignal = (order: Record<string, unknown> | null) => {
+  if (!order) {
+    return false;
+  }
+  const signals = [
+    toTrimmedString(order['queuedByStaffId']),
+    toTrimmedString(order['queuedPaymentMethod']),
+    toTrimmedString(order['queuedPaymentReference']),
+    toTrimmedString(order['queuedPaymentReferenceType']),
+  ];
+  if (signals.some(Boolean)) {
+    return true;
+  }
+  const metadataObject = coerceMetadataObject(order['metadata']) ?? null;
+  const prepAssignment = metadataObject?.prepAssignment
+    ? coerceRecord(metadataObject.prepAssignment)
+    : null;
+  if (toTrimmedString(prepAssignment?.staffId)) {
+    return true;
+  }
+  const paymentMetadata = metadataObject?.payment ? coerceRecord(metadataObject.payment) : null;
+  if (toTrimmedString(paymentMetadata?.method) || toTrimmedString(paymentMetadata?.reference)) {
+    return true;
+  }
+  return false;
+};
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -221,6 +281,10 @@ export async function GET(request: Request) {
       '"createdAt"',
       '"items"',
       '"metadata"',
+      '"queuedByStaffId"',
+      '"queuedPaymentMethod"',
+      '"queuedPaymentReference"',
+      '"queuedPaymentReferenceType"',
     ];
     if (ORDER_CLIENT_ID_COLUMN) {
       orderSelectFields.push(`clientId:${ORDER_CLIENT_ID_COLUMN}`);
@@ -417,9 +481,13 @@ export async function GET(request: Request) {
       };
     });
 
+    const filtered = enriched.filter((task) =>
+      hasManualQueueSignal((task.order as Record<string, unknown> | null) ?? null)
+    );
+
     return NextResponse.json({
       success: true,
-      data: enriched,
+      data: filtered,
     });
   } catch (error) {
     console.error('Error fetching prep queue:', error);
