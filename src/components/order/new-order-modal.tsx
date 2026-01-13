@@ -315,6 +315,8 @@ export function NewOrderModal({
   const normalizedClientIdLower = normalizedClientIdValue.toLowerCase();
   const isPublicSaleInput = isPublicSaleIdentifier(normalizedClientIdValue);
   const isPublicSaleContext = isPublicSale || isPublicSaleInput;
+  const hasCustomerForShipping = Boolean(validatedCustomer?.id);
+  const needsCustomerForShipping = !hasCustomerForShipping && !isPublicSaleContext;
 
   useEffect(() => () => clearCart(), [clearCart]);
 
@@ -364,6 +366,8 @@ export function NewOrderModal({
       setSavedAddresses([]);
       setSelectedAddressId(null);
       setShippingContactPhone('');
+      setShippingEnabled(false);
+      setShippingMessage(null);
       hasPrefilledAddress.current = false;
       return;
     }
@@ -401,18 +405,26 @@ export function NewOrderModal({
         if (cancelled) {
           return;
         }
-        const normalized = (payload.data ?? []).map((entry) => ({
-          ...entry,
-          street: entry.street ?? '',
-          city: entry.city ?? '',
-          state: entry.state ?? '',
-          postalCode: entry.postalCode ?? '',
-          country: entry.country ?? 'México',
-          reference: entry.reference ?? '',
-        }));
+        const normalized = [...(payload.data ?? [])]
+          .map((entry) => ({
+            ...entry,
+            label: entry.label?.trim() || 'Dirección sin nombre',
+            street: entry.street ?? '',
+            city: entry.city ?? '',
+            state: entry.state ?? '',
+            postalCode: entry.postalCode ?? '',
+            country: entry.country ?? 'México',
+            reference: entry.reference ?? '',
+          }))
+          .sort((a, b) => Number(b.isDefault ?? false) - Number(a.isDefault ?? false))
+          .slice(0, 3);
         setSavedAddresses(normalized);
         setShippingMessage(
-          normalized.length === 0 ? 'El cliente no tiene direcciones guardadas.' : null
+          normalized.length === 0
+            ? 'El cliente no tiene direcciones guardadas.'
+            : normalized.length === 3 && (payload.data?.length ?? 0) > 3
+              ? 'Mostramos las 3 direcciones más usadas.'
+              : null
         );
       } catch (error) {
         if (!cancelled) {
@@ -486,10 +498,10 @@ export function NewOrderModal({
   }, [selectedAddressId, savedAddresses]);
 
   useEffect(() => {
-    if (isPublicSaleContext) {
+    if (isPublicSaleContext || !hasCustomerForShipping) {
       setShippingEnabled(false);
     }
-  }, [isPublicSaleContext]);
+  }, [hasCustomerForShipping, isPublicSaleContext]);
 
   useEffect(() => {
     if (paymentMethod === 'efectivo') {
@@ -566,6 +578,24 @@ export function NewOrderModal({
       setter(null);
     }
   };
+
+  const handleShippingToggle = useCallback(
+    (checked: boolean) => {
+      if (isPublicSaleContext) {
+        setShippingEnabled(false);
+        setShippingMessage('Las ventas al público general no solicitan dirección de envío.');
+        return;
+      }
+      if (!hasCustomerForShipping) {
+        setShippingEnabled(false);
+        setShippingMessage('Valida un ID de cliente para capturar envío y direcciones.');
+        return;
+      }
+      setShippingMessage(null);
+      setShippingEnabled(checked);
+    },
+    [hasCustomerForShipping, isPublicSaleContext]
+  );
 
   const beverageBaseOptions = useMemo(() => {
     const grouped = new Map<
@@ -1374,8 +1404,8 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
               type="checkbox"
               className="h-4 w-4 rounded border-primary-300 text-primary-600 focus:ring-primary-500"
               checked={shippingEnabled}
-              onChange={(event) => setShippingEnabled(event.target.checked)}
-              disabled={isPublicSaleContext}
+              onChange={(event) => handleShippingToggle(event.target.checked)}
+              disabled={isPublicSaleContext || !hasCustomerForShipping}
             />
             Requiere envío
           </label>
@@ -1383,6 +1413,11 @@ const getClientLabel = (customer: ValidatedCustomer | null) => {
         {isPublicSaleContext && (
           <p className="mt-2 text-xs text-[var(--brand-muted)]">
             Las ventas al público general no solicitan dirección de envío.
+          </p>
+        )}
+        {needsCustomerForShipping && (
+          <p className="mt-2 text-xs text-[var(--brand-muted)]">
+            Ingresa y valida un ID de cliente para capturar el envío y reutilizar direcciones guardadas.
           </p>
         )}
         {shippingMessage && (

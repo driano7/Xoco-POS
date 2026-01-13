@@ -28,7 +28,7 @@
  * --------------------------------------------------------------------
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   downloadHygieneChecklistPdf,
   exportCofeprisReport,
@@ -107,6 +107,7 @@ export interface SanitaryCompliancePanelProps {
   staffName: string;
   branchId?: string | null;
   onPestAlertChange?: (message: string | null) => void;
+  onSummarySnapshotChange?: (data: Array<{ name: string; value: number }>) => void;
 }
 
 export const SanitaryCompliancePanel = ({
@@ -114,6 +115,7 @@ export const SanitaryCompliancePanel = ({
   staffName,
   branchId,
   onPestAlertChange,
+  onSummarySnapshotChange,
 }: SanitaryCompliancePanelProps) => {
   const [activeTab, setActiveTab] = useState<CofeprisTabId>('summary');
   const [selectedArea, setSelectedArea] = useState<HygieneArea>('BAÑO');
@@ -165,35 +167,119 @@ export const SanitaryCompliancePanel = ({
   const [inventoryStatusState, inventoryStatusActions] = useStatus();
   const [wasteStatus, wasteStatusActions] = useStatus();
   const [exportStatus, exportStatusActions] = useStatus();
+  const summarySnapshotRef = useRef<string | null>(null);
+
+  const hygieneChartData = useMemo(() => {
+    const base = (Object.keys(HYGIENE_AREAS) as HygieneArea[]).map((area) => ({
+      area,
+      label: HYGIENE_AREAS[area].label,
+      value: 0,
+    }));
+    if (!hygieneSummary?.entries?.length) {
+      return base.map(({ label, value }) => ({ name: label, value }));
+    }
+    const counts = new Map<HygieneArea, number>();
+    hygieneSummary.entries.forEach((entry) => {
+      counts.set(entry.area, (counts.get(entry.area) ?? 0) + 1);
+    });
+    return base.map(({ area, label }) => ({ name: label, value: counts.get(area) ?? 0 }));
+  }, [hygieneSummary]);
+
+  const pestChartData = useMemo(() => {
+    return [
+      {
+        name: 'Días desde fumigación',
+        value: Math.max(0, pestStatus?.daysSince ?? 0),
+      },
+      {
+        name: 'Servicios registrados',
+        value: pestStatus?.latest ? 1 : 0,
+      },
+      {
+        name: 'Alertas activas',
+        value: pestStatus?.alert ? 1 : 0,
+      },
+    ];
+  }, [pestStatus]);
+
+  const inventoryChartData = useMemo(() => {
+    const totalEntries = inventoryStatus?.entries?.length ?? 0;
+    const lowStock = inventoryStatus?.lowStock?.length ?? 0;
+    const zeroStock = inventoryStatus?.zeroStock?.length ?? 0;
+    return [
+      { name: 'Monitoreados', value: totalEntries },
+      { name: 'Bajo stock', value: lowStock },
+      { name: 'Sin stock', value: zeroStock },
+    ];
+  }, [inventoryStatus]);
+
+  const wasteChartData = useMemo(() => {
+    if (wasteLogs.length === 0) {
+      return [
+        { name: 'Orgánico (bebidas)', value: 0 },
+        { name: 'Orgánico (alimentos)', value: 0 },
+        { name: 'Inorgánico', value: 0 },
+      ];
+    }
+    const totals = wasteLogs.reduce(
+      (acc, log) => ({
+        beverages: acc.beverages + (Number(log.organicBeveragesKg) || 0),
+        foods: acc.foods + (Number(log.organicFoodsKg) || 0),
+        inorganic: acc.inorganic + (Number(log.inorganicKg) || 0),
+      }),
+      { beverages: 0, foods: 0, inorganic: 0 }
+    );
+    return [
+      { name: 'Orgánico (bebidas)', value: Number(totals.beverages.toFixed(2)) },
+      { name: 'Orgánico (alimentos)', value: Number(totals.foods.toFixed(2)) },
+      { name: 'Inorgánico', value: Number(totals.inorganic.toFixed(2)) },
+    ];
+  }, [wasteLogs]);
+
+  const summarySnapshotData = useMemo(
+    () => [
+      { name: 'Higiene', value: hygieneSummary?.summary.total ?? 0 },
+      { name: 'Plagas', value: Math.max(0, pestStatus?.daysSince ?? 0) },
+      { name: 'Manejo de alimentos', value: inventoryStatus?.entries?.length ?? 0 },
+      { name: 'Residuos', value: wasteLogs.length },
+    ],
+    [hygieneSummary?.summary.total, inventoryStatus?.entries?.length, pestStatus?.daysSince, wasteLogs.length]
+  );
 
   const chartData = useMemo(() => {
-    if (activeTab === 'waste' && wasteLogs.length > 0) {
-      return wasteLogs
-        .slice(0, 15)
-        .map((log) => ({
-          name: new Date(log.createdAt).toLocaleDateString('es-MX', {
-            day: '2-digit',
-            month: '2-digit',
-          }),
-          value:
-            (Number(log.organicBeveragesKg) || 0) +
-            (Number(log.organicFoodsKg) || 0) +
-            (Number(log.inorganicKg) || 0),
-        }))
-        .reverse();
+    switch (activeTab) {
+      case 'hygiene':
+        return hygieneChartData;
+      case 'pest':
+        return pestChartData;
+      case 'inventory':
+        return inventoryChartData;
+      case 'waste':
+        return wasteChartData;
+      default:
+        return summarySnapshotData;
     }
-    if (hygieneSummary?.entries) {
-      const grouped = new Map<string, number>();
-      hygieneSummary.entries.forEach((entry) => {
-        const day = new Date(entry.createdAt).toLocaleDateString('es-MX', { day: '2-digit' });
-        grouped.set(day, (grouped.get(day) || 0) + 1);
-      });
-      return Array.from(grouped.entries())
-        .map(([name, value]) => ({ name, value }))
-        .sort((a, b) => a.name.localeCompare(b.name));
+  }, [activeTab, hygieneChartData, inventoryChartData, pestChartData, summarySnapshotData, wasteChartData]);
+  const chartPresentation: Record<CofeprisTabId, { title: string; yLabel: string }> = {
+    summary: { title: 'Resumen COFEPRIS', yLabel: 'Registros' },
+    hygiene: { title: 'Higiene (NOM-251)', yLabel: 'Registros' },
+    pest: { title: 'Control de plagas', yLabel: 'Eventos' },
+    inventory: { title: 'Manejo de alimentos', yLabel: 'Alertas' },
+    waste: { title: 'Residuos (kg)', yLabel: 'Kg totales' },
+  };
+  const currentChartPresentation = chartPresentation[activeTab] ?? chartPresentation.summary;
+
+  useEffect(() => {
+    if (!onSummarySnapshotChange) {
+      return;
     }
-    return [];
-  }, [activeTab, wasteLogs, hygieneSummary]);
+    const serialized = JSON.stringify(summarySnapshotData);
+    if (summarySnapshotRef.current === serialized) {
+      return;
+    }
+    summarySnapshotRef.current = serialized;
+    onSummarySnapshotChange(summarySnapshotData);
+  }, [onSummarySnapshotChange, summarySnapshotData]);
 
   const loadHygiene = useCallback(async () => {
     hygieneStatusActions.loading();
@@ -449,11 +535,13 @@ export const SanitaryCompliancePanel = ({
       title: 'Último checklist',
       value: latestHygieneEntry
         ? new Date(latestHygieneEntry.createdAt).toLocaleString('es-MX', {
-          dateStyle: 'short',
-          timeStyle: 'short',
-        })
+            dateStyle: 'short',
+            timeStyle: 'short',
+          })
         : 'Pendiente',
-      detail: `${hygieneSummary?.summary.total ?? 0} registros en ${hygieneSummary?.month ?? hygieneMonth}`,
+      detail: `${hygieneSummary?.summary.total ?? 0} registros en ${
+        hygieneSummary?.month ?? hygieneMonth
+      }`,
       tone: 'primary' as const,
     },
     {
@@ -474,8 +562,8 @@ export const SanitaryCompliancePanel = ({
       title: 'Cierre sanitario',
       value: lastWasteLog
         ? new Date(lastWasteLog.createdAt).toLocaleDateString('es-MX', {
-          dateStyle: 'medium',
-        })
+            dateStyle: 'medium',
+          })
         : 'Pendiente',
       detail: lastWasteLog
         ? `${lastWasteLog.organicBeveragesKg}kg bebidas · ${lastWasteLog.organicFoodsKg}kg alimentos`
@@ -1009,19 +1097,27 @@ export const SanitaryCompliancePanel = ({
               className="ml-2 rounded-xl border border-primary-100/70 bg-white px-2 py-1 text-[var(--brand-text)] focus:border-primary-400 focus:outline-none dark:border-white/10 dark:bg-white/10"
             />
           </label>
-          <button type="button" className="brand-button text-xs" onClick={() => void handleExportReport('csv')}>
-            Exportar CSV
-          </button>
-          <button type="button" className="brand-button--ghost text-xs" onClick={() => void handleExportReport('xlsx')}>
-            Exportar Excel
-          </button>
-          {chartData.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            {[
+              { value: 'csv', label: 'CSV', variant: 'solid' },
+              { value: 'xlsx', label: 'Excel', variant: 'ghost' },
+            ].map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                className={item.variant === 'solid' ? 'brand-button text-xs' : 'brand-button--ghost text-xs'}
+                onClick={() => void handleExportReport(item.value as 'csv' | 'xlsx')}
+              >
+                Exportar {item.label}
+              </button>
+            ))}
             <ChartButton
-              title={activeTab === 'waste' ? 'Residuos (kg)' : 'Registros de Higiene'}
+              key={activeTab}
+              title={currentChartPresentation.title}
               data={chartData}
-              yAxisLabel={activeTab === 'waste' ? 'Kg Totales' : 'Registros'}
+              yAxisLabel={currentChartPresentation.yLabel}
             />
-          )}
+          </div>
           {exportStatus.type !== 'idle' && (
             <span
               className={`rounded-full px-3 py-1 ${exportStatus.type === 'error'

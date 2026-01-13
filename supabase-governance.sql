@@ -873,9 +873,14 @@ CREATE TRIGGER trg_prep_queue_touch_updated_at
   FOR EACH ROW
   EXECUTE FUNCTION public.touch_users_updated_at();
 
-DROP FUNCTION IF EXISTS public.enqueue_order_item();
--- Nota: la cola de producción ahora se alimenta únicamente desde el POS vía /api/orders/:id/queue,
--- evitando que los pedidos se marquen como "En preparación" automáticamente al insertarse los artículos.
+CREATE OR REPLACE FUNCTION public.enqueue_order_item()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.prep_queue (id, "orderItemId", status)
+  VALUES (gen_random_uuid()::TEXT, NEW.id, 'pending');
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
 -- ---------------------------------------------------------------------
 -- Turnos de caja y ventas (corte NOM-251)
@@ -1534,7 +1539,8 @@ values
   ('socio-cots', 'cots.21d@gmail.com', 'socio', 'MATRIZ', 'Sergio', 'Cortés', true),
   ('socio-ale', 'aleisgales99@gmail.com', 'socio', 'MATRIZ', 'Alejandro', 'Galván', true),
   ('socio-jhon', 'garcia.aragon.jhon23@gmail.com', 'socio', 'MATRIZ', 'Juan', 'García', true),
-  ('socio-donovan', 'donovanriano@gmail.com', 'socio', 'MATRIZ', 'Donovan', 'Riaño', true)
+  ('socio-donovan', 'donovanriano@gmail.com', 'socio', 'MATRIZ', 'Donovan', 'Riaño', true), 
+  ('socio-rolop', 'rolop113095@gmail.com', 'socio', 'MATRIZ', 'Rolop', 'Socio', true)
 on conflict (email) do update set
   role = excluded.role,
   "branchId" = excluded."branchId",

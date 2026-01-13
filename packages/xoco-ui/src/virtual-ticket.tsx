@@ -45,7 +45,10 @@ export interface VirtualTicketProps {
         state?: string;
         postalCode?: string;
         reference?: string;
+        lines?: string[];
       };
+      label?: string | null;
+      lines?: string[] | null;
       contactPhone?: string | null;
       isWhatsapp?: boolean | null;
       addressId?: string | null;
@@ -681,13 +684,32 @@ const VirtualTicket = forwardRef<HTMLDivElement, VirtualTicketProps>(
 
         {(() => {
           const address = order.shipping?.address;
+          const label = order.shipping?.label?.trim();
+          const normalizedLines = (() => {
+            let rawLines: string[] | null = null;
+            if (Array.isArray(order.shipping?.lines) && order.shipping?.lines.length) {
+              rawLines = order.shipping.lines;
+            } else if (
+              Array.isArray(order.shipping?.address?.lines) &&
+              order.shipping?.address?.lines.length
+            ) {
+              rawLines = order.shipping.address!.lines;
+            }
+            if (rawLines) {
+              return rawLines
+                .map((line) => (typeof line === 'string' ? line.trim() : ''))
+                .filter((line) => Boolean(line));
+            }
+            return null;
+          })();
           const hasAddressDetails =
             !!address &&
             [address.street, address.city, address.state, address.postalCode, address.reference]
               .filter((value) => typeof value === 'string')
               .some((value) => Boolean((value as string).trim().length));
+          const hasLines = Boolean(normalizedLines && normalizedLines.length);
           const contactPhone = order.shipping?.contactPhone?.trim();
-          if (!hasAddressDetails) {
+          if (!hasAddressDetails && !hasLines && !contactPhone && !label) {
             return null;
           }
           return (
@@ -695,15 +717,26 @@ const VirtualTicket = forwardRef<HTMLDivElement, VirtualTicketProps>(
               <p className="font-semibold uppercase tracking-[0.35em] text-[10px] text-primary-600">
                 Entrega
               </p>
-              <p className="mt-1">
-                {address?.street}
-                {address?.city ? `, ${address.city}` : ''}
-                {address?.state ? `, ${address.state}` : ''}
-                {address?.postalCode ? ` · CP ${address.postalCode}` : ''}
-              </p>
-              {address?.reference && (
-                <p className="text-[11px] text-primary-700">Referencia: {address.reference}</p>
-              )}
+              {label && <p className="mt-1 text-sm font-semibold text-primary-800">Alias: {label}</p>}
+              {hasLines ? (
+                <ul className="mt-1 space-y-0.5">
+                  {normalizedLines!.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              ) : hasAddressDetails ? (
+                <>
+                  <p className="mt-1">
+                    {address?.street}
+                    {address?.city ? `, ${address.city}` : ''}
+                    {address?.state ? `, ${address.state}` : ''}
+                    {address?.postalCode ? ` · CP ${address.postalCode}` : ''}
+                  </p>
+                  {address?.reference && (
+                    <p className="text-[11px] text-primary-700">Referencia: {address.reference}</p>
+                  )}
+                </>
+              ) : null}
               {contactPhone && (
                 <p className="mt-1 text-[11px] font-medium">
                   Contacto: {contactPhone} {order.shipping?.isWhatsapp ? '(WhatsApp)' : ''}

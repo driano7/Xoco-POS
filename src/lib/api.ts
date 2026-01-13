@@ -56,7 +56,10 @@ export interface OrderShippingInfo {
     state?: string;
     postalCode?: string;
     reference?: string;
+    lines?: string[] | null;
   };
+  label?: string | null;
+  lines?: string[] | null;
   contactPhone?: string | null;
   isWhatsapp?: boolean | null;
   addressId?: string | null;
@@ -175,6 +178,7 @@ export interface PrepOrder {
   } | null;
   metadata?: Record<string, unknown> | string | null;
   notes?: string | null;
+  shipping?: OrderShippingInfo | null;
 }
 
 export interface PrepOrderItem {
@@ -1272,6 +1276,9 @@ export interface TicketDetail {
     metodoPago?: string | null;
     montoRecibido?: number | null;
     cambioEntregado?: number | null;
+    deliveryTipAmount?: number | null;
+    deliveryTipPercent?: number | null;
+    shipping?: OrderShippingInfo | null;
   };
   customer: {
     id?: string | null;

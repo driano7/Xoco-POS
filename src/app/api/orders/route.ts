@@ -41,6 +41,7 @@ import {
 import { withDecryptedUserNames } from '@/lib/customer-decrypt';
 import { decryptAddressRow, type DecryptedAddressPayload } from '@/lib/address-decrypt';
 import { sqlite } from '@/lib/sqlite';
+import type { OrderShippingInfo } from '@/lib/api';
 
 const ORDERS_TABLE = process.env.SUPABASE_ORDERS_TABLE ?? 'orders';
 const TICKETS_TABLE = process.env.SUPABASE_TICKETS_TABLE ?? 'tickets';
@@ -279,6 +280,23 @@ const parseShippingSnapshot = (value: unknown) => {
     coerceRecord(record.location) ??
     (record.street || record.city || record.state || record.postalCode ? record : null);
   const address = extractAddressRecord(nestedAddress);
+  const normalizedLines = (() => {
+    const tryLines = (candidate: unknown) => {
+      if (!Array.isArray(candidate)) {
+        return null;
+      }
+      const lines = candidate
+        .map((line) => (typeof line === 'string' ? line.trim() : ''))
+        .filter((line) => Boolean(line));
+      return lines.length ? lines : null;
+    };
+    return (
+      tryLines(record.lines) ??
+      tryLines((nestedAddress as Record<string, unknown> | null)?.lines) ??
+      tryLines(record.addressLines) ??
+      tryLines(record.linesArray)
+    );
+  })();
   const contactPhone =
     coerceString(record.contactPhone) ??
     coerceString(record.contact_phone) ??
@@ -294,16 +312,167 @@ const parseShippingSnapshot = (value: unknown) => {
     coerceString(record.addr) ??
     coerceString(record.id);
   const deliveryTip = parseDeliveryTipSnapshot(record.deliveryTip ?? record.delivery_tip);
+  const label =
+    coerceString(record.addressLabel) ??
+    coerceString(record.label) ??
+    coerceString(record.nickname) ??
+    coerceString(record.alias) ??
+    coerceString(record.id);
   if (!address && !contactPhone && !isWhatsapp && !addressId && !deliveryTip) {
     return null;
   }
   return {
     address,
+    label: label ?? null,
+    lines: normalizedLines,
     contactPhone: contactPhone ?? null,
     isWhatsapp: isWhatsapp ?? null,
     addressId: addressId ?? null,
     deliveryTip,
   };
+};
+
+const parseQrPayloadRecord = (value: unknown) => {
+  if (!value) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.toLowerCase() === '[object object]') {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+};
+
+const extractShippingFromQrPayload = (value: unknown): OrderShippingInfo | null => {
+  const payload = parseQrPayloadRecord(value);
+  if (!payload) {
+    return null;
+  }
+  const shipRecord = coerceRecord(payload.ship ?? payload.shipping);
+  if (!shipRecord) {
+    return null;
+  }
+  const linesFromPayload =
+    Array.isArray(shipRecord.lines) && shipRecord.lines.length
+      ? shipRecord.lines
+          .map((line) => (typeof line === 'string' ? line.trim() : ''))
+          .filter((line) => Boolean(line))
+      : null;
+  const contactPhone =
+    toTrimmedString(shipRecord.phone) ??
+    toTrimmedString(shipRecord.contact) ??
+    toTrimmedString(shipRecord.contactPhone) ??
+    null;
+  const isWhatsapp =
+    typeof shipRecord.isw === 'boolean'
+      ? shipRecord.isw
+      : typeof shipRecord.isWhatsapp === 'boolean'
+        ? shipRecord.isWhatsapp
+        : null;
+  const qrAddressId =
+    toTrimmedString(shipRecord.addr) ??
+    toTrimmedString(shipRecord.addressId) ??
+    toTrimmedString(shipRecord.address_id) ??
+    null;
+  const addressRecord = coerceRecord(shipRecord.address ?? shipRecord.location) ?? null;
+  const derivedAddress =
+    addressRecord ||
+    shipRecord.street ||
+    shipRecord.city ||
+    shipRecord.state ||
+    shipRecord.postalCode ||
+    shipRecord.ref
+      ? {
+          street: toTrimmedString(addressRecord?.street) ?? toTrimmedString(shipRecord.street) ?? undefined,
+          city: toTrimmedString(addressRecord?.city) ?? toTrimmedString(shipRecord.city) ?? undefined,
+          state: toTrimmedString(addressRecord?.state) ?? toTrimmedString(shipRecord.state) ?? undefined,
+          postalCode:
+            toTrimmedString(addressRecord?.postalCode) ??
+            toTrimmedString(shipRecord.postalCode) ??
+            undefined,
+          reference:
+            toTrimmedString(addressRecord?.reference) ??
+            toTrimmedString(shipRecord.ref) ??
+            toTrimmedString(shipRecord.reference) ??
+            undefined,
+        }
+      : undefined;
+  const deliveryTipRecord = coerceRecord(payload.dt ?? shipRecord.deliveryTip);
+  const deliveryTip =
+    parseDeliveryTipSnapshot(deliveryTipRecord) ??
+    (typeof shipRecord.tipAmount === 'number' ||
+    typeof shipRecord.tipPercent === 'number'
+      ? {
+          amount: normalizeNumber(shipRecord.tipAmount) ?? null,
+          percent: normalizeNumber(shipRecord.tipPercent) ?? null,
+        }
+      : null);
+  const label =
+    toTrimmedString(shipRecord.label) ??
+    toTrimmedString(shipRecord.alias) ??
+    toTrimmedString(shipRecord.addressLabel) ??
+    toTrimmedString(shipRecord.nickname) ??
+    null;
+  return {
+    address: derivedAddress,
+    label,
+    lines: linesFromPayload ?? undefined,
+    contactPhone,
+    isWhatsapp,
+    addressId: qrAddressId,
+    deliveryTip,
+  };
+};
+
+const mergeShippingDetails = (
+  base: OrderShippingInfo | null | undefined,
+  incoming: OrderShippingInfo
+): OrderShippingInfo => {
+  if (!base) {
+    return incoming;
+  }
+  const merged: OrderShippingInfo = {
+    address: base.address ?? incoming.address,
+    label: base.label ?? incoming.label ?? undefined,
+    lines:
+      base.lines && base.lines.length
+        ? base.lines
+        : incoming.lines && incoming.lines.length
+          ? incoming.lines
+          : undefined,
+    contactPhone: base.contactPhone ?? incoming.contactPhone ?? null,
+    isWhatsapp:
+      typeof base.isWhatsapp === 'boolean'
+        ? base.isWhatsapp
+        : typeof incoming.isWhatsapp === 'boolean'
+          ? incoming.isWhatsapp
+          : null,
+    addressId: base.addressId ?? incoming.addressId ?? null,
+    deliveryTip: base.deliveryTip ?? incoming.deliveryTip ?? null,
+  };
+  if (base.address && incoming.address) {
+    merged.address = {
+      street: base.address.street ?? incoming.address.street,
+      city: base.address.city ?? incoming.address.city,
+      state: base.address.state ?? incoming.address.state,
+      postalCode: base.address.postalCode ?? incoming.address.postalCode,
+      reference: base.address.reference ?? incoming.address.reference,
+    };
+  }
+  return merged;
 };
 
 const parseStoredItemsValue = (value: unknown) => {
@@ -350,6 +519,24 @@ const normalizeShippingPayload = (value: unknown) => {
         : null;
   const addressId =
     toTrimmedString(record.addressId) ?? toTrimmedString(record.address_id) ?? null;
+  const label =
+    toTrimmedString(record.addressLabel) ??
+    toTrimmedString(record.label) ??
+    toTrimmedString(record.nickname) ??
+    toTrimmedString(addressRecord?.label) ??
+    null;
+  const normalizedLines = (() => {
+    const digest = (source: unknown) => {
+      if (!Array.isArray(source)) {
+        return null;
+      }
+      const list = source
+        .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+        .filter((entry) => Boolean(entry));
+      return list.length ? list : null;
+    };
+    return digest(record.lines) ?? digest(addressRecord?.lines ?? null);
+  })();
   const deliveryTipRecord = coerceRecord(record.deliveryTip) ?? coerceRecord(record.delivery_tip);
   const deliveryTipAmount =
     coerceNumber(deliveryTipRecord?.amount) ??
@@ -361,6 +548,8 @@ const normalizeShippingPayload = (value: unknown) => {
     null;
   return {
     address: normalizedAddress,
+    label,
+    lines: normalizedLines ?? undefined,
     addressId,
     contactPhone,
     isWhatsapp,
@@ -855,19 +1044,21 @@ const mapOrdersPayload = async (
     const metadataAddressId = coerceString(metadataObject?.deliveryAddressId);
     const shippingAddressId =
       coerceString(shipping_address_id) ?? shippingSnapshot?.addressId ?? metadataAddressId ?? null;
-    const shippingPayload =
-      shippingSnapshot ||
-      shippingAddressId ||
-      resolvedContactPhone ||
-      resolvedIsWhatsapp !== null ||
-      metadataDeliveryTipSnapshot
-        ? {
-            address: shippingSnapshot?.address ?? undefined,
-            contactPhone: resolvedContactPhone,
-            isWhatsapp: resolvedIsWhatsapp,
-            addressId: shippingAddressId,
-            deliveryTip: shippingSnapshot?.deliveryTip ?? metadataDeliveryTipSnapshot ?? null,
-          }
+  const shippingPayload =
+    shippingSnapshot ||
+    shippingAddressId ||
+    resolvedContactPhone ||
+    resolvedIsWhatsapp !== null ||
+    metadataDeliveryTipSnapshot
+      ? {
+          address: shippingSnapshot?.address ?? undefined,
+          label: shippingSnapshot?.label ?? undefined,
+          lines: shippingSnapshot?.lines ?? undefined,
+          contactPhone: resolvedContactPhone,
+          isWhatsapp: resolvedIsWhatsapp,
+          addressId: shippingAddressId,
+          deliveryTip: shippingSnapshot?.deliveryTip ?? metadataDeliveryTipSnapshot ?? null,
+        }
         : null;
     const totalsSnapshot =
       coerceRecord(rawTotals) ??
@@ -1030,11 +1221,25 @@ const mapOrdersPayload = async (
 
   enriched = enriched.map((order) => {
     const orderId = typeof order.id === 'string' ? order.id : null;
+    const qrPayload = orderId ? qrMap.get(orderId) ?? null : null;
+    const qrShipping = extractShippingFromQrPayload(qrPayload);
+    let mergedShipping: OrderShippingInfo | null | undefined =
+      (order.shipping as OrderShippingInfo | null | undefined) ?? null;
+    if (qrShipping) {
+      mergedShipping = mergeShippingDetails(mergedShipping, qrShipping);
+    }
+    const resolvedDeliveryTipAmount =
+      order.deliveryTipAmount ?? qrShipping?.deliveryTip?.amount ?? null;
+    const resolvedDeliveryTipPercent =
+      order.deliveryTipPercent ?? qrShipping?.deliveryTip?.percent ?? null;
     return {
       ...order,
       ticketCode: orderId ? ticketMap.get(orderId) || null : null,
       shortCode: orderId ? codeMap.get(orderId) || null : null,
-      qrPayload: orderId ? qrMap.get(orderId) ?? null : null,
+      qrPayload,
+      shipping: mergedShipping ?? order.shipping ?? null,
+      deliveryTipAmount: resolvedDeliveryTipAmount,
+      deliveryTipPercent: resolvedDeliveryTipPercent,
     };
   });
 
@@ -1386,13 +1591,9 @@ const supabaseOrdersLoader: OrdersDataLoader = {
       payload_iv?: string | null;
       payload_tag?: string | null;
       payload_salt?: string | null;
-      street?: string | null;
-      city?: string | null;
-      state?: string | null;
-      postalCode?: string | null;
-      country?: string | null;
-      reference?: string | null;
       isDefault?: boolean | null;
+      createdAt?: string | null;
+      updatedAt?: string | null;
       user?:
         | { id?: string | null; email?: string | null }
         | { id?: string | null; email?: string | null }[]
@@ -1401,7 +1602,7 @@ const supabaseOrdersLoader: OrdersDataLoader = {
     const { data, error } = await supabaseAdmin
       .from(ADDRESSES_TABLE)
       .select(
-        'id,"userId",label,nickname,type,payload,payload_iv,payload_tag,payload_salt,street,city,state,"postalCode",country,reference,"isDefault",user:users(id,email)'
+        'id,"userId",label,nickname,type,"isDefault","createdAt","updatedAt",payload,payload_iv,payload_tag,payload_salt,user:users(id,email)'
       )
       .in('id', addressIds)
       .returns<AddressRowResponse[] | null>();
@@ -1426,13 +1627,9 @@ const supabaseOrdersLoader: OrdersDataLoader = {
           payload_iv: row.payload_iv,
           payload_tag: row.payload_tag,
           payload_salt: row.payload_salt,
-          street: row.street,
-          city: row.city,
-          state: row.state,
-          postalCode: row.postalCode,
-          country: row.country,
-          reference: row.reference,
           isDefault: row.isDefault,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
         },
         email
       );

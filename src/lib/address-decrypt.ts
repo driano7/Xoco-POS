@@ -26,6 +26,8 @@ export type EncryptedAddressRow = {
   isDefault?: boolean | null;
   contactPhone?: string | null;
   isWhatsapp?: boolean | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 };
 
 export type DecryptedAddressPayload = {
@@ -43,6 +45,8 @@ export type DecryptedAddressPayload = {
   contactPhone?: string | null;
   isWhatsapp?: boolean | null;
   isDefault?: boolean | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 };
 
 const hasEncryptedPayload = (row: EncryptedAddressRow) =>
@@ -115,6 +119,8 @@ export const decryptAddressRow = (
               ? parsed.whatsapp
               : row.isWhatsapp ?? null,
         isDefault: typeof parsed.isDefault === 'boolean' ? parsed.isDefault : row.isDefault ?? null,
+        createdAt: row.createdAt ?? null,
+        updatedAt: row.updatedAt ?? null,
       };
     }
   }
@@ -134,5 +140,7 @@ export const decryptAddressRow = (
     contactPhone: row.contactPhone ?? null,
     isWhatsapp: row.isWhatsapp ?? null,
     isDefault: row.isDefault ?? null,
+    createdAt: row.createdAt ?? null,
+    updatedAt: row.updatedAt ?? null,
   };
 };

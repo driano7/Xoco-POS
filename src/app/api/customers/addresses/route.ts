@@ -125,7 +125,7 @@ export async function GET(request: Request) {
     const { data: addressRows, error: addressesError } = await supabaseAdmin
       .from(ADDRESSES_TABLE)
       .select(
-        'id,"userId",label,nickname,type,payload,payload_iv,payload_tag,payload_salt,street,city,state,"postalCode",country,reference,"isDefault"'
+        'id,"userId",label,nickname,type,"isDefault","createdAt","updatedAt",payload,payload_iv,payload_tag,payload_salt'
       )
       .eq('"userId"', targetUserId)
       .order('createdAt', { ascending: false });

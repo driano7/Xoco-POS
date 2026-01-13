@@ -53,6 +53,117 @@ const normalizeNumber = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const coerceRecord = (value: unknown): Record<string, unknown> | null => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return { ...(value as Record<string, unknown>) };
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { ...(parsed as Record<string, unknown>) };
+      }
+    } catch {
+      return null;
+    }
+  }
+  return null;
+};
+
+const coerceString = (value: unknown) => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  return null;
+};
+
+const coerceBoolean = (value: unknown) => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+  return null;
+};
+
+const parseDeliveryTipSnapshot = (value: unknown) => {
+  const record = coerceRecord(value);
+  if (!record) {
+    const amount = normalizeNumber(value);
+    return amount !== null
+      ? {
+          amount,
+          percent: null,
+        }
+      : null;
+  }
+  const amount =
+    normalizeNumber(record.amount) ??
+    normalizeNumber(record.a) ??
+    normalizeNumber(record.value) ??
+    null;
+  const percent =
+    normalizeNumber(record.percent) ??
+    normalizeNumber(record.p) ??
+    normalizeNumber(record.percentage) ??
+    null;
+  if (amount === null && percent === null) {
+    return null;
+  }
+  return {
+    amount,
+    percent,
+  };
+};
+
+const parseShippingSnapshot = (value: unknown) => {
+  const record = coerceRecord(value);
+  if (!record) {
+    return null;
+  }
+  const nestedAddress =
+    coerceRecord(record.address) ??
+    coerceRecord(record.location) ??
+    (record.street || record.city || record.state || record.postalCode ? record : null);
+  const address = nestedAddress
+    ? {
+        street: coerceString(nestedAddress.street) ?? undefined,
+        city: coerceString(nestedAddress.city) ?? undefined,
+        state: coerceString(nestedAddress.state) ?? undefined,
+        postalCode: coerceString(nestedAddress.postalCode) ?? undefined,
+        reference: coerceString(nestedAddress.reference) ?? undefined,
+      }
+    : undefined;
+  const contactPhone =
+    coerceString(record.contactPhone) ??
+    coerceString(record.contact_phone) ??
+    coerceString(record.phone) ??
+    coerceString(record.phoneNumber);
+  const isWhatsapp =
+    coerceBoolean(record.isWhatsapp) ??
+    coerceBoolean(record.whatsapp) ??
+    coerceBoolean(record.is_whatsapp);
+  const addressId =
+    coerceString(record.addressId) ??
+    coerceString(record.address_id) ??
+    coerceString(record.addr) ??
+    coerceString(record.id);
+  const deliveryTip = parseDeliveryTipSnapshot(record.deliveryTip ?? record.delivery_tip);
+  if (!address && !contactPhone && isWhatsapp === null && !addressId && !deliveryTip) {
+    return null;
+  }
+  return {
+    address,
+    contactPhone: contactPhone ?? null,
+    isWhatsapp,
+    addressId: addressId ?? null,
+    deliveryTip,
+  };
+};
+
 const coerceMetadataObject = (value: unknown): Record<string, unknown> | null => {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return { ...(value as Record<string, unknown>) };
@@ -128,7 +239,7 @@ export async function GET(
     }
 
     const orderSelectFields =
-      'id,"orderNumber",status,total,currency,"createdAt","userId","items","metadata","notes","message","instructions","queuedPaymentMethod","paymentMethod"';
+      'id,"orderNumber",status,total,currency,"createdAt","userId","items","metadata","notes","message","instructions","queuedPaymentMethod","paymentMethod","deliveryTipAmount","deliveryTipPercent","shipping_contact_phone","shipping_contact_is_whatsapp","shipping_address_id","montoRecibido","cambioEntregado"';
 
     const {
       data: orderById,
@@ -242,6 +353,85 @@ export async function GET(
     const notes = toTrimmedString((order as { notes?: unknown }).notes);
     const message = toTrimmedString((order as { message?: unknown }).message);
     const instructions = toTrimmedString((order as { instructions?: unknown }).instructions);
+
+    const resolveItemsContainer = () => {
+      if (!order.items) {
+        return null;
+      }
+      if (typeof order.items === 'object' && !Array.isArray(order.items)) {
+        return order.items as Record<string, unknown>;
+      }
+      if (typeof order.items === 'string') {
+        try {
+          const parsed = JSON.parse(order.items);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            return parsed as Record<string, unknown>;
+          }
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    };
+
+    const itemsContainer = resolveItemsContainer();
+    const storedShippingSnapshot =
+      itemsContainer && itemsContainer.shipping
+        ? parseShippingSnapshot(itemsContainer.shipping)
+        : null;
+    const metadataShippingSnapshot =
+      metadataObject?.shipping && typeof metadataObject.shipping === 'object'
+        ? parseShippingSnapshot(metadataObject.shipping)
+        : null;
+    const metadataDeliverySnapshot =
+      metadataObject?.delivery && typeof metadataObject.delivery === 'object'
+        ? parseShippingSnapshot(metadataObject.delivery)
+        : null;
+    const shippingSnapshot =
+      storedShippingSnapshot ?? metadataShippingSnapshot ?? metadataDeliverySnapshot ?? null;
+    const metadataDeliveryTipRecord =
+      metadataObject?.deliveryTip && typeof metadataObject.deliveryTip === 'object'
+        ? coerceRecord(metadataObject.deliveryTip)
+        : null;
+    const deliveryTipFromSnapshot =
+      shippingSnapshot?.deliveryTip ?? parseDeliveryTipSnapshot(metadataDeliveryTipRecord);
+    const resolvedContactPhone =
+      toTrimmedString((order as { shipping_contact_phone?: unknown }).shipping_contact_phone) ??
+      shippingSnapshot?.contactPhone ??
+      null;
+    const resolvedIsWhatsapp =
+      typeof (order as { shipping_contact_is_whatsapp?: unknown }).shipping_contact_is_whatsapp === 'number'
+        ? (order as { shipping_contact_is_whatsapp?: number }).shipping_contact_is_whatsapp === 1
+        : shippingSnapshot?.isWhatsapp ?? null;
+    const shippingAddressId =
+      toTrimmedString((order as { shipping_address_id?: unknown }).shipping_address_id) ??
+      shippingSnapshot?.addressId ??
+      null;
+    const resolvedDeliveryTipAmount =
+      normalizeNumber((order as { deliveryTipAmount?: unknown }).deliveryTipAmount) ??
+      normalizeNumber(deliveryTipFromSnapshot?.amount) ??
+      normalizeNumber(metadataObject?.deliveryTipAmount) ??
+      null;
+    const resolvedDeliveryTipPercent =
+      normalizeNumber((order as { deliveryTipPercent?: unknown }).deliveryTipPercent) ??
+      normalizeNumber(deliveryTipFromSnapshot?.percent) ??
+      normalizeNumber(
+        metadataDeliveryTipRecord ? metadataDeliveryTipRecord.percent : null
+      ) ??
+      null;
+    const shippingPayload =
+      shippingSnapshot ||
+      resolvedContactPhone ||
+      resolvedIsWhatsapp !== null ||
+      shippingAddressId
+        ? {
+            address: shippingSnapshot?.address ?? undefined,
+            contactPhone: resolvedContactPhone,
+            isWhatsapp: resolvedIsWhatsapp,
+            addressId: shippingAddressId,
+            deliveryTip: deliveryTipFromSnapshot ?? null,
+          }
+        : null;
 
     const effectiveTicket = {
       id: ticketRecord?.id ?? order.id,
@@ -696,6 +886,9 @@ export async function GET(
           metodoPago: metodoPagoVenta ?? null,
           montoRecibido: montoRecibidoVenta,
           cambioEntregado: cambioVenta,
+          deliveryTipAmount: resolvedDeliveryTipAmount,
+          deliveryTipPercent: resolvedDeliveryTipPercent,
+          shipping: shippingPayload,
         },
         customer: customerPayload,
         items,

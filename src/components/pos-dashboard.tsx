@@ -1311,6 +1311,17 @@ const buildOrderFromTicketDetail = (detail: TicketDetail, fallback?: ScannedTick
     detail.sale?.cambioEntregado ??
     (detail.order as { cambioEntregado?: number | null }).cambioEntregado ??
     null;
+  const shippingFromDetail =
+    (detail.order as { shipping?: OrderShippingInfo | null }).shipping ??
+    buildShippingFromMetadata(metadataObject);
+  const deliveryTipAmountFromDetail =
+    (detail.order as { deliveryTipAmount?: number | null }).deliveryTipAmount ??
+    shippingFromDetail?.deliveryTip?.amount ??
+    null;
+  const deliveryTipPercentFromDetail =
+    (detail.order as { deliveryTipPercent?: number | null }).deliveryTipPercent ??
+    shippingFromDetail?.deliveryTip?.percent ??
+    null;
 
   return {
     id: detail.order.id,
@@ -1325,6 +1336,8 @@ const buildOrderFromTicketDetail = (detail: TicketDetail, fallback?: ScannedTick
     itemsCount,
     tipAmount: detail.ticket.tipAmount ?? fallback?.tipAmount ?? null,
     tipPercent: detail.ticket.tipPercent ?? fallback?.tipPercent ?? null,
+    deliveryTipAmount: deliveryTipAmountFromDetail ?? undefined,
+    deliveryTipPercent: deliveryTipPercentFromDetail ?? undefined,
     queuedPaymentMethod: resolvedPaymentMethod,
     queuedPaymentReference: resolvedPaymentReference,
     queuedPaymentReferenceType: resolvedPaymentReferenceType,
@@ -1346,6 +1359,7 @@ const buildOrderFromTicketDetail = (detail: TicketDetail, fallback?: ScannedTick
     notes:
       toTrimmedString((detail.order as { notes?: unknown })?.notes) ??
       toTrimmedString(fallback?.notes ?? null),
+    shipping: shippingFromDetail ?? undefined,
   } as Order;
 };
 
@@ -1771,6 +1785,18 @@ const STOCK_STATUS_STORAGE_KEY = 'xoco-pos-stock-flags';
 
 const MX_HOLIDAYS = new Set(['01-01', '02-05', '03-21', '05-01', '09-16', '11-20', '12-25']);
 
+const COFEPRIS_SECTIONS = [
+  { id: 'hygiene', label: 'Higiene' },
+  { id: 'pest', label: 'Plagas' },
+  { id: 'inventory', label: 'Manejo de alimentos' },
+  { id: 'waste', label: 'Residuos' },
+] as const;
+
+const DEFAULT_COFEPRIS_CHART = COFEPRIS_SECTIONS.map((section) => ({
+  name: section.label,
+  value: 0,
+}));
+
 type FiscalFolioConfig = {
   series: string;
   nextNumber: number;
@@ -2062,6 +2088,12 @@ export function PosDashboard() {
   const [publicSalesError, setPublicSalesError] = useState<string | null>(null);
   const [selectedPublicSalesMonth, setSelectedPublicSalesMonth] = useState<string | null>(null);
   const [selectedOverallSalesMonth, setSelectedOverallSalesMonth] = useState<string | null>(null);
+  const [dailySummaryExportMode, setDailySummaryExportMode] = useState<'csv' | 'excel' | 'chart'>(
+    'chart'
+  );
+  const [dailySummaryExporting, setDailySummaryExporting] = useState(false);
+  const [dailySummaryExportError, setDailySummaryExportError] = useState<string | null>(null);
+  const [dailySummaryChartKey, setDailySummaryChartKey] = useState(0);
   const [activeSection, setActiveSection] = useState<NavSection>('home');
   const [reservationOverrides, setReservationOverrides] = useState<
     Record<string, 'completed' | 'cancelled'>
@@ -2124,6 +2156,18 @@ export function PosDashboard() {
   );
   const [tipsInitialized, setTipsInitialized] = useState(false);
   const [pestAlertMessage, setPestAlertMessage] = useState<string | null>(null);
+  const [cofeprisSummarySnapshot, setCofeprisSummarySnapshot] =
+    useState<Array<{ name: string; value: number }>>(DEFAULT_COFEPRIS_CHART);
+  const handleCofeprisSnapshot = useCallback(
+    (snapshot: Array<{ name: string; value: number }>) => {
+      if (!snapshot || snapshot.length === 0) {
+        setCofeprisSummarySnapshot(DEFAULT_COFEPRIS_CHART);
+        return;
+      }
+      setCofeprisSummarySnapshot(snapshot.map((entry) => ({ ...entry })));
+    },
+    []
+  );
   useEffect(() => {
     try {
       const stored = localStorage.getItem(STOCK_STATUS_STORAGE_KEY);
@@ -3051,30 +3095,107 @@ export function PosDashboard() {
       { name: 'Completados', value: completed.length },
     ].filter((entry) => entry.value > 0);
   }, [overallSalesHistory, publicSalesHistory, pending.length, baseActivePrep.length, completed.length]);
+  const handleDailySummaryModeChange = useCallback((mode: 'csv' | 'excel' | 'chart') => {
+    setDailySummaryExportMode(mode);
+    setDailySummaryExportError(null);
+    if (mode === 'chart') {
+      setDailySummaryChartKey((prev) => prev + 1);
+    }
+  }, []);
+  const handleDailySummaryExport = useCallback(async () => {
+    if (dailySummaryExportMode === 'chart') {
+      setDailySummaryExportError('Selecciona CSV o Excel para descargar.');
+      return;
+    }
+    setDailySummaryExportError(null);
+    setDailySummaryExporting(true);
+    try {
+      const numeric = (value: number | null | undefined) =>
+        typeof value === 'number' && Number.isFinite(value) ? Number(value.toFixed(2)) : 0;
+      const rows: Array<Array<string | number>> = [
+        ['Métrica', 'Valor', 'Detalle'],
+        ['Ventas turno (MXN)', numeric(totalSales), 'Últimas 24h'],
+        ['Pedidos activos', pending.length, 'Pendientes'],
+        ['Pedidos totales', visibleOrders.length, 'Últimos 100 visibles'],
+        ['Pasados', pastOrders.length, 'Se ocultan a 3 días'],
+        ['Completados', completed.length, 'Histórico cercano'],
+        ['Reservas activas', reservationCounts.pending, 'Próximas 24h'],
+        ['En barra', baseActivePrep.length, 'En producción'],
+        ['Staff en turno', staffActive, `Activos de ${staffTotal}`],
+        [
+          'Cliente top (órdenes)',
+          topCustomer?.totalInteractions ?? 0,
+          getCustomerDisplayName(topCustomer) || 'Sin datos',
+        ],
+        ['Propinas (MXN)', numeric(totalTips), 'Monto acumulado'],
+      ];
+      if (dailySummaryExportMode === 'csv') {
+        const escapeCell = (value: string | number) => {
+          const cell = String(value ?? '');
+          if (cell.includes('"') || cell.includes(',') || cell.includes('\n')) {
+            return `"${cell.replace(/"/g, '""')}"`;
+          }
+          return cell;
+        };
+        const csvContent = rows.map((row) => row.map(escapeCell).join(',')).join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = `corte-diario-${new Date().toISOString().slice(0, 10)}.csv`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        URL.revokeObjectURL(url);
+      } else {
+        const XLSX = await import('xlsx');
+        const worksheet = XLSX.utils.aoa_to_sheet(rows);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'Corte diario');
+        const excelBuffer = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+        const blob = new Blob([excelBuffer], {
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = `corte-diario-${new Date().toISOString().slice(0, 10)}.xlsx`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        URL.revokeObjectURL(url);
+      }
+    } catch (error) {
+      setDailySummaryExportError(
+        error instanceof Error ? error.message : 'No pudimos preparar el corte diario.'
+      );
+    } finally {
+      setDailySummaryExporting(false);
+    }
+  }, [
+    baseActivePrep.length,
+    completed.length,
+    dailySummaryExportMode,
+    pastOrders.length,
+    pending.length,
+    reservationCounts.pending,
+    staffActive,
+    staffTotal,
+    topCustomer,
+    totalSales,
+    totalTips,
+    visibleOrders.length,
+  ]);
 
   const cofeprisChartData = useMemo(() => {
-    const summary: Array<{ name: string; value: number }> = [];
-    (Object.entries(managerInventory) as Array<[InventoryCategoryId, InventoryEntry[]]>).forEach(
-      ([category, items]) => {
-        const totalAccidents = items.reduce((sum, item) => sum + (item.accidents ?? 0), 0);
-        if (totalAccidents > 0) {
-          summary.push({
-            name: INVENTORY_CATEGORY_META[category]?.label ?? category,
-            value: totalAccidents,
-          });
-        }
-      }
+    const sanitized = cofeprisSummarySnapshot.filter(
+      (entry) => Number.isFinite(entry.value) && typeof entry.name === 'string'
     );
-    if (summary.length > 0) {
-      return summary;
+    if (sanitized.length === 0) {
+      return DEFAULT_COFEPRIS_CHART;
     }
-    return (Object.entries(managerInventory) as Array<[InventoryCategoryId, InventoryEntry[]]>).map(
-      ([category, items]) => ({
-        name: INVENTORY_CATEGORY_META[category]?.label ?? category,
-        value: items.length,
-      })
-    );
-  }, [managerInventory]);
+    return sanitized.map((entry) => ({ ...entry }));
+  }, [cofeprisSummarySnapshot]);
 
   const employeeChartData = useMemo(() => {
     const roles = staffData?.metrics?.roles ?? [];
@@ -4734,12 +4855,57 @@ export function PosDashboard() {
                     <p>Turno: Matutino</p>
                     <p>POS Matriz Roma Norte</p>
                   </div>
-                  {metricsChartData.length > 0 && (
-                    <ChartButton
-                      title="Ventas recientes"
-                      data={metricsChartData}
-                      yAxisLabel="MXN"
-                    />
+                  <div className="flex flex-wrap items-center justify-end gap-2 text-xs">
+                    <span>Formato:</span>
+                    {['csv', 'excel', 'chart'].map((mode) => (
+                      <label
+                        key={mode}
+                        className={`flex items-center gap-1 rounded-full border px-3 py-1 ${dailySummaryExportMode === mode
+                            ? 'border-primary-500 bg-primary-100 text-primary-700'
+                            : 'border-primary-100/70 text-[var(--brand-muted)]'
+                          }`}
+                      >
+                        <input
+                          type="radio"
+                          name="daily-summary-export"
+                          value={mode}
+                          checked={dailySummaryExportMode === mode}
+                          onChange={(event) =>
+                            handleDailySummaryModeChange(event.target.value as 'csv' | 'excel' | 'chart')
+                          }
+                          className="h-3 w-3 text-primary-600 focus:ring-primary-500"
+                        />
+                        {mode === 'chart' ? 'Gráfica' : mode.toUpperCase()}
+                      </label>
+                    ))}
+                    {dailySummaryExportMode === 'chart' ? (
+                      metricsChartData.length > 0 ? (
+                        <ChartButton
+                          key={`daily-${dailySummaryExportMode}`}
+                          title="Ventas recientes"
+                          data={metricsChartData}
+                          yAxisLabel="MXN"
+                          autoOpenToken={`daily-${dailySummaryChartKey}`}
+                          onClose={() => handleDailySummaryModeChange('csv')}
+                        />
+                      ) : (
+                        <span className="text-[var(--brand-muted)]">Sin datos para graficar.</span>
+                      )
+                    ) : (
+                      <button
+                        type="button"
+                        className="brand-button text-xs"
+                        onClick={() => void handleDailySummaryExport()}
+                        disabled={dailySummaryExporting}
+                      >
+                        {dailySummaryExporting ? 'Preparando…' : 'Descargar corte'}
+                      </button>
+                    )}
+                  </div>
+                  {dailySummaryExportError && dailySummaryExportMode !== 'chart' && (
+                    <p className="text-xs font-semibold text-danger-600 dark:text-danger-300">
+                      {dailySummaryExportError}
+                    </p>
                   )}
                 </div>
               </div>
@@ -4830,6 +4996,7 @@ export function PosDashboard() {
               staffName={staffDisplayName}
               branchId={user.branchId}
               onPestAlertChange={(message) => setPestAlertMessage(message)}
+              onSummarySnapshotChange={handleCofeprisSnapshot}
             />
           </section>
         )}
@@ -5901,6 +6068,15 @@ const buildAddressDetails = (
   if (!record) {
     return null;
   }
+  const normalizeLines = (value: unknown): string[] | null => {
+    if (!Array.isArray(value)) {
+      return null;
+    }
+    const lines = value
+      .map((line) => (typeof line === 'string' ? line.trim() : ''))
+      .filter((line) => Boolean(line));
+    return lines.length ? lines : null;
+  };
   const street =
     toTrimmedString(record.street) ??
     toTrimmedString(record.addressLine1) ??
@@ -5918,13 +6094,19 @@ const buildAddressDetails = (
     toTrimmedString(record.references) ??
     toTrimmedString(record.note) ??
     undefined;
-  if (street || city || state || postalCode || reference) {
+  const lines =
+    normalizeLines(record.lines) ??
+    normalizeLines(record.addressLines) ??
+    normalizeLines(record.linesArray) ??
+    null;
+  if (street || city || state || postalCode || reference || lines) {
     return {
       street,
       city,
       state,
       postalCode,
       reference,
+      lines: lines ?? undefined,
     };
   }
   return null;
@@ -5976,6 +6158,27 @@ const buildShippingFromMetadata = (
     parseMetadataRecord(shippingRecord['deliveryTip']) ??
     parseMetadataRecord(metadata.deliveryTip) ??
     null;
+  const normalizeLines = (value: unknown): string[] | null => {
+    if (!Array.isArray(value)) {
+      return null;
+    }
+    const lines = value
+      .map((line) => (typeof line === 'string' ? line.trim() : ''))
+      .filter((line) => Boolean(line));
+    return lines.length ? lines : null;
+  };
+  const normalizedLines =
+    normalizeLines(shippingRecord['lines']) ??
+    normalizeLines(addressRecord?.lines) ??
+    normalizeLines(shippingRecord['addressLines']) ??
+    null;
+  const label =
+    toTrimmedString(shippingRecord['label']) ??
+    toTrimmedString(shippingRecord['addressLabel']) ??
+    toTrimmedString(shippingRecord['nickname']) ??
+    toTrimmedString(shippingRecord['alias']) ??
+    toTrimmedString(metadata.deliveryAddressLabel) ??
+    null;
   const deliveryTip =
     deliveryTipRecord &&
       (deliveryTipRecord.amount !== undefined || deliveryTipRecord.percent !== undefined)
@@ -5996,6 +6199,8 @@ const buildShippingFromMetadata = (
     isWhatsapp,
     addressId,
     deliveryTip,
+    label: label ?? undefined,
+    lines: normalizedLines ?? undefined,
   };
 };
 
@@ -6134,8 +6339,19 @@ const buildVirtualTicketOrderPayload = ({
             state: shipping.address.state ?? undefined,
             postalCode: shipping.address.postalCode ?? undefined,
             reference: shipping.address.reference ?? undefined,
+            lines:
+              Array.isArray(shipping.address.lines) && shipping.address.lines.length
+                ? shipping.address.lines
+                : undefined,
           }
           : undefined,
+        label: shipping.label ?? undefined,
+        lines:
+          (Array.isArray(shipping.lines) && shipping.lines.length
+            ? shipping.lines
+            : Array.isArray(shipping.address?.lines) && shipping.address.lines.length
+              ? shipping.address.lines
+              : null) ?? undefined,
         contactPhone: shipping.contactPhone ?? undefined,
         isWhatsapp: shipping.isWhatsapp ?? undefined,
         addressId: shipping.addressId ?? undefined,
@@ -6258,14 +6474,52 @@ const OrderItemsSection = ({ items }: { items: OrderItemEntry[] }) => (
 );
 
 const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null }) => {
-  if (!shipping || (!shipping.address && !shipping.deliveryTip)) return null;
+  if (!shipping) {
+    return null;
+  }
+  const { address, deliveryTip, contactPhone, isWhatsapp, label, lines } = shipping;
+  const hasAddress =
+    Boolean(address?.street) ||
+    Boolean(address?.city) ||
+    Boolean(address?.state) ||
+    Boolean(address?.postalCode) ||
+    Boolean(address?.reference) ||
+    Boolean(lines?.length) ||
+    Boolean(address?.lines?.length);
+  const hasContact = Boolean(contactPhone);
+  const hasDeliveryTip =
+    typeof deliveryTip?.amount === 'number' ||
+    (typeof deliveryTip?.percent === 'number' && Number.isFinite(deliveryTip.percent));
 
-  const { address, deliveryTip, contactPhone } = shipping;
-  const fullAddress = address
-    ? [address.street, address.postalCode, address.city, address.state].filter(Boolean).join(', ')
-    : 'Dirección no disponible';
+  if (!hasAddress && !hasContact && !hasDeliveryTip) {
+    return null;
+  }
 
-  const hasAddress = !!address;
+  const resolvedLines = (() => {
+    const normalizeLines = (value: unknown) => {
+      if (!Array.isArray(value)) {
+        return null;
+      }
+      const formatted = value
+        .map((line) => (typeof line === 'string' ? line.trim() : ''))
+        .filter((line) => Boolean(line));
+      return formatted.length ? formatted : null;
+    };
+    const explicitLines = normalizeLines(lines) ?? normalizeLines(address?.lines);
+    if (explicitLines) {
+      return explicitLines;
+    }
+    if (!hasAddress) {
+      return [];
+    }
+    const fallback = [address?.street, address?.city, address?.state]
+      .filter((value) => Boolean(value && value.trim()))
+      .join(', ');
+    const postal = address?.postalCode ? `CP ${address.postalCode}` : null;
+    const reference = address?.reference ?? null;
+    return [fallback, postal, reference].filter((value): value is string => Boolean(value && value.trim()));
+  })();
+
   const deliveryTipAmount =
     typeof deliveryTip?.amount === 'number' && Number.isFinite(deliveryTip.amount)
       ? deliveryTip.amount
@@ -6274,11 +6528,10 @@ const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null })
     typeof deliveryTip?.percent === 'number' && Number.isFinite(deliveryTip.percent)
       ? deliveryTip.percent
       : null;
-  const hasTip = deliveryTipAmount !== null && deliveryTipAmount > 0;
 
   return (
     <div className="mb-4 rounded-3xl border border-primary-100/60 bg-white/80 p-4 dark:border-white/10 dark:bg-white/5">
-      <div className="flex items-start gap-4">
+      <div className="mb-2 flex items-start gap-4">
         <div className="rounded-full bg-primary-100 p-2 text-primary-600 dark:bg-primary-900/30 dark:text-primary-300">
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -6293,30 +6546,49 @@ const ShippingInfoCard = ({ shipping }: { shipping?: OrderShippingInfo | null })
             />
           </svg>
         </div>
-        <div className="flex-1 space-y-1">
-          <p className="font-semibold text-[var(--brand-text)] dark:text-white">
-            Entrega a Domicilio
-          </p>
-          {hasAddress && (
-            <>
-              <p className="text-sm text-[var(--brand-muted)]">{fullAddress}</p>
-              {address!.reference && (
-                <p className="text-xs italic text-[var(--brand-muted)]">&quot;Ref: {address!.reference}&quot;</p>
-              )}
-            </>
-          )}
-          {contactPhone && <p className="text-xs text-[var(--brand-muted)]">Tel: {contactPhone}</p>}
-        </div>
-        {hasTip && (
-          <div className="text-right">
-            <p className="text-xs text-[var(--brand-muted)]">Propina envío</p>
-            <p className="font-semibold text-emerald-600 dark:text-emerald-400">
-              {formatCurrency(deliveryTipAmount ?? 0)}
-              {deliveryTipPercent !== null ? ` (${deliveryTipPercent.toFixed(1)}%)` : ''}
+        <div className="flex-1">
+          <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">Entrega a domicilio</p>
+          {label && (
+            <p className="mt-1 text-sm font-semibold text-primary-900 dark:text-primary-50">
+              Alias: {label}
             </p>
-          </div>
-        )}
+          )}
+          {resolvedLines.length > 0 ? (
+            <ul className="mt-1 space-y-0.5 text-sm text-primary-800 dark:text-primary-100">
+              {resolvedLines.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          ) : null}
+          {address?.reference && !resolvedLines.some((line) => line.includes(address.reference!)) && (
+            <p className="mt-1 text-xs text-[var(--brand-muted)]">Ref: {address.reference}</p>
+          )}
+        </div>
       </div>
+      {contactPhone && (
+        <p className="text-sm text-primary-900 dark:text-primary-50">
+          <span className="font-semibold">Contacto:</span> {contactPhone}
+          {isWhatsapp && (
+            <span className="ml-2 inline-flex items-center rounded-full bg-success-100 px-2 py-[2px] text-[10px] font-semibold uppercase tracking-[0.2em] text-success-700 dark:bg-success-900/30 dark:text-success-200">
+              WhatsApp
+            </span>
+          )}
+        </p>
+      )}
+      {hasDeliveryTip && (
+        <p className="mt-2 text-sm text-primary-900 dark:text-primary-50">
+          <span className="font-semibold">Propina de entrega:</span>{' '}
+          {deliveryTipAmount !== null ? formatCurrency(deliveryTipAmount) : '—'}
+          {deliveryTipPercent !== null && (
+            <span className="ml-2 text-xs font-semibold text-primary-700/80 dark:text-primary-200/80">
+              {deliveryTipPercent}% cliente
+            </span>
+          )}
+        </p>
+      )}
+      {!contactPhone && !hasDeliveryTip && (
+        <p className="mt-2 text-xs text-[var(--brand-muted)]">Sin detalles adicionales de contacto.</p>
+      )}
     </div>
   );
 };
@@ -6409,6 +6681,7 @@ const OrderDetailContent = ({
   isInPrepQueue?: boolean;
   onNotify?: (message: string) => void;
 }) => {
+  const [detailSnapshot, setDetailSnapshot] = useState<Order | null>(null);
   const [items, setItems] = useState<OrderItemEntry[]>(
     Array.isArray(order.items) ? (order.items as OrderItemEntry[]) : []
   );
@@ -6418,27 +6691,39 @@ const OrderDetailContent = ({
   const metadataObject = useMemo(() => parseMetadataRecord(order.metadata), [order.metadata]);
   const fallbackShipping = useMemo(() => buildShippingFromMetadata(metadataObject), [metadataObject]);
   const shippingInfo = useMemo(
-    () => order.shipping ?? fallbackShipping ?? null,
-    [fallbackShipping, order.shipping]
+    () => detailSnapshot?.shipping ?? order.shipping ?? fallbackShipping ?? null,
+    [detailSnapshot, fallbackShipping, order.shipping]
   );
   const normalizedShippingInfo = useMemo(() => {
     if (!shippingInfo) {
       return null;
     }
+    const normalizedLines =
+      Array.isArray(shippingInfo.lines) && shippingInfo.lines.length
+        ? shippingInfo.lines
+        : Array.isArray(shippingInfo.address?.lines) && shippingInfo.address.lines.length
+          ? shippingInfo.address.lines
+          : null;
     return {
       address: shippingInfo.address
         ? {
-            street: shippingInfo.address.street ?? null,
-            city: shippingInfo.address.city ?? null,
-            state: shippingInfo.address.state ?? null,
-            postalCode: shippingInfo.address.postalCode ?? null,
-            reference: shippingInfo.address.reference ?? null,
-          }
+          street: shippingInfo.address.street ?? null,
+          city: shippingInfo.address.city ?? null,
+          state: shippingInfo.address.state ?? null,
+          postalCode: shippingInfo.address.postalCode ?? null,
+          reference: shippingInfo.address.reference ?? null,
+          lines:
+            Array.isArray(shippingInfo.address.lines) && shippingInfo.address.lines.length
+              ? shippingInfo.address.lines
+              : null,
+        }
         : null,
       contactPhone: shippingInfo.contactPhone ?? null,
       isWhatsapp:
         typeof shippingInfo.isWhatsapp === 'boolean' ? shippingInfo.isWhatsapp : null,
       addressId: shippingInfo.addressId ?? null,
+      label: shippingInfo.label ?? null,
+      lines: normalizedLines,
       deliveryTip:
         shippingInfo.deliveryTip &&
         (typeof shippingInfo.deliveryTip.amount === 'number' ||
@@ -6492,6 +6777,7 @@ const OrderDetailContent = ({
           ? metadataCashTendered
           : null;
     setCashTenderedInput(tendered !== null && Number.isFinite(tendered) ? String(tendered) : '');
+    setDetailSnapshot(null);
   }, [metadataCashTendered, order]);
 
   useEffect(() => {
@@ -6521,6 +6807,7 @@ const OrderDetailContent = ({
           return;
         }
         const fallback = buildOrderFromTicketDetail(detail);
+        setDetailSnapshot(fallback);
         const resolvedItems = Array.isArray(fallback.items) ? fallback.items : [];
         if (resolvedItems.length) {
           setItems(resolvedItems);
@@ -6550,19 +6837,35 @@ const OrderDetailContent = ({
     };
   }, [items.length, order.id, order.orderNumber, order.ticketCode]);
 
-  const resolvedTotalAmount = typeof order.total === 'number' ? order.total : null;
+  const resolvedTotalAmount =
+    typeof detailSnapshot?.total === 'number'
+      ? detailSnapshot.total
+      : typeof order.total === 'number'
+        ? order.total
+        : null;
   const resolvedPaymentMethod =
+    detailSnapshot?.metodoPago ??
+    detailSnapshot?.paymentMethod ??
+    detailSnapshot?.queuedPaymentMethod ??
     order.metodoPago ??
     order.paymentMethod ??
     order.queuedPaymentMethod ??
     metadataPaymentMethod ??
     null;
   const resolvedPaymentReference =
-    order.queuedPaymentReference ?? metadataPaymentReference ?? null;
+    detailSnapshot?.queuedPaymentReference ??
+    order.queuedPaymentReference ??
+    metadataPaymentReference ??
+    null;
   const resolvedPaymentReferenceType =
-    order.queuedPaymentReferenceType ?? metadataPaymentReferenceType ?? null;
-  const orderCashTendered = order.montoRecibido ?? metadataCashTendered ?? null;
-  const orderCashChange = order.cambioEntregado ?? metadataCashChange ?? null;
+    detailSnapshot?.queuedPaymentReferenceType ??
+    order.queuedPaymentReferenceType ??
+    metadataPaymentReferenceType ??
+    null;
+  const orderCashTendered =
+    detailSnapshot?.montoRecibido ?? order.montoRecibido ?? metadataCashTendered ?? null;
+  const orderCashChange =
+    detailSnapshot?.cambioEntregado ?? order.cambioEntregado ?? metadataCashChange ?? null;
   const paymentMethodDisplayLabel = resolvedPaymentMethod
     ? getPaymentMethodLabel(resolvedPaymentMethod)
     : null;
@@ -6600,29 +6903,42 @@ const OrderDetailContent = ({
   const totalItemsFromList = items.reduce((sum, item) => sum + safeQuantity(item.quantity), 0);
   const totalItems =
     totalItemsFromList > 0 ? totalItemsFromList : order.itemsCount ?? items.length ?? 0;
-  const customerName = extractCustomerName(order.user);
-  const customerPhone = extractCustomerPhone(order.user);
-  const customerFirstName = (order.user?.firstName ?? order.user?.firstNameEncrypted ?? '').trim();
-  const customerLastName = (order.user?.lastName ?? order.user?.lastNameEncrypted ?? '').trim();
+  const effectiveUser = detailSnapshot?.user ?? order.user;
+  const customerName = extractCustomerName(effectiveUser);
+  const customerPhone = extractCustomerPhone(effectiveUser);
+  const customerFirstName = (effectiveUser?.firstName ?? effectiveUser?.firstNameEncrypted ?? '').trim();
+  const customerLastName = (effectiveUser?.lastName ?? effectiveUser?.lastNameEncrypted ?? '').trim();
   const staffNotes = extractStaffNotes(order);
   const customerNotes = extractCustomerNotes(order);
   const generalNotes = extractOrderNotes(order);
   const fallbackNotes = !staffNotes && !customerNotes ? generalNotes : null;
+  const combinedTotals = detailSnapshot?.totals ?? order.totals ?? {};
   const tipValue =
-    typeof order.tipAmount === 'number'
-      ? order.tipAmount
-      : typeof order.totals?.tipAmount === 'number'
-        ? (order.totals?.tipAmount as number)
-        : null;
+    typeof detailSnapshot?.tipAmount === 'number'
+      ? detailSnapshot.tipAmount
+      : typeof order.tipAmount === 'number'
+        ? order.tipAmount
+        : typeof combinedTotals?.tipAmount === 'number'
+          ? (combinedTotals?.tipAmount as number)
+          : null;
   const deliveryTipAmount =
-    typeof order.deliveryTipAmount === 'number'
-      ? order.deliveryTipAmount
-      : shippingInfo?.deliveryTip?.amount ?? null;
+    typeof detailSnapshot?.deliveryTipAmount === 'number'
+      ? detailSnapshot.deliveryTipAmount
+      : typeof order.deliveryTipAmount === 'number'
+        ? order.deliveryTipAmount
+        : shippingInfo?.deliveryTip?.amount ?? null;
   const deliveryTipPercent =
-    typeof order.deliveryTipPercent === 'number'
-      ? order.deliveryTipPercent
-      : shippingInfo?.deliveryTip?.percent ?? null;
-  const assignedStaffDisplay = order.queuedByStaffName ?? order.queuedByStaffId ?? null;
+    typeof detailSnapshot?.deliveryTipPercent === 'number'
+      ? detailSnapshot.deliveryTipPercent
+      : typeof order.deliveryTipPercent === 'number'
+        ? order.deliveryTipPercent
+        : shippingInfo?.deliveryTip?.percent ?? null;
+  const assignedStaffDisplay =
+    detailSnapshot?.queuedByStaffName ??
+    detailSnapshot?.queuedByStaffId ??
+    order.queuedByStaffName ??
+    order.queuedByStaffId ??
+    null;
   const paymentReferenceTypeLabel = resolvedPaymentReferenceType
     ? PAYMENT_REFERENCE_TYPE_LABELS[resolvedPaymentReferenceType] ??
     resolvedPaymentReferenceType
@@ -6640,19 +6956,23 @@ const OrderDetailContent = ({
   const loyaltyDisplayName = loyaltyCustomer ? getCustomerDisplayName(loyaltyCustomer) : null;
   const loyaltyCoffees = loyaltyCustomer?.loyaltyCoffees ?? null;
   const loyaltyRewardEarned = Boolean(loyaltyCustomer?.rewardEarned);
-  const ticketTotals = order.totals ?? {};
+  const ticketTotals = combinedTotals ?? {};
   const ticketSubtotal =
-    typeof order.subtotal === 'number'
-      ? order.subtotal
-      : typeof ticketTotals.subtotal === 'number'
-        ? ticketTotals.subtotal
-        : null;
+    typeof detailSnapshot?.subtotal === 'number'
+      ? detailSnapshot.subtotal
+      : typeof order.subtotal === 'number'
+        ? order.subtotal
+        : typeof ticketTotals.subtotal === 'number'
+          ? ticketTotals.subtotal
+          : null;
   const ticketTax =
-    typeof order.vatAmount === 'number'
-      ? order.vatAmount
-      : typeof ticketTotals.tax === 'number'
-        ? ticketTotals.tax
-        : null;
+    typeof detailSnapshot?.vatAmount === 'number'
+      ? detailSnapshot.vatAmount
+      : typeof order.vatAmount === 'number'
+        ? order.vatAmount
+        : typeof ticketTotals.tax === 'number'
+          ? ticketTotals.tax
+          : null;
   const fallbackTicketTotal =
     typeof ticketTotals.total === 'number'
       ? ticketTotals.total
@@ -7331,6 +7651,16 @@ const PrepTaskDetailContent = ({
     task.order?.shortCode ??
     task.order?.id ??
     task.id;
+  const prepMetadata = useMemo(
+    () => parseMetadataRecord(task.order?.metadata ?? null),
+    [task.order?.metadata]
+  );
+  const prepShippingInfo = useMemo(() => {
+    if (task.order?.shipping) {
+      return task.order.shipping as OrderShippingInfo;
+    }
+    return buildShippingFromMetadata(prepMetadata);
+  }, [prepMetadata, task.order?.shipping]);
 
   return (
     <div className="space-y-4 text-base">
@@ -7393,6 +7723,7 @@ const PrepTaskDetailContent = ({
           <OrderItemsSection items={detailItems} />
         </div>
       )}
+      {prepShippingInfo && <ShippingInfoCard shipping={prepShippingInfo} />}
       {onMarkCompleted && (
         <DetailActionFooter
           label="Marcar como completado"
@@ -7815,7 +8146,7 @@ const SalesPanel = ({
   description: string;
   downloadLabel: string;
 }) => {
-  const [exportFormat, setExportFormat] = useState<'csv' | 'excel'>('csv');
+  const [exportMode, setExportMode] = useState<'csv' | 'excel' | 'chart'>('csv');
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
@@ -7829,7 +8160,27 @@ const SalesPanel = ({
     }
   }, [selectedMonth, currentEntry, onSelectMonth]);
 
+  const chartData = useMemo(() => {
+    if (!currentEntry) {
+      return [];
+    }
+    if (currentEntry.recentOrders.length > 0) {
+      return currentEntry.recentOrders.slice(0, 10).map((order) => ({
+        name: order.ticketCode ?? order.orderNumber ?? order.id,
+        value: order.total,
+      }));
+    }
+    return [
+      { name: 'Ventas', value: currentEntry.totalSales },
+      { name: 'Propinas', value: currentEntry.totalTips },
+      { name: 'Tickets', value: currentEntry.orderCount },
+    ].filter((entry) => typeof entry.value === 'number');
+  }, [currentEntry]);
+
   const handleExport = async () => {
+    if (exportMode === 'chart') {
+      return;
+    }
     if (!currentEntry) {
       return;
     }
@@ -7838,7 +8189,7 @@ const SalesPanel = ({
     try {
       const params = new URLSearchParams({
         month: currentEntry.month,
-        format: exportFormat,
+        format: exportMode,
       });
       const response = await fetch(`/api/public-sales-summary?${params.toString()}`, {
         cache: 'no-store',
@@ -7857,7 +8208,7 @@ const SalesPanel = ({
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
-      const extension = exportFormat === 'csv' ? 'csv' : 'xls';
+      const extension = exportMode === 'csv' ? 'csv' : 'xls';
       const anchor = document.createElement('a');
       anchor.href = url;
       anchor.download = `publico-general-${currentEntry.month}.${extension}`;
@@ -7901,20 +8252,24 @@ const SalesPanel = ({
               {[
                 { value: 'csv', label: 'CSV' },
                 { value: 'excel', label: 'Excel' },
+                { value: 'chart', label: 'Gráfica' },
               ].map((option) => (
                 <label
                   key={option.value}
-                  className={`flex items-center gap-1 rounded-full border px-3 py-1 text-xs ${exportFormat === option.value
-                    ? 'border-primary-500 bg-primary-100 text-primary-700'
-                    : 'border-primary-100/70 text-[var(--brand-muted)]'
-                    }`}
+                  className={`flex items-center gap-1 rounded-full border px-3 py-1 text-xs ${
+                    exportMode === option.value
+                      ? 'border-primary-500 bg-primary-100 text-primary-700'
+                      : 'border-primary-100/70 text-[var(--brand-muted)]'
+                  }`}
                 >
                   <input
                     type="radio"
                     name={`format-${title}`}
                     value={option.value}
-                    checked={exportFormat === option.value}
-                    onChange={(event) => setExportFormat(event.target.value as 'csv' | 'excel')}
+                    checked={exportMode === option.value}
+                    onChange={(event) =>
+                      setExportMode(event.target.value as 'csv' | 'excel' | 'chart')
+                    }
                     className="h-3 w-3 text-primary-600 focus:ring-primary-500"
                   />
                   {option.label}
@@ -7930,14 +8285,22 @@ const SalesPanel = ({
           >
             Actualizar
           </button>
-          <button
-            type="button"
-            onClick={() => void handleExport()}
-            className="brand-button text-xs"
-            disabled={!currentEntry || isExporting}
-          >
-            {isExporting ? 'Descargando…' : downloadLabel}
-          </button>
+          {exportMode === 'chart' ? (
+            chartData.length > 0 ? (
+              <ChartButton title={title} data={chartData} yAxisLabel="Monto" />
+            ) : (
+              <span className="text-xs text-[var(--brand-muted)]">Sin datos para graficar.</span>
+            )
+          ) : (
+            <button
+              type="button"
+              onClick={() => void handleExport()}
+              className="brand-button text-xs"
+              disabled={!currentEntry || isExporting}
+            >
+              {isExporting ? 'Descargando…' : downloadLabel}
+            </button>
+          )}
         </div>
       </div>
       {error ? (
@@ -8008,7 +8371,7 @@ const SalesPanel = ({
               </ul>
             )}
           </div>
-          {exportError && (
+          {exportError && exportMode !== 'chart' && (
             <div className="rounded-2xl border border-danger-200/70 bg-danger-50/60 px-3 py-2 text-xs text-danger-700 dark:border-danger-500/40 dark:bg-danger-900/30 dark:text-danger-100">
               {exportError}
             </div>
@@ -8220,19 +8583,48 @@ const AdvancedMetricsPanel = ({
   onToggleRange: (useRange: boolean) => void;
   onRefresh: () => void;
 }) => {
-  const [exportFormat, setExportFormat] = useState<'csv' | 'xlsx'>('csv');
-  const [focusedSection, setFocusedSection] = useState<AdvancedMetricsSectionId>('clients');
+  const [exportFormat, setExportFormat] = useState<'csv' | 'xlsx' | 'chart'>('csv');
+  const [focusedSection, setFocusedSection] = useState<AdvancedMetricsSectionId | null>(null);
+  const [chartAutoOpenKey, setChartAutoOpenKey] = useState(0);
 
   const chartData = useMemo(() => {
-    if (!metrics?.sections[focusedSection]?.bars) return [];
+    if (!focusedSection || !metrics?.sections[focusedSection]?.bars) return [];
     return metrics.sections[focusedSection].bars.map((item) => ({
       name: item.label,
       value: item.value,
     }));
   }, [metrics, focusedSection]);
 
+  const handleExportFormatChange = useCallback((value: 'csv' | 'xlsx' | 'chart') => {
+    setExportFormat(value);
+  }, []);
+
+  const handleSectionFocus = useCallback(
+    (sectionId: AdvancedMetricsSectionId) => {
+      setFocusedSection((previous) => {
+        if (previous === sectionId) {
+          return null;
+        }
+        if (exportFormat === 'chart') {
+          setChartAutoOpenKey((prev) => prev + 1);
+        }
+        return sectionId;
+      });
+    },
+    [exportFormat]
+  );
+
+  useEffect(() => {
+    if (exportFormat === 'chart' && focusedSection) {
+      setChartAutoOpenKey((prev) => prev + 1);
+    }
+  }, [exportFormat, focusedSection]);
+
   const handleExport = () => {
-    if (typeof window === 'undefined' || !metrics) {
+    if (exportFormat === 'chart') {
+      return;
+    }
+    if (typeof window === 'undefined' || !metrics || !focusedSection) {
       return;
     }
     const params = new URLSearchParams({
@@ -8305,28 +8697,42 @@ const AdvancedMetricsPanel = ({
           Usar rango de días
         </label>
         <div className="flex items-center gap-3 text-xs">
-          {EXPORT_FORMATS.map((format) => (
-            <label key={format.value} className="flex items-center gap-1">
-              <input
-                type="radio"
-                name="advanced-export"
-                value={format.value}
-                checked={exportFormat === format.value}
-                onChange={() => setExportFormat(format.value)}
-              />
-              {format.label}
-            </label>
-          ))}
-          {chartData.length > 0 && (
+        {[...EXPORT_FORMATS, { value: 'chart', label: 'Gráfica' as const }].map((format) => (
+          <label key={format.value} className="flex items-center gap-1">
+            <input
+              type="radio"
+              name="advanced-export"
+              value={format.value}
+              checked={exportFormat === format.value}
+              onChange={(event) =>
+                handleExportFormatChange(event.target.value as 'csv' | 'xlsx' | 'chart')
+              }
+            />
+            {format.label}
+          </label>
+        ))}
+        {exportFormat === 'chart' ? (
+          chartData.length > 0 && focusedSection ? (
             <ChartButton
               title={metrics?.sections[focusedSection]?.title ?? 'Gráfica'}
               data={chartData}
               yAxisLabel="Cantidad"
+              autoOpenToken={`${focusedSection}-${chartAutoOpenKey}`}
+              onClose={() => setFocusedSection(null)}
             />
-          )}
-          <button type="button" className="brand-button" onClick={handleExport} disabled={!metrics}>
+          ) : (
+            <span className="text-xs text-[var(--brand-muted)]">Sin datos para graficar.</span>
+          )
+        ) : (
+          <button
+            type="button"
+            className="brand-button"
+            onClick={handleExport}
+            disabled={!metrics || !focusedSection}
+          >
             Descargar vista
           </button>
+        )}
         </div>
         <button
           type="button"
@@ -8353,7 +8759,7 @@ const AdvancedMetricsPanel = ({
               sectionId={sectionId}
               section={sectionData[sectionId]}
               isFocused={focusedSection === sectionId}
-              onFocus={() => setFocusedSection(sectionId)}
+              onFocus={() => handleSectionFocus(sectionId)}
             />
           ))}
         </div>
@@ -8486,9 +8892,30 @@ const StaffAdvancedMetricsPanel = ({
   onRefresh: () => void;
   availability: AdvancedMetricsPayload['rangeAvailability'] | null | undefined;
 }) => {
-  const [exportFormat, setExportFormat] = useState<'csv' | 'xlsx'>('csv');
+  const [exportFormat, setExportFormat] = useState<'csv' | 'xlsx' | 'chart'>('csv');
+  const [chartAutoOpenKey, setChartAutoOpenKey] = useState(0);
+
+  const chartData = useMemo(() => {
+    if (!section?.bars) {
+      return [];
+    }
+    return section.bars.map((item) => ({
+      name: item.label,
+      value: item.value,
+    }));
+  }, [section]);
+
+  const handleFormatChange = useCallback((value: 'csv' | 'xlsx' | 'chart') => {
+    setExportFormat(value);
+    if (value === 'chart') {
+      setChartAutoOpenKey((prev) => prev + 1);
+    }
+  }, []);
 
   const handleExport = () => {
+    if (exportFormat === 'chart') {
+      return;
+    }
     if (typeof window === 'undefined' || !section) return;
     const params = new URLSearchParams({
       section: 'employees',
@@ -8560,22 +8987,38 @@ const StaffAdvancedMetricsPanel = ({
         </div>
         <div className="flex flex-wrap items-center gap-3 text-xs">
           <div className="flex items-center gap-2">
-            {EXPORT_FORMATS.map((format) => (
+            {[...EXPORT_FORMATS, { value: 'chart', label: 'Gráfica' as const }].map((format) => (
               <label key={format.value} className="flex items-center gap-1">
                 <input
                   type="radio"
                   name="staff-export"
                   value={format.value}
                   checked={exportFormat === format.value}
-                  onChange={() => setExportFormat(format.value)}
+                  onChange={(event) =>
+                    handleFormatChange(event.target.value as 'csv' | 'xlsx' | 'chart')
+                  }
                 />
                 {format.label}
               </label>
             ))}
           </div>
-          <button type="button" className="brand-button" onClick={handleExport} disabled={!section}>
-            Descargar personal
-          </button>
+        {exportFormat === 'chart' ? (
+            chartData.length > 0 ? (
+              <ChartButton
+                title="Roles activos"
+                data={chartData}
+                yAxisLabel="Colaboradores"
+                autoOpenToken={`${chartAutoOpenKey}`}
+                onClose={() => handleFormatChange('csv')}
+              />
+            ) : (
+              <span className="text-xs text-[var(--brand-muted)]">Sin datos para graficar.</span>
+            )
+          ) : (
+            <button type="button" className="brand-button" onClick={handleExport} disabled={!section}>
+              Descargar personal
+            </button>
+          )}
           <button
             type="button"
             className="text-xs font-semibold text-primary-500 underline-offset-4 hover:underline dark:text-primary-200"
@@ -10133,22 +10576,172 @@ const PaymentBreakdown = ({
   payments: PaymentsDashboard | null;
   totalTips: number;
 }) => {
-  const methods = payments?.methodBreakdown ?? [];
-  const statuses = payments?.statusBreakdown ?? [];
+  const methodBreakdown = useMemo(
+    () => payments?.methodBreakdown ?? [],
+    [payments?.methodBreakdown]
+  );
+  const statusBreakdown = useMemo(
+    () => payments?.statusBreakdown ?? [],
+    [payments?.statusBreakdown]
+  );
+  const [viewMode, setViewMode] = useState<'csv' | 'excel' | 'chart'>('csv');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [chartAutoOpenKey, setChartAutoOpenKey] = useState(0);
+
+  const methodChartData = useMemo(() => {
+    if (methodBreakdown.length === 0) {
+      return ['Efectivo', 'Tarjeta', 'Transferencia', 'Cripto'].map((label) => ({
+        name: label,
+        value: 0,
+      }));
+    }
+    return methodBreakdown.map((method) => ({
+      name: method.method ?? 'Otro',
+      value: typeof method.amount === 'number' ? method.amount : 0,
+    }));
+  }, [methodBreakdown]);
+
+  const handleViewModeChange = useCallback(
+    (mode: 'csv' | 'excel' | 'chart') => {
+      setViewMode(mode);
+      if (mode === 'chart') {
+        setChartAutoOpenKey((prev) => prev + 1);
+      }
+    },
+    []
+  );
+
+  const handleExport = useCallback(async () => {
+    if (viewMode === 'chart') {
+      return;
+    }
+    setExportError(null);
+    setIsExporting(true);
+    try {
+      const rows: Array<Array<string | number>> = [
+        ['Distribución por método'],
+        ['Método', 'Monto (MXN)'],
+        ...methodBreakdown.map((method) => [
+          method.method ?? 'desconocido',
+          Number((method.amount ?? 0).toFixed(2)),
+        ]),
+        [],
+        ['Distribución por estatus'],
+        ['Estatus', 'Transacciones'],
+        ...statusBreakdown.map((status) => [status.status ?? 'desconocido', status.count ?? 0]),
+        [],
+        ['Propinas registradas', Number(totalTips.toFixed(2))],
+      ];
+
+      const download = (blob: Blob, extension: string) => {
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = `pagos-distribucion-${new Date().toISOString().slice(0, 10)}.${extension}`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        URL.revokeObjectURL(url);
+      };
+
+      if (viewMode === 'csv') {
+        const escapeCell = (value: string | number) => {
+          const cell = String(value ?? '');
+          if (cell.includes('"') || cell.includes(',') || cell.includes('\n')) {
+            return `"${cell.replace(/"/g, '""')}"`;
+          }
+          return cell;
+        };
+        const csvContent = rows.map((row) => row.map(escapeCell).join(',')).join('\n');
+        download(new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }), 'csv');
+      } else {
+        const XLSX = await import('xlsx');
+        const worksheet = XLSX.utils.aoa_to_sheet(rows);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'Pagos');
+        const excelBuffer = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+        download(
+          new Blob([excelBuffer], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          }),
+          'xlsx'
+        );
+      }
+    } catch (error) {
+      setExportError(
+        error instanceof Error ? error.message : 'No pudimos preparar el archivo solicitado.'
+      );
+    } finally {
+      setIsExporting(false);
+    }
+  }, [methodBreakdown, statusBreakdown, totalTips, viewMode]);
 
   return (
     <div className="rounded-2xl border border-primary-100/70 bg-white/80 p-4 dark:border-white/10 dark:bg-white/10">
       <h3 className="text-lg font-semibold text-primary-600 dark:text-primary-200">
         Distribución de pagos
       </h3>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-[var(--brand-muted)]">
+        <div className="flex items-center gap-2">
+          <span>Formato:</span>
+          {['csv', 'excel', 'chart'].map((option) => (
+            <label
+              key={option}
+              className={`flex items-center gap-1 rounded-full border px-3 py-1 ${
+                viewMode === option
+                  ? 'border-primary-500 bg-primary-100 text-primary-700'
+                  : 'border-primary-100/70 text-[var(--brand-muted)]'
+              }`}
+            >
+              <input
+                type="radio"
+                name="payments-export-mode"
+                value={option}
+                checked={viewMode === option}
+                onChange={(event) =>
+                  handleViewModeChange(event.target.value as 'csv' | 'excel' | 'chart')
+                }
+                className="h-3 w-3 text-primary-600 focus:ring-primary-500"
+              />
+              {option === 'chart' ? 'Gráfica' : option.toUpperCase()}
+            </label>
+          ))}
+        </div>
+        {viewMode === 'chart' ? (
+          methodChartData.length > 0 ? (
+            <ChartButton
+              title="Pagos por método"
+              data={methodChartData}
+              yAxisLabel="MXN"
+              autoOpenToken={`${chartAutoOpenKey}`}
+              onClose={() => handleViewModeChange('csv')}
+            />
+          ) : (
+            <span className="text-xs text-[var(--brand-muted)]">Sin datos para graficar.</span>
+          )
+        ) : (
+          <button
+            type="button"
+            className="brand-button text-xs"
+            onClick={() => void handleExport()}
+            disabled={isExporting}
+          >
+            {isExporting ? 'Preparando…' : 'Descargar resumen'}
+          </button>
+        )}
+      </div>
+      {exportError && (
+        <p className="mt-2 text-xs font-semibold text-danger-600 dark:text-danger-300">{exportError}</p>
+      )}
       <div className="mt-4 grid gap-4 md:grid-cols-2">
         <div>
           <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">Métodos</p>
           <div className="mt-2 space-y-2">
-            {methods.length === 0 ? (
+            {methodBreakdown.length === 0 ? (
               <p className="text-sm text-[var(--brand-muted)]">Sin movimientos recientes.</p>
             ) : (
-              methods.map((method) => (
+              methodBreakdown.map((method) => (
                 <div
                   key={method.method}
                   className="flex items-center justify-between rounded-xl border border-primary-50/80 px-3 py-2 text-sm dark:border-white/10"
@@ -10165,10 +10758,10 @@ const PaymentBreakdown = ({
         <div>
           <p className="text-xs uppercase tracking-[0.35em] text-[var(--brand-muted)]">Estatus</p>
           <div className="mt-2 space-y-2">
-            {statuses.length === 0 ? (
+            {statusBreakdown.length === 0 ? (
               <p className="text-sm text-[var(--brand-muted)]">Sin datos.</p>
             ) : (
-              statuses.map((status) => (
+              statusBreakdown.map((status) => (
                 <div
                   key={status.status}
                   className="flex items-center justify-between rounded-xl border border-primary-50/80 px-3 py-2 text-sm dark:border-white/10"

@@ -268,6 +268,17 @@ export async function POST(request: Request, context: { params: { orderId?: stri
       return refreshedItems ?? [];
     };
 
+    if (!assignedStaffId) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'Solo el personal del POS puede mover pedidos a preparación. Escanea tu sesión e intenta de nuevo.',
+        },
+        { status: 403 }
+      );
+    }
+
     const orderItems = await ensureOrderItemsSnapshot();
 
     if (!orderItems.length) {

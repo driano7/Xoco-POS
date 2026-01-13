@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTheme } from 'next-themes';
 import { toPng } from 'html-to-image';
 import {
@@ -19,6 +19,8 @@ interface ChartButtonProps {
     yAxisLabel?: string;
     colorStart?: string;
     colorEnd?: string;
+    autoOpenToken?: string | number | null;
+    onClose?: () => void;
 }
 
 export const ChartButton = ({
@@ -27,10 +29,13 @@ export const ChartButton = ({
     yAxisLabel = 'Valor',
     colorStart = '#795548', // primary-500
     colorEnd = '#3e2723',   // primary-900
+    autoOpenToken = null,
+    onClose,
 }: ChartButtonProps) => {
     const [isOpen, setIsOpen] = useState(false);
     const chartRef = useRef<HTMLDivElement>(null);
     const { resolvedTheme } = useTheme();
+    const previousToken = useRef<typeof autoOpenToken>(null);
 
     const handleDownload = useCallback(async () => {
         if (!chartRef.current) return;
@@ -47,6 +52,24 @@ export const ChartButton = ({
             console.error('Error downloading chart image', err);
         }
     }, [resolvedTheme, title]);
+
+    useEffect(() => {
+        if (
+            autoOpenToken !== null &&
+            autoOpenToken !== undefined &&
+            autoOpenToken !== previousToken.current
+        ) {
+            setIsOpen(true);
+            previousToken.current = autoOpenToken;
+        } else if (autoOpenToken === null) {
+            previousToken.current = null;
+        }
+    }, [autoOpenToken]);
+
+    const handleClose = useCallback(() => {
+        setIsOpen(false);
+        onClose?.();
+    }, [onClose]);
 
     if (!data || data.length === 0) return null;
 
@@ -68,7 +91,7 @@ export const ChartButton = ({
                                 {title}
                             </h3>
                             <button
-                                onClick={() => setIsOpen(false)}
+                                onClick={handleClose}
                                 className="rounded-full p-2 hover:bg-black/5 dark:hover:bg-white/10"
                             >
                                 ✕
@@ -142,7 +165,7 @@ export const ChartButton = ({
 
                             <div className="mt-6 flex justify-end gap-3">
                                 <button
-                                    onClick={() => setIsOpen(false)}
+                                    onClick={handleClose}
                                     className="rounded-full px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/5"
                                 >
                                     Cerrar
