@@ -270,6 +270,23 @@ const parseDeliveryTipSnapshot = (value: unknown) => {
   return null;
 };
 
+const normalizeAddressLines = (value: unknown): string[] | null => {
+  if (Array.isArray(value)) {
+    const normalized = value
+      .map((line) => (typeof line === 'string' ? line.trim() : ''))
+      .filter((line) => Boolean(line));
+    return normalized.length ? normalized : null;
+  }
+  if (typeof value === 'string') {
+    const normalized = value
+      .split(/[\r\n]+|[,;|]/)
+      .map((line) => line.trim())
+      .filter((line) => Boolean(line));
+    return normalized.length ? normalized : null;
+  }
+  return null;
+};
+
 const parseShippingSnapshot = (value: unknown) => {
   const record = coerceRecord(value);
   if (!record) {
@@ -281,20 +298,11 @@ const parseShippingSnapshot = (value: unknown) => {
     (record.street || record.city || record.state || record.postalCode ? record : null);
   const address = extractAddressRecord(nestedAddress);
   const normalizedLines = (() => {
-    const tryLines = (candidate: unknown) => {
-      if (!Array.isArray(candidate)) {
-        return null;
-      }
-      const lines = candidate
-        .map((line) => (typeof line === 'string' ? line.trim() : ''))
-        .filter((line) => Boolean(line));
-      return lines.length ? lines : null;
-    };
     return (
-      tryLines(record.lines) ??
-      tryLines((nestedAddress as Record<string, unknown> | null)?.lines) ??
-      tryLines(record.addressLines) ??
-      tryLines(record.linesArray)
+      normalizeAddressLines(record.lines) ??
+      normalizeAddressLines((nestedAddress as Record<string, unknown> | null)?.lines) ??
+      normalizeAddressLines(record.addressLines) ??
+      normalizeAddressLines(record.linesArray)
     );
   })();
   const contactPhone =
@@ -365,12 +373,7 @@ const extractShippingFromQrPayload = (value: unknown): OrderShippingInfo | null 
   if (!shipRecord) {
     return null;
   }
-  const linesFromPayload =
-    Array.isArray(shipRecord.lines) && shipRecord.lines.length
-      ? shipRecord.lines
-          .map((line) => (typeof line === 'string' ? line.trim() : ''))
-          .filter((line) => Boolean(line))
-      : null;
+  const linesFromPayload = normalizeAddressLines(shipRecord.lines);
   const contactPhone =
     toTrimmedString(shipRecord.phone) ??
     toTrimmedString(shipRecord.contact) ??
@@ -429,7 +432,7 @@ const extractShippingFromQrPayload = (value: unknown): OrderShippingInfo | null 
   return {
     address: derivedAddress,
     label,
-    lines: linesFromPayload ?? undefined,
+    lines: linesFromPayload ?? normalizeAddressLines(shipRecord.addressLines) ?? undefined,
     contactPhone,
     isWhatsapp,
     addressId: qrAddressId,
@@ -525,18 +528,8 @@ const normalizeShippingPayload = (value: unknown) => {
     toTrimmedString(record.nickname) ??
     toTrimmedString(addressRecord?.label) ??
     null;
-  const normalizedLines = (() => {
-    const digest = (source: unknown) => {
-      if (!Array.isArray(source)) {
-        return null;
-      }
-      const list = source
-        .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
-        .filter((entry) => Boolean(entry));
-      return list.length ? list : null;
-    };
-    return digest(record.lines) ?? digest(addressRecord?.lines ?? null);
-  })();
+  const normalizedLines =
+    normalizeAddressLines(record.lines) ?? normalizeAddressLines(addressRecord?.lines ?? null);
   const deliveryTipRecord = coerceRecord(record.deliveryTip) ?? coerceRecord(record.delivery_tip);
   const deliveryTipAmount =
     coerceNumber(deliveryTipRecord?.amount) ??

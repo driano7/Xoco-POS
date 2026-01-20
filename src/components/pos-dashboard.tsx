@@ -6229,21 +6229,29 @@ const parseMetadataRecord = (value: unknown): Record<string, unknown> | null => 
   return null;
 };
 
+const normalizeAddressLines = (value: unknown): string[] | null => {
+  if (Array.isArray(value)) {
+    const lines = value
+      .map((line) => (typeof line === 'string' ? line.trim() : ''))
+      .filter((line) => Boolean(line));
+    return lines.length ? lines : null;
+  }
+  if (typeof value === 'string') {
+    const lines = value
+      .split(/[\r\n]+|[,;|]/)
+      .map((line) => line.trim())
+      .filter((line) => Boolean(line));
+    return lines.length ? lines : null;
+  }
+  return null;
+};
+
 const buildAddressDetails = (
   record?: Record<string, unknown> | null
 ): OrderShippingInfo['address'] | null => {
   if (!record) {
     return null;
   }
-  const normalizeLines = (value: unknown): string[] | null => {
-    if (!Array.isArray(value)) {
-      return null;
-    }
-    const lines = value
-      .map((line) => (typeof line === 'string' ? line.trim() : ''))
-      .filter((line) => Boolean(line));
-    return lines.length ? lines : null;
-  };
   const street =
     toTrimmedString(record.street) ??
     toTrimmedString(record.addressLine1) ??
@@ -6262,9 +6270,9 @@ const buildAddressDetails = (
     toTrimmedString(record.note) ??
     undefined;
   const lines =
-    normalizeLines(record.lines) ??
-    normalizeLines(record.addressLines) ??
-    normalizeLines(record.linesArray) ??
+    normalizeAddressLines(record.lines) ??
+    normalizeAddressLines(record.addressLines) ??
+    normalizeAddressLines(record.linesArray) ??
     null;
   if (street || city || state || postalCode || reference || lines) {
     return {
@@ -6325,19 +6333,10 @@ const buildShippingFromMetadata = (
     parseMetadataRecord(shippingRecord['deliveryTip']) ??
     parseMetadataRecord(metadata.deliveryTip) ??
     null;
-  const normalizeLines = (value: unknown): string[] | null => {
-    if (!Array.isArray(value)) {
-      return null;
-    }
-    const lines = value
-      .map((line) => (typeof line === 'string' ? line.trim() : ''))
-      .filter((line) => Boolean(line));
-    return lines.length ? lines : null;
-  };
   const normalizedLines =
-    normalizeLines(shippingRecord['lines']) ??
-    normalizeLines(addressRecord?.lines) ??
-    normalizeLines(shippingRecord['addressLines']) ??
+    normalizeAddressLines(shippingRecord['lines']) ??
+    normalizeAddressLines(addressRecord?.lines) ??
+    normalizeAddressLines(shippingRecord['addressLines']) ??
     null;
   const label =
     toTrimmedString(shippingRecord['label']) ??
@@ -6669,13 +6668,7 @@ const ShippingInfoCard = ({
   }
 
   const normalizeLines = (value: unknown) => {
-    if (!Array.isArray(value)) {
-      return null;
-    }
-    const formatted = value
-      .map((line) => (typeof line === 'string' ? line.trim() : ''))
-      .filter((line) => Boolean(line));
-    return formatted.length ? formatted : null;
+    return normalizeAddressLines(value);
   };
 
   const resolvedLines =
@@ -6923,16 +6916,11 @@ const OrderDetailContent = ({
       return [];
     }
     const explicitLines =
-      Array.isArray(normalizedShippingInfo.lines) && normalizedShippingInfo.lines.length
-        ? normalizedShippingInfo.lines
-        : Array.isArray(normalizedShippingInfo.address?.lines) &&
-            normalizedShippingInfo.address.lines.length
-          ? normalizedShippingInfo.address.lines
-          : null;
+      normalizeAddressLines(normalizedShippingInfo.lines) ??
+      normalizeAddressLines(normalizedShippingInfo.address?.lines) ??
+      null;
     if (explicitLines) {
-      return explicitLines
-        .map((line) => (typeof line === 'string' ? line.trim() : ''))
-        .filter((line) => Boolean(line));
+      return explicitLines;
     }
     const fallbackPieces: string[] = [];
     const composedLine = [

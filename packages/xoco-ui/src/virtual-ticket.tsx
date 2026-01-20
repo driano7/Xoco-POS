@@ -104,6 +104,7 @@ const CATEGORY_LABELS: Record<ItemCategory, string> = {
   package: 'Paquetes',
   other: 'Otros',
 };
+const CATEGORY_ORDER: ItemCategory[] = ['beverage', 'food', 'package', 'other'];
 
 const normalizeText = (value?: string | null) =>
   (value ?? '').toString().toLowerCase().normalize('NFD');
@@ -236,6 +237,7 @@ const buildOrderItem = (item: any): OrderItem => {
       packageItems: null,
     };
   }
+  const resolvedCategory = classifyItemCategory(item);
   return {
     name: String(
       item?.name ??
@@ -250,12 +252,7 @@ const buildOrderItem = (item: any): OrderItem => {
     price: Number.isFinite(Number(item?.price ?? item?.amount ?? item?.p))
       ? Number(item?.price ?? item?.amount ?? item?.p)
       : 0,
-    category:
-      typeof item?.category === 'string'
-        ? (item.category as ItemCategory)
-        : typeof item?.c === 'string'
-        ? (item.c as ItemCategory)
-        : classifyItemCategory(item),
+    category: resolvedCategory,
     size: typeof item?.size === 'string' ? item.size : typeof item?.s === 'string' ? item.s : null,
     packageItems: Array.isArray(item?.packageItems)
       ? item.packageItems.map((entry: any) => String(entry))
@@ -378,11 +375,12 @@ const VirtualTicket = forwardRef<HTMLDivElement, VirtualTicketProps>(
         other: [],
       };
       items.forEach((item) => {
-        groups[item.category ?? 'other'].push(item);
+        const bucket = CATEGORY_ORDER.includes(item.category) ? item.category : 'other';
+        groups[bucket].push(item);
       });
       return groups;
     }, [items]);
-    const categoryOrder: ItemCategory[] = ['beverage', 'food', 'package', 'other'];
+    const categoryOrder = CATEGORY_ORDER;
 
     const normalizedStatus = useMemo(
       () => orderStatus ?? order.status ?? null,
