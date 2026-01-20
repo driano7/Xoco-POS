@@ -80,6 +80,17 @@ El sistema ha sido adaptado, rediseñado y programado específicamente para Xoco
   **EN:** Manual low/out-of-stock flags propagate to dropdowns so unavailable products show badges or become unselectable.
 - **ES:** Las pestañas de métricas, COFEPRIS y empleados integran el nuevo botón de gráficas con exportación PNG para análisis rápidos.  
   **EN:** Metrics, COFEPRIS, and staff tabs include the reusable chart modal with PNG export for quick sharing.  
+- **ES:** Se unificó el transportador SMTP/Brevo del POS para reset de contraseña, pedidos entregados, reservaciones y opt-in de marketing. Define `SMTP_HOST/PORT/USER/PASS/SECURE`, opcionalmente `SMTP_FROM`, y credenciales `NOTIFY_API_KEY`, `PROMO_ADMIN_KEY` y `BREVO_RESET_TEMPLATE_ID` para habilitar `/api/notifications/email/*` y `/api/promotions/*`.  
+  **EN:** The POS now shares the same SMTP/Brevo helper for password resets, order-delivered notices, reservations, and marketing opt-ins. Configure `SMTP_HOST/PORT/USER/PASS/SECURE`, optional `SMTP_FROM`, plus `NOTIFY_API_KEY`, `PROMO_ADMIN_KEY`, and `BREVO_RESET_TEMPLATE_ID` to use the new `/api/notifications/email/*` and `/api/promotions/*` endpoints.  
+- **ES:** El ticket digital del panel de pedidos ahora puede descargarse como PDF o PNG; al compartir desde el POS se solicita el formato preferido para adjuntar el archivo correcto.  
+  **EN:** Order tickets inside the POS detail view can now be exported as PDF or PNG, and when sharing the POS asks which format you prefer before attaching the file.  
+
+## ✉️ Notificaciones y promociones (ES/EN)
+- **ES:** Se añadieron los endpoints `/api/notifications/email/order-delivered` y `/api/notifications/email/reservation-created`. Ambos usan el mismo helper SMTP/Brevo y aceptan encabezado `x-xoco-notify-key` (`NOTIFY_API_KEY` en el servidor) más el payload JSON documentado en el código. Puedes reutilizarlos desde el POS, tu backend administrativo o una automatización externa para disparar correos de pedidos entregados y reservaciones creadas.  
+- **EN:** New transactional endpoints `/api/notifications/email/order-delivered` and `/api/notifications/email/reservation-created` reuse the SMTP/Brevo helper. Send `x-xoco-notify-key` (`NOTIFY_API_KEY` in env) plus the documented JSON payload to trigger order-delivered or reservation-created emails from the POS, your admin backend, or any automation.
+
+- **ES:** `/api/promotions/manage` y `/api/promotions/redeem` ya están disponibles para POS y app cliente. Define `PROMO_ADMIN_KEY`, envía ese valor en `x-xoco-promo-key` para crear/editar códigos (campos validados por Zod) y usa el token JWT de los clientes para redimir códigos que respetan límites globales y por usuario. Las tablas `promo_codes` y `promo_redemptions` viven tanto en Supabase como en la réplica SQLite (`schema.sqlite.sql`).  
+- **EN:** The POS exposes `/api/promotions/manage` and `/api/promotions/redeem`. Protect management calls with `x-xoco-promo-key: ${PROMO_ADMIN_KEY}` and rely on JWT-authenticated requests to redeem codes. Business rules (validity windows, limits, metadata) are enforced on both endpoints, and the new `promo_codes` / `promo_redemptions` tables are mirrored in Supabase and SQLite.
 
 ---
 

@@ -1,7 +1,6 @@
 /*
  * --------------------------------------------------------------------
- *  Xoco POS — Point of Sale System
- *  Software Property of Xoco Café
+ *  Xoco Café — Software Property
  *  Copyright (c) 2025 Xoco Café
  *  Principal Developer: Donovan Riaño
  *
@@ -15,14 +14,6 @@
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
- *
- *  --------------------------------------------------------------------
- *  PROPIEDAD DEL SOFTWARE — XOCO CAFÉ.
- *  Sistema Xoco POS — Punto de Venta.
- *  Desarrollador Principal: Donovan Riaño.
- *
- *  Este archivo está licenciado bajo Apache License 2.0.
- *  Consulta el archivo LICENSE en la raíz del proyecto para más detalles.
  * --------------------------------------------------------------------
  */
 
@@ -35,10 +26,12 @@ const ORDERS_TABLE = process.env.SUPABASE_ORDERS_TABLE ?? 'orders';
 const ORDER_ITEMS_TABLE = process.env.SUPABASE_ORDER_ITEMS_TABLE ?? 'order_items';
 const PRODUCTS_TABLE = process.env.SUPABASE_PRODUCTS_TABLE ?? 'products';
 const USERS_TABLE = process.env.SUPABASE_USERS_TABLE ?? 'users';
-const VENTAS_TABLE = process.env.SUPABASE_VENTAS_TABLE ?? 'ventas';
 
 const TICKET_FIELDS =
   'id,"ticketCode","orderId","userId","paymentMethod","tipAmount","tipPercent",currency,"createdAt"';
+const ORDER_SELECT_FIELDS =
+  'id,"orderNumber",status,total,currency,"createdAt","userId","items","metadata","notes","message","instructions"';
+const COLUMN_MISSING_REGEX = /column .* does not exist/i;
 
 const toTrimmedString = (value: unknown) => {
   if (typeof value === 'string') {
@@ -48,120 +41,16 @@ const toTrimmedString = (value: unknown) => {
   return null;
 };
 
-const normalizeNumber = (value: unknown) => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-};
-
-const coerceRecord = (value: unknown): Record<string, unknown> | null => {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    return { ...(value as Record<string, unknown>) };
-  }
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return { ...(parsed as Record<string, unknown>) };
-      }
-    } catch {
-      return null;
-    }
-  }
-  return null;
-};
-
-const coerceString = (value: unknown) => {
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed || null;
-  }
-  return null;
-};
-
-const coerceBoolean = (value: unknown) => {
-  if (typeof value === 'boolean') {
+const toNumericValue = (value: unknown) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
   }
-  if (typeof value === 'number') {
-    if (value === 1) return true;
-    if (value === 0) return false;
+  if (typeof value === 'string') {
+    const normalized = value.replace(/[^\d.-]/g, '');
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
-};
-
-const parseDeliveryTipSnapshot = (value: unknown) => {
-  const record = coerceRecord(value);
-  if (!record) {
-    const amount = normalizeNumber(value);
-    return amount !== null
-      ? {
-          amount,
-          percent: null,
-        }
-      : null;
-  }
-  const amount =
-    normalizeNumber(record.amount) ??
-    normalizeNumber(record.a) ??
-    normalizeNumber(record.value) ??
-    null;
-  const percent =
-    normalizeNumber(record.percent) ??
-    normalizeNumber(record.p) ??
-    normalizeNumber(record.percentage) ??
-    null;
-  if (amount === null && percent === null) {
-    return null;
-  }
-  return {
-    amount,
-    percent,
-  };
-};
-
-const parseShippingSnapshot = (value: unknown) => {
-  const record = coerceRecord(value);
-  if (!record) {
-    return null;
-  }
-  const nestedAddress =
-    coerceRecord(record.address) ??
-    coerceRecord(record.location) ??
-    (record.street || record.city || record.state || record.postalCode ? record : null);
-  const address = nestedAddress
-    ? {
-        street: coerceString(nestedAddress.street) ?? undefined,
-        city: coerceString(nestedAddress.city) ?? undefined,
-        state: coerceString(nestedAddress.state) ?? undefined,
-        postalCode: coerceString(nestedAddress.postalCode) ?? undefined,
-        reference: coerceString(nestedAddress.reference) ?? undefined,
-      }
-    : undefined;
-  const contactPhone =
-    coerceString(record.contactPhone) ??
-    coerceString(record.contact_phone) ??
-    coerceString(record.phone) ??
-    coerceString(record.phoneNumber);
-  const isWhatsapp =
-    coerceBoolean(record.isWhatsapp) ??
-    coerceBoolean(record.whatsapp) ??
-    coerceBoolean(record.is_whatsapp);
-  const addressId =
-    coerceString(record.addressId) ??
-    coerceString(record.address_id) ??
-    coerceString(record.addr) ??
-    coerceString(record.id);
-  const deliveryTip = parseDeliveryTipSnapshot(record.deliveryTip ?? record.delivery_tip);
-  if (!address && !contactPhone && isWhatsapp === null && !addressId && !deliveryTip) {
-    return null;
-  }
-  return {
-    address,
-    contactPhone: contactPhone ?? null,
-    isWhatsapp,
-    addressId: addressId ?? null,
-    deliveryTip,
-  };
 };
 
 const coerceMetadataObject = (value: unknown): Record<string, unknown> | null => {
@@ -181,33 +70,74 @@ const coerceMetadataObject = (value: unknown): Record<string, unknown> | null =>
   return null;
 };
 
+type OrderRecord = {
+  id?: string | null;
+  orderNumber?: string | null;
+  userId?: string | null;
+  status?: string | null;
+  total?: number | null;
+  currency?: string | null;
+  createdAt?: string | null;
+  items?: unknown;
+  metadata?: unknown;
+  notes?: unknown;
+  message?: unknown;
+  instructions?: unknown;
+  queuedByStaffId?: unknown;
+  queuedByStaffName?: unknown;
+  queuedPaymentMethod?: unknown;
+  queuedPaymentReference?: unknown;
+  queuedPaymentReferenceType?: unknown;
+};
+
+const fetchOrderRecord = async (column: string, value: string): Promise<OrderRecord | null> => {
+  const executeQuery = async (selectFields: string) =>
+    supabaseAdmin.from(ORDERS_TABLE).select(selectFields).eq(column, value).maybeSingle();
+
+  let { data, error } = await executeQuery(ORDER_SELECT_FIELDS);
+  if (error && COLUMN_MISSING_REGEX.test(error.message ?? '')) {
+    ({ data, error } = await executeQuery('*'));
+  }
+  if (error) {
+    throw new Error(error.message);
+  }
+  return (data ?? null) as OrderRecord | null;
+};
+
+export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
+export const revalidate = 0;
+
 export async function GET(
   _: Request,
   context: {
     params: { identifier?: string };
   }
 ) {
-  const identifier = context.params?.identifier ? decodeURIComponent(context.params.identifier) : '';
+  const identifier = context.params?.identifier
+    ? decodeURIComponent(context.params.identifier)
+    : '';
   const trimmedIdentifier = identifier.trim();
 
   if (!trimmedIdentifier) {
-    return NextResponse.json({ success: false, error: 'Falta el identificador del ticket' }, { status: 400 });
+    return NextResponse.json(
+      { success: false, error: 'Falta el identificador del ticket' },
+      { status: 400 }
+    );
   }
 
   try {
-    let ticketRecord:
-      | {
-          id?: string | null;
-          ticketCode?: string | null;
-          orderId?: string | null;
-          userId?: string | null;
-          paymentMethod?: string | null;
-          tipAmount?: number | null;
-          tipPercent?: number | null;
-          currency?: string | null;
-          createdAt?: string | null;
-        }
-      | null = null;
+    let ticketRecord: {
+      id?: string | null;
+      ticketCode?: string | null;
+      orderId?: string | null;
+      userId?: string | null;
+      paymentMethod?: string | null;
+      tipAmount?: number | null;
+      tipPercent?: number | null;
+      currency?: string | null;
+      createdAt?: string | null;
+    } | null = null;
 
     const { data: ticketByCode, error: ticketByCodeError } = await supabaseAdmin
       .from(TICKETS_TABLE)
@@ -238,40 +168,11 @@ export async function GET(
       orderId = ticketByOrder?.orderId ?? trimmedIdentifier;
     }
 
-    const orderSelectFields =
-      'id,"orderNumber",status,total,currency,"createdAt","userId","items","metadata","notes","message","instructions","queuedPaymentMethod","paymentMethod","deliveryTipAmount","deliveryTipPercent","shipping_contact_phone","shipping_contact_is_whatsapp","shipping_address_id","montoRecibido","cambioEntregado"';
-
-    const {
-      data: orderById,
-      error: orderError,
-    } = await supabaseAdmin
-      .from(ORDERS_TABLE)
-      .select(orderSelectFields)
-      .eq('id', orderId)
-      .maybeSingle();
-
-    if (orderError) {
-      throw new Error(orderError.message);
-    }
-
-    let order = orderById ?? null;
+    let order = await fetchOrderRecord('id', orderId);
 
     if (!order) {
-      const {
-        data: orderByNumber,
-        error: orderByNumberError,
-      } = await supabaseAdmin
-        .from(ORDERS_TABLE)
-        .select(orderSelectFields)
-        .eq('orderNumber', trimmedIdentifier)
-        .maybeSingle();
-
-      if (orderByNumberError) {
-        throw new Error(orderByNumberError.message);
-      }
-
-      order = orderByNumber ?? null;
-      if (order) {
+      order = await fetchOrderRecord('orderNumber', trimmedIdentifier);
+      if (order?.id) {
         orderId = order.id;
       }
     }
@@ -284,10 +185,7 @@ export async function GET(
     }
 
     if (!ticketRecord && order?.id) {
-      const {
-        data: ticketByResolvedOrder,
-        error: ticketByResolvedOrderError,
-      } = await supabaseAdmin
+      const { data: ticketByResolvedOrder, error: ticketByResolvedOrderError } = await supabaseAdmin
         .from(TICKETS_TABLE)
         .select(TICKET_FIELDS)
         .eq('orderId', order.id)
@@ -300,39 +198,28 @@ export async function GET(
       ticketRecord = ticketByResolvedOrder ?? null;
     }
 
-    const {
-      data: saleRecord,
-      error: saleError,
-    } = await supabaseAdmin
-      .from(VENTAS_TABLE)
-      .select('metodo_pago,monto_recibido,cambio_entregado')
-      .eq('order_id', order.id)
-      .maybeSingle();
-
-    if (saleError) {
-      throw new Error(saleError.message);
-    }
-
-    const metodoPagoVenta = toTrimmedString(saleRecord?.metodo_pago);
-    const montoRecibidoVenta = saleRecord ? normalizeNumber(saleRecord.monto_recibido) : null;
-    const cambioVenta = saleRecord ? normalizeNumber(saleRecord.cambio_entregado) : null;
-
-    const metadataObject = coerceMetadataObject((order as { metadata?: unknown })?.metadata ?? null);
+    const metadataObject = coerceMetadataObject(
+      (order as { metadata?: unknown })?.metadata ?? null
+    );
     const prepAssignment =
-      metadataObject?.prepAssignment && typeof metadataObject.prepAssignment === 'object' && !Array.isArray(metadataObject.prepAssignment)
+      metadataObject?.prepAssignment &&
+      typeof metadataObject.prepAssignment === 'object' &&
+      !Array.isArray(metadataObject.prepAssignment)
         ? coerceMetadataObject(metadataObject.prepAssignment)
         : null;
     const paymentMetadata =
-      metadataObject?.payment && typeof metadataObject.payment === 'object' && !Array.isArray(metadataObject.payment)
+      metadataObject?.payment &&
+      typeof metadataObject.payment === 'object' &&
+      !Array.isArray(metadataObject.payment)
         ? coerceMetadataObject(metadataObject.payment)
         : null;
 
-    const queuedByStaffId = toTrimmedString(
-      (order as { queuedByStaffId?: unknown }).queuedByStaffId
-    ) ?? toTrimmedString(prepAssignment?.staffId);
-    const queuedByStaffName = toTrimmedString(
-      (order as { queuedByStaffName?: unknown }).queuedByStaffName
-    ) ?? toTrimmedString(prepAssignment?.staffName);
+    const queuedByStaffId =
+      toTrimmedString((order as { queuedByStaffId?: unknown }).queuedByStaffId) ??
+      toTrimmedString(prepAssignment?.staffId);
+    const queuedByStaffName =
+      toTrimmedString((order as { queuedByStaffName?: unknown }).queuedByStaffName) ??
+      toTrimmedString(prepAssignment?.staffName);
     const paymentMethodFromOrder = toTrimmedString(
       (order as { queuedPaymentMethod?: unknown }).queuedPaymentMethod
     );
@@ -340,9 +227,7 @@ export async function GET(
     const queuedPaymentMethod =
       paymentMethodFromOrder ??
       paymentMethodFromMetadata ??
-      toTrimmedString(ticketRecord?.paymentMethod) ??
-      metodoPagoVenta ??
-      null;
+      toTrimmedString(ticketRecord?.paymentMethod);
     const queuedPaymentReference =
       toTrimmedString((order as { queuedPaymentReference?: unknown }).queuedPaymentReference) ??
       toTrimmedString(paymentMetadata?.reference);
@@ -353,85 +238,24 @@ export async function GET(
     const notes = toTrimmedString((order as { notes?: unknown }).notes);
     const message = toTrimmedString((order as { message?: unknown }).message);
     const instructions = toTrimmedString((order as { instructions?: unknown }).instructions);
-
-    const resolveItemsContainer = () => {
-      if (!order.items) {
-        return null;
-      }
-      if (typeof order.items === 'object' && !Array.isArray(order.items)) {
-        return order.items as Record<string, unknown>;
-      }
-      if (typeof order.items === 'string') {
-        try {
-          const parsed = JSON.parse(order.items);
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            return parsed as Record<string, unknown>;
-          }
-        } catch {
-          return null;
-        }
-      }
-      return null;
-    };
-
-    const itemsContainer = resolveItemsContainer();
-    const storedShippingSnapshot =
-      itemsContainer && itemsContainer.shipping
-        ? parseShippingSnapshot(itemsContainer.shipping)
-        : null;
-    const metadataShippingSnapshot =
-      metadataObject?.shipping && typeof metadataObject.shipping === 'object'
-        ? parseShippingSnapshot(metadataObject.shipping)
-        : null;
-    const metadataDeliverySnapshot =
-      metadataObject?.delivery && typeof metadataObject.delivery === 'object'
-        ? parseShippingSnapshot(metadataObject.delivery)
-        : null;
-    const shippingSnapshot =
-      storedShippingSnapshot ?? metadataShippingSnapshot ?? metadataDeliverySnapshot ?? null;
-    const metadataDeliveryTipRecord =
-      metadataObject?.deliveryTip && typeof metadataObject.deliveryTip === 'object'
-        ? coerceRecord(metadataObject.deliveryTip)
-        : null;
-    const deliveryTipFromSnapshot =
-      shippingSnapshot?.deliveryTip ?? parseDeliveryTipSnapshot(metadataDeliveryTipRecord);
-    const resolvedContactPhone =
-      toTrimmedString((order as { shipping_contact_phone?: unknown }).shipping_contact_phone) ??
-      shippingSnapshot?.contactPhone ??
+    const amountReceived =
+      toNumericValue((order as { montoRecibido?: unknown }).montoRecibido) ??
+      toNumericValue((order as { monto_recibido?: unknown }).monto_recibido) ??
+      toNumericValue((order as { amountReceived?: unknown }).amountReceived) ??
+      toNumericValue((order as { cashTendered?: unknown }).cashTendered) ??
+      toNumericValue(paymentMetadata?.amountReceived) ??
+      toNumericValue(paymentMetadata?.cashTendered) ??
+      toNumericValue(paymentMetadata?.montoRecibido) ??
       null;
-    const resolvedIsWhatsapp =
-      typeof (order as { shipping_contact_is_whatsapp?: unknown }).shipping_contact_is_whatsapp === 'number'
-        ? (order as { shipping_contact_is_whatsapp?: number }).shipping_contact_is_whatsapp === 1
-        : shippingSnapshot?.isWhatsapp ?? null;
-    const shippingAddressId =
-      toTrimmedString((order as { shipping_address_id?: unknown }).shipping_address_id) ??
-      shippingSnapshot?.addressId ??
+    const changeGiven =
+      toNumericValue((order as { cambioEntregado?: unknown }).cambioEntregado) ??
+      toNumericValue((order as { cambio_entregado?: unknown }).cambio_entregado) ??
+      toNumericValue((order as { changeGiven?: unknown }).changeGiven) ??
+      toNumericValue((order as { cashChange?: unknown }).cashChange) ??
+      toNumericValue(paymentMetadata?.changeGiven) ??
+      toNumericValue(paymentMetadata?.cashChange) ??
+      toNumericValue(paymentMetadata?.cambioEntregado) ??
       null;
-    const resolvedDeliveryTipAmount =
-      normalizeNumber((order as { deliveryTipAmount?: unknown }).deliveryTipAmount) ??
-      normalizeNumber(deliveryTipFromSnapshot?.amount) ??
-      normalizeNumber(metadataObject?.deliveryTipAmount) ??
-      null;
-    const resolvedDeliveryTipPercent =
-      normalizeNumber((order as { deliveryTipPercent?: unknown }).deliveryTipPercent) ??
-      normalizeNumber(deliveryTipFromSnapshot?.percent) ??
-      normalizeNumber(
-        metadataDeliveryTipRecord ? metadataDeliveryTipRecord.percent : null
-      ) ??
-      null;
-    const shippingPayload =
-      shippingSnapshot ||
-      resolvedContactPhone ||
-      resolvedIsWhatsapp !== null ||
-      shippingAddressId
-        ? {
-            address: shippingSnapshot?.address ?? undefined,
-            contactPhone: resolvedContactPhone,
-            isWhatsapp: resolvedIsWhatsapp,
-            addressId: shippingAddressId,
-            deliveryTip: deliveryTipFromSnapshot ?? null,
-          }
-        : null;
 
     const effectiveTicket = {
       id: ticketRecord?.id ?? order.id,
@@ -463,6 +287,9 @@ export async function GET(
     };
 
     const resolveStoredItems = () => {
+      if (!order) {
+        return null;
+      }
       if (Array.isArray(order.items)) {
         return order.items as Array<Record<string, unknown>>;
       }
@@ -486,13 +313,32 @@ export async function GET(
             return (parsed as { items: Array<Record<string, unknown>> }).items;
           }
         } catch {
-          // Ignoramos payloads malformados; caeremos al resto de fuentes.
+          // ignore
         }
       }
       return null;
     };
 
     const buildSnapshotItems = () => {
+      const currentOrder = order;
+      if (!currentOrder) {
+        return [] as Array<{
+          id: string;
+          productId: string | null;
+          quantity: number;
+          price: number | null;
+          product: {
+            name?: string | null;
+            category?: string | null;
+            subcategory?: string | null;
+          } | null;
+          sizeId: string | null;
+          sizeLabel: string | null;
+          packageId: string | null;
+          packageName: string | null;
+          metadata: Record<string, unknown> | null;
+        }>;
+      }
       const storedItems = resolveStoredItems();
       if (!storedItems?.length) {
         return [] as Array<{
@@ -500,7 +346,11 @@ export async function GET(
           productId: string | null;
           quantity: number;
           price: number | null;
-          product: { name?: string | null; category?: string | null; subcategory?: string | null } | null;
+          product: {
+            name?: string | null;
+            category?: string | null;
+            subcategory?: string | null;
+          } | null;
           sizeId: string | null;
           sizeLabel: string | null;
           packageId: string | null;
@@ -514,7 +364,11 @@ export async function GET(
         productId: string | null;
         quantity: number;
         price: number | null;
-        product: { name?: string | null; category?: string | null; subcategory?: string | null } | null;
+        product: {
+          name?: string | null;
+          category?: string | null;
+          subcategory?: string | null;
+        } | null;
         sizeId: string | null;
         sizeLabel: string | null;
         packageId: string | null;
@@ -527,28 +381,28 @@ export async function GET(
           typeof rawItem.productId === 'string'
             ? rawItem.productId
             : typeof rawItem.id === 'string'
-              ? rawItem.id
-              : null;
+            ? rawItem.id
+            : null;
         const quantity = normalizeQuantity(rawItem.quantity ?? rawItem.qty ?? rawItem.amount);
         const price = normalizePrice(rawItem.price ?? rawItem.amount ?? rawItem.unitPrice);
         const category =
           typeof rawItem.category === 'string'
             ? rawItem.category
             : typeof rawItem.type === 'string'
-              ? rawItem.type
-              : null;
+            ? rawItem.type
+            : null;
         const subcategory =
           typeof rawItem.subcategory === 'string'
             ? rawItem.subcategory
             : typeof rawItem.group === 'string'
-              ? rawItem.group
-              : null;
+            ? rawItem.group
+            : null;
         const name =
           typeof rawItem.name === 'string'
             ? rawItem.name
             : typeof rawItem.title === 'string'
-              ? rawItem.title
-              : productId;
+            ? rawItem.title
+            : productId;
         const sizeId =
           toTrimmedString(rawItem.sizeId) ??
           toTrimmedString(rawItem.size_id) ??
@@ -573,7 +427,7 @@ export async function GET(
             : null;
 
         normalizedItems.push({
-          id: `${order.id}-snapshot-${index}`,
+          id: `${currentOrder.id}-snapshot-${index}`,
           productId,
           quantity,
           price,
@@ -592,12 +446,10 @@ export async function GET(
 
       return normalizedItems;
     };
-    const snapshotItems = buildSnapshotItems().filter((item) => item.quantity > 0);
 
-    const {
-      data: orderItems,
-      error: orderItemsError,
-    } = await supabaseAdmin
+    let items = buildSnapshotItems().filter((item) => item.quantity > 0);
+
+    const { data: orderItems, error: orderItemsError } = await supabaseAdmin
       .from(ORDER_ITEMS_TABLE)
       .select('id,"productId",quantity,price')
       .eq('orderId', order.id);
@@ -614,7 +466,10 @@ export async function GET(
       )
     );
 
-    let productMap = new Map<string, { name?: string | null; category?: string | null; subcategory?: string | null }>();
+    let productMap = new Map<
+      string,
+      { name?: string | null; category?: string | null; subcategory?: string | null }
+    >();
 
     if (productIds.length) {
       const { data: products, error: productsError } = await supabaseAdmin
@@ -633,25 +488,24 @@ export async function GET(
       );
     }
 
-    let items = snapshotItems.length
-      ? snapshotItems.map((item) => ({
+    if (!items.length) {
+      items =
+        orderItems?.map((item) => ({
           id: item.id,
-          productId: item.productId,
-          quantity: item.quantity,
-          price: item.price,
-          product:
-            item.productId && productMap.size
-              ? productMap.get(String(item.productId)) ?? item.product ?? null
-              : item.product ?? null,
-          sizeId: item.sizeId,
-          sizeLabel: item.sizeLabel,
-          packageId: item.packageId,
-          packageName: item.packageName,
-          metadata: item.metadata,
-        }))
-      : [];
+          productId: item.productId ?? null,
+          quantity: item.quantity ?? 0,
+          price: item.price ?? null,
+          product: item.productId ? productMap.get(String(item.productId)) ?? null : null,
+          sizeId: null,
+          sizeLabel: null,
+          packageId: null,
+          packageName: null,
+          metadata: null,
+        })) ?? [];
+    }
 
     const parseTicketPayloadItems = () => {
+      const snapshotOwnerId = order?.id ?? ticketRecord?.id ?? 'ticket';
       const payload =
         (ticketRecord as { qrPayload?: unknown; metadata?: unknown })?.qrPayload ??
         (ticketRecord as { metadata?: unknown })?.metadata ??
@@ -676,8 +530,8 @@ export async function GET(
       const rawItems: unknown[] = Array.isArray(parsed.items)
         ? parsed.items
         : Array.isArray((parsed as { lineItems?: unknown[] }).lineItems)
-          ? ((parsed as { lineItems?: unknown[] }).lineItems as unknown[])
-          : [];
+        ? ((parsed as { lineItems?: unknown[] }).lineItems as unknown[])
+        : [];
       if (!rawItems.length) {
         return [];
       }
@@ -687,7 +541,11 @@ export async function GET(
         productId: string | null;
         quantity: number;
         price: number | null;
-        product: { name?: string | null; category?: string | null; subcategory?: string | null } | null;
+        product: {
+          name?: string | null;
+          category?: string | null;
+          subcategory?: string | null;
+        } | null;
         sizeId: string | null;
         sizeLabel: string | null;
         packageId: string | null;
@@ -696,29 +554,28 @@ export async function GET(
       }> = [];
 
       rawItems
-        .filter(
-          (entry): entry is Record<string, unknown> =>
-            Boolean(entry && typeof entry === 'object' && !Array.isArray(entry))
+        .filter((entry): entry is Record<string, unknown> =>
+          Boolean(entry && typeof entry === 'object' && !Array.isArray(entry))
         )
         .forEach((entry, index) => {
           const productId =
             typeof entry.productId === 'string'
               ? entry.productId
               : typeof entry.id === 'string'
-                ? entry.id
-                : null;
+              ? entry.id
+              : null;
           const category =
             typeof entry.category === 'string'
               ? entry.category
               : typeof entry.type === 'string'
-                ? entry.type
-                : null;
+              ? entry.type
+              : null;
           const subcategory =
             typeof entry.subcategory === 'string'
               ? entry.subcategory
               : typeof entry.group === 'string'
-                ? entry.group
-                : null;
+              ? entry.group
+              : null;
           const name = typeof entry.name === 'string' ? entry.name : productId;
           const sizeId =
             toTrimmedString(entry.sizeId) ??
@@ -746,47 +603,29 @@ export async function GET(
             entry.metadata && typeof entry.metadata === 'object'
               ? (entry.metadata as Record<string, unknown>)
               : packageItems
-                ? { packageItems }
-                : null;
+              ? { packageItems }
+              : null;
 
           normalizedItems.push({
-            id:
-              (typeof entry.id === 'string' && entry.id) ||
-              `${ticketRecord?.id ?? order.id ?? 'ticket'}-qr-${index}`,
-            productId: productId,
+            id: (typeof entry.id === 'string' && entry.id) || `${snapshotOwnerId}-qr-${index}`,
+            productId,
             quantity: normalizeQuantity(entry.quantity ?? entry.qty ?? entry.amount),
             price: normalizePrice(entry.price ?? entry.unitPrice ?? entry.amount),
             product: {
               name: typeof name === 'string' ? name : null,
-              category: category,
-              subcategory: subcategory,
+              category,
+              subcategory,
             },
-            sizeId: sizeId,
-            sizeLabel: sizeLabel,
-            packageId: packageId,
-            packageName: packageName,
-            metadata: metadata,
+            sizeId,
+            sizeLabel,
+            packageId,
+            packageName,
+            metadata,
           });
         });
 
       return normalizedItems;
     };
-
-    if (!items.length) {
-      items =
-        orderItems?.map((item) => ({
-          id: item.id,
-          productId: item.productId ?? null,
-          quantity: item.quantity ?? 0,
-          price: item.price ?? null,
-          product: item.productId ? productMap.get(String(item.productId)) ?? null : null,
-          sizeId: null,
-          sizeLabel: null,
-          packageId: null,
-          packageName: null,
-          metadata: null,
-        })) ?? [];
-    }
 
     if (!items.length) {
       const payloadItems = parseTicketPayloadItems();
@@ -799,10 +638,7 @@ export async function GET(
     let customerRecord: ReturnType<typeof withDecryptedUserNames> | null = null;
 
     if (customerId) {
-      const {
-        data: customer,
-        error: customerError,
-      } = await supabaseAdmin
+      const { data: customer, error: customerError } = await supabaseAdmin
         .from(USERS_TABLE)
         .select(
           [
@@ -831,7 +667,9 @@ export async function GET(
       }
 
       const normalizedCustomer =
-        customer && typeof customer === 'object' && !('error' in customer) ? (customer as RawUserRecord) : null;
+        customer && typeof customer === 'object' && !('error' in customer)
+          ? (customer as RawUserRecord)
+          : null;
       customerRecord = normalizedCustomer ? withDecryptedUserNames(normalizedCustomer) : null;
     }
 
@@ -840,7 +678,9 @@ export async function GET(
           id: customerRecord.id ?? null,
           clientId: customerRecord.clientId ?? null,
           email: customerRecord.email ?? null,
-          name: [customerRecord.firstName, customerRecord.lastName].filter(Boolean).join(' ').trim() || null,
+          name:
+            [customerRecord.firstName, customerRecord.lastName].filter(Boolean).join(' ').trim() ||
+            null,
           firstName: customerRecord.firstName ?? null,
           lastName: customerRecord.lastName ?? null,
           phone: customerRecord.phone ?? null,
@@ -859,13 +699,6 @@ export async function GET(
       success: true,
       data: {
         ticket: effectiveTicket,
-        sale: saleRecord
-          ? {
-              metodoPago: metodoPagoVenta ?? null,
-              montoRecibido: montoRecibidoVenta,
-              cambioEntregado: cambioVenta,
-            }
-          : null,
         order: {
           id: order.id,
           status: order.status ?? 'pending',
@@ -882,13 +715,8 @@ export async function GET(
           queuedPaymentReferenceType: queuedPaymentReferenceType ?? null,
           queuedByStaffId: queuedByStaffId ?? null,
           queuedByStaffName: queuedByStaffName ?? null,
-          paymentMethod: paymentMethodFromOrder ?? metodoPagoVenta ?? null,
-          metodoPago: metodoPagoVenta ?? null,
-          montoRecibido: montoRecibidoVenta,
-          cambioEntregado: cambioVenta,
-          deliveryTipAmount: resolvedDeliveryTipAmount,
-          deliveryTipPercent: resolvedDeliveryTipPercent,
-          shipping: shippingPayload,
+          montoRecibido: amountReceived ?? null,
+          cambioEntregado: changeGiven ?? null,
         },
         customer: customerPayload,
         items,

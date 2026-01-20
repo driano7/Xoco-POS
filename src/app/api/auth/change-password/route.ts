@@ -30,6 +30,7 @@ import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '@/lib/supabase-server';
 import { meetsPasswordPolicy, PASSWORD_POLICY_MESSAGE } from '@/lib/password-policy';
+import { sendPasswordChangedEmail } from '@/lib/mailer';
 
 const STAFF_TABLE = process.env.SUPABASE_STAFF_TABLE ?? 'staff_users';
 
@@ -86,13 +87,29 @@ export async function POST(request: Request) {
 
     const hashed = await bcrypt.hash(newPassword, 12);
 
+    const changedAt = new Date().toISOString();
+
     const { error: updateError } = await supabaseAdmin
       .from(STAFF_TABLE)
-      .update({ passwordHash: hashed })
+      .update({ passwordHash: hashed, updatedAt: changedAt })
       .eq('id', staffRecord.id);
 
     if (updateError) {
       throw new Error(updateError.message);
+    }
+
+    const requestIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null;
+    const requestAgent = request.headers.get('user-agent');
+    if (staffRecord.email) {
+      void sendPasswordChangedEmail({
+        to: staffRecord.email,
+        displayName: staffRecord.email,
+        changedAt,
+        ip: requestIp,
+        userAgent: requestAgent,
+      }).catch((error) => {
+        console.error('Error sending password change email:', error);
+      });
     }
 
     return NextResponse.json({ success: true });

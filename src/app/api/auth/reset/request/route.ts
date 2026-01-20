@@ -26,16 +26,24 @@
  * --------------------------------------------------------------------
  */
 
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-server';
 import { sendPasswordResetEmail } from '@/lib/mailer';
+import {
+  invalidateResetRecordsForEmail,
+  isResetTableAvailable,
+  markResetTableUnavailable,
+  upsertResetRecord,
+} from '@/lib/password-reset-store';
 
 const STAFF_TABLE = process.env.SUPABASE_STAFF_TABLE ?? 'staff_users';
 const PASSWORD_RESET_TABLE = process.env.SUPABASE_PASSWORD_RESETS_TABLE ?? 'staff_password_resets';
 const RESET_TOKEN_TTL_MINUTES = Number(process.env.POS_PASSWORD_RESET_TTL_MINUTES ?? 30);
 
 const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');
+const isMissingTableError = (error: { message?: string } | null) =>
+  Boolean(error?.message && error.message.toLowerCase().includes(PASSWORD_RESET_TABLE));
 
 const resolveOrigin = (request: Request) => {
   const headerOrigin = request.headers.get('origin');
@@ -79,23 +87,61 @@ export async function POST(request: Request) {
     const rawToken = randomBytes(32).toString('hex');
     const hashedToken = hashToken(rawToken);
     const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MINUTES * 60 * 1000).toISOString();
+    const resetId = randomUUID();
+    const cleanupTimestamp = new Date().toISOString();
 
-    await supabaseAdmin
-      .from(PASSWORD_RESET_TABLE)
-      .delete()
-      .eq('email', normalizedEmail)
-      .is('used_at', null);
+    if (isResetTableAvailable()) {
+      const { error: cleanupError } = await supabaseAdmin
+        .from(PASSWORD_RESET_TABLE)
+        .delete()
+        .eq('email', normalizedEmail)
+        .is('used_at', null);
+      if (cleanupError) {
+        if (isMissingTableError(cleanupError)) {
+          markResetTableUnavailable();
+        } else {
+          throw cleanupError;
+        }
+      }
+    }
+
+    invalidateResetRecordsForEmail(normalizedEmail, cleanupTimestamp);
 
     const requestIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
     const requestAgent = request.headers.get('user-agent');
 
-    await supabaseAdmin.from(PASSWORD_RESET_TABLE).insert({
+    const insertPayload = {
+      id: resetId,
       staff_id: staffRecord.id,
       email: normalizedEmail,
       token_hash: hashedToken,
       requested_ip: requestIp,
       requested_user_agent: requestAgent,
       expires_at: expiresAt,
+    };
+
+    if (isResetTableAvailable()) {
+      const { error: insertError } = await supabaseAdmin
+        .from(PASSWORD_RESET_TABLE)
+        .insert(insertPayload);
+      if (insertError) {
+        if (isMissingTableError(insertError)) {
+          markResetTableUnavailable();
+        } else {
+          throw insertError;
+        }
+      }
+    }
+
+    upsertResetRecord({
+      id: resetId,
+      staffId: staffRecord.id ?? null,
+      email: normalizedEmail,
+      tokenHash: hashedToken,
+      expiresAt,
+      requestedIp: requestIp ?? null,
+      requestedUserAgent: requestAgent ?? null,
+      usedAt: null,
     });
 
     const origin = resolveOrigin(request);

@@ -786,6 +786,9 @@ CREATE TABLE IF NOT EXISTS public.staff_users (
   role TEXT NOT NULL CHECK (role IN ('barista','gerente','socio','super_admin')),
   "branchId" TEXT REFERENCES public.branches(id) ON DELETE SET NULL DEFAULT 'MATRIZ',
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  delivery_paused BOOLEAN NOT NULL DEFAULT FALSE,
+  delivery_paused_at TIMESTAMPTZ,
+  delivery_pause_note TEXT,
 
   -- Datos personales cifrados (con Salt por campo)
   "firstNameEncrypted" TEXT,
@@ -809,6 +812,11 @@ CREATE TABLE IF NOT EXISTS public.staff_users (
 
 CREATE INDEX IF NOT EXISTS staff_users_role_idx ON public.staff_users (role);
 CREATE INDEX IF NOT EXISTS staff_users_branch_idx ON public.staff_users ("branchId");
+
+ALTER TABLE public.staff_users
+  ADD COLUMN IF NOT EXISTS delivery_paused BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS delivery_paused_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS delivery_pause_note TEXT;
 
 DROP TRIGGER IF EXISTS trg_staff_users_touch_updated_at ON public.staff_users;
 CREATE TRIGGER trg_staff_users_touch_updated_at
@@ -1791,6 +1799,16 @@ SET shipping_contact_phone = items->'shipping'->>'contactPhone',
 WHERE items ? 'shipping'
   AND (shipping_contact_phone IS NULL OR shipping_contact_phone = '');
 
+-- Limpia direcciones huérfanas surgidas al recrear addresses
+UPDATE public.orders o
+SET shipping_address_id = NULL
+WHERE shipping_address_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM public.addresses a
+    WHERE a.id = o.shipping_address_id
+  );
+
 ALTER TABLE orders
   ADD COLUMN IF NOT EXISTS shipping_address_id text,
   ADD COLUMN IF NOT EXISTS delivery_tip_amount numeric(10,2),
@@ -2019,3 +2037,31 @@ ADD COLUMN IF NOT EXISTS "manualStockStatus" TEXT DEFAULT 'normal'
   CHECK ("manualStockStatus" IN ('normal','low','out')),
 ADD COLUMN IF NOT EXISTS "manualStockReason" TEXT,
 ADD COLUMN IF NOT EXISTS "manualStatusUpdatedAt" TIMESTAMPTZ;
+
+
+CREATE TABLE public.promo_codes (
+  id TEXT PRIMARY KEY,
+  code TEXT UNIQUE NOT NULL,
+  description TEXT,
+  "appliesTo" TEXT NOT NULL DEFAULT 'product',
+  "discountType" TEXT NOT NULL DEFAULT 'percentage',
+  "discountValue" NUMERIC(10,2),
+  "durationDays" INTEGER,
+  "maxRedemptions" INTEGER,
+  "perUserLimit" INTEGER NOT NULL DEFAULT 1,
+  metadata JSONB,
+  "validFrom" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  "expiresAt" TIMESTAMPTZ,
+  "isActive" BOOLEAN NOT NULL DEFAULT TRUE,
+  "createdBy" TEXT,
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE public.promo_redemptions (
+  id TEXT PRIMARY KEY,
+  "promoCodeId" TEXT REFERENCES public.promo_codes(id) ON DELETE CASCADE,
+  "userId" TEXT REFERENCES public.users(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'redeemed',
+  context JSONB,
+  "redeemedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

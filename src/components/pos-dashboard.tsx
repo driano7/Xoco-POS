@@ -44,7 +44,7 @@ import { CustomerLoyaltyCoffees } from '@/components/customer-loyalty-coffees';
 import { SearchableDropdown } from '@/components/searchable-dropdown';
 import { CofeprisPanel } from '@/components/compliance/sanitary-compliance-panel';
 import { VirtualTicket, type VirtualTicketProps } from '@xoco/ui';
-import { toPng } from 'html-to-image';
+import { toCanvas, toPng } from 'html-to-image';
 import { ChartButton } from '@/components/chart-button';
 import {
   useMenuOptions,
@@ -137,6 +137,103 @@ const COMMENT_METADATA_KEYS = [
 
 const toTrimmedString = (value: unknown) =>
   typeof value === 'string' ? value.trim() || null : null;
+
+const sanitizeTicketFileName = (identifier?: string | null) =>
+  (identifier && identifier.trim() ? identifier : 'ticket-pos')
+    .toString()
+    .replace(/[^a-z0-9_-]+/gi, '-')
+    .replace(/-+/g, '-')
+    .toLowerCase();
+
+type TicketSnapshot = {
+  jpegBytes: Uint8Array;
+  displayWidth: number;
+  displayHeight: number;
+  imageWidth: number;
+  imageHeight: number;
+};
+
+const pxToPt = (px: number) => Math.max(1, Math.round((px * 72) / 96));
+
+const canvasToTicketSnapshot = (canvas: HTMLCanvasElement, container: HTMLElement | null) => {
+  if (typeof window === 'undefined' || typeof window.atob !== 'function') {
+    throw new Error('Ticket PDF generation requires a browser environment.');
+  }
+  const rect = container?.getBoundingClientRect();
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+  const base64 = dataUrl.split(',')[1] ?? '';
+  const binary = window.atob(base64);
+  const jpegBytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    jpegBytes[i] = binary.charCodeAt(i);
+  }
+  return {
+    jpegBytes,
+    displayWidth: Math.max(1, Math.round(rect?.width ?? canvas.width)),
+    displayHeight: Math.max(1, Math.round(rect?.height ?? canvas.height)),
+    imageWidth: Math.max(1, canvas.width),
+    imageHeight: Math.max(1, canvas.height),
+  } satisfies TicketSnapshot;
+};
+
+const ticketSnapshotToPdfBlob = (snapshot: TicketSnapshot) => {
+  const textEncoder = new TextEncoder();
+  const pdfChunks: Uint8Array[] = [];
+  const offsets: number[] = [];
+  let position = 0;
+
+  const pushChunk = (chunk: string | Uint8Array) => {
+    const nextChunk = typeof chunk === 'string' ? textEncoder.encode(chunk) : chunk;
+    pdfChunks.push(nextChunk);
+    position += nextChunk.length;
+  };
+
+  const addObject = (id: number, body: string) => {
+    offsets[id] = position;
+    pushChunk(`${id} 0 obj\n${body}\nendobj\n`);
+  };
+
+  const addStreamObject = (id: number, dict: string, data: string | Uint8Array) => {
+    const payload = typeof data === 'string' ? textEncoder.encode(data) : data;
+    offsets[id] = position;
+    pushChunk(`${id} 0 obj\n${dict}\nstream\n`);
+    pushChunk(payload);
+    pushChunk('\nendstream\nendobj\n');
+  };
+
+  const pageWidth = pxToPt(snapshot.displayWidth);
+  const pageHeight = pxToPt(snapshot.displayHeight);
+
+  pushChunk('%PDF-1.4\n');
+  addObject(1, '<< /Type /Catalog /Pages 2 0 R >>');
+  addObject(2, '<< /Type /Pages /Count 1 /Kids [3 0 R] >>');
+  addObject(
+    3,
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /ProcSet [/PDF /ImageC] /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>`
+  );
+  addStreamObject(
+    4,
+    `<< /Type /XObject /Subtype /Image /Width ${snapshot.imageWidth} /Height ${snapshot.imageHeight} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${snapshot.jpegBytes.length} >>`,
+    snapshot.jpegBytes
+  );
+  const contentStream = `q\n${pageWidth} 0 0 ${pageHeight} 0 0 cm\n/Im0 Do\nQ\n`;
+  addStreamObject(5, `<< /Length ${textEncoder.encode(contentStream).length} >>`, contentStream);
+
+  const xrefStart = position;
+  pushChunk('xref\n0 6\n');
+  pushChunk('0000000000 65535 f \n');
+  for (let i = 1; i <= 5; i += 1) {
+    const offset = offsets[i] ?? 0;
+    pushChunk(`${offset.toString().padStart(10, '0')} 00000 n \n`);
+  }
+  pushChunk('trailer\n');
+  pushChunk('<< /Size 6 /Root 1 0 R >>\n');
+  pushChunk(`startxref\n${xrefStart}\n%%EOF`);
+
+  const blobParts: BlobPart[] = pdfChunks.map((chunk) => chunk.slice());
+
+  return new Blob(blobParts, { type: 'application/pdf' });
+};
 
 const extractNotesFromMetadata = (metadata: unknown): string | null => {
   if (!metadata) {
@@ -6825,6 +6922,8 @@ const OrderDetailContent = ({
   const [cashTenderedInput, setCashTenderedInput] = useState<string>('');
   const ticketRef = useRef<HTMLDivElement | null>(null);
   const [isDownloadingTicket, setIsDownloadingTicket] = useState(false);
+  const [isGeneratingTicketPdf, setIsGeneratingTicketPdf] = useState(false);
+  const [isSharingTicket, setIsSharingTicket] = useState(false);
   const editingPaymentMethodLabel = selectedPaymentMethod
     ? PAYMENT_METHOD_LABELS[selectedPaymentMethod] ?? selectedPaymentMethod
     : null;
@@ -7117,14 +7216,10 @@ const OrderDetailContent = ({
         pixelRatio: 2,
         quality: 1,
       });
-      const sanitizedName = (ticketIdentifier || 'ticket-pos')
-        .toString()
-        .replace(/[^a-z0-9_-]+/gi, '-')
-        .replace(/-+/g, '-')
-        .toLowerCase();
+      const sanitizedName = sanitizeTicketFileName(ticketIdentifier);
       const link = document.createElement('a');
       link.href = dataUrl;
-      link.download = `${sanitizedName || 'ticket-pos'}.png`;
+      link.download = `${sanitizedName}.png`;
       link.click();
       onNotify('Ticket descargado en PNG.');
     } catch (error) {
@@ -7132,6 +7227,104 @@ const OrderDetailContent = ({
       onNotify('No pudimos descargar el ticket.');
     } finally {
       setIsDownloadingTicket(false);
+    }
+  }, [onNotify, ticketIdentifier]);
+  const handleTicketPdfDownload = useCallback(async () => {
+    if (!ticketRef.current) {
+      onNotify('No pudimos preparar el ticket para descargar.');
+      return;
+    }
+    setIsGeneratingTicketPdf(true);
+    try {
+      const canvas = await toCanvas(ticketRef.current, {
+        cacheBust: true,
+        pixelRatio: 2,
+        quality: 1,
+      });
+      const snapshot = canvasToTicketSnapshot(canvas, ticketRef.current);
+      const pdfBlob = ticketSnapshotToPdfBlob(snapshot);
+      const sanitizedName = sanitizeTicketFileName(ticketIdentifier);
+      const objectUrl = URL.createObjectURL(pdfBlob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = `${sanitizedName}.pdf`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 4000);
+      onNotify('Ticket descargado en PDF.');
+    } catch (error) {
+      console.error('Ticket PDF download failed', error);
+      onNotify('No pudimos generar el PDF del ticket.');
+    } finally {
+      setIsGeneratingTicketPdf(false);
+    }
+  }, [onNotify, ticketIdentifier]);
+  const handleTicketShare = useCallback(async () => {
+    if (!ticketRef.current) {
+      onNotify('No pudimos preparar el ticket para compartir.');
+      return;
+    }
+    if (typeof navigator === 'undefined' || typeof navigator.share !== 'function') {
+      onNotify('Tu navegador no permite compartir archivos directamente.');
+      return;
+    }
+    const wantsPdf =
+      typeof window === 'undefined'
+        ? true
+        : window.confirm('¿Quieres compartir el ticket como PDF? Pulsa Cancelar para enviarlo como PNG.');
+
+    setIsSharingTicket(true);
+
+    try {
+      let blob: Blob;
+      const sanitizedName = sanitizeTicketFileName(ticketIdentifier);
+
+      if (wantsPdf) {
+        const canvas = await toCanvas(ticketRef.current, {
+          cacheBust: true,
+          pixelRatio: 2,
+          quality: 1,
+        });
+        const snapshot = canvasToTicketSnapshot(canvas, ticketRef.current);
+        blob = ticketSnapshotToPdfBlob(snapshot);
+      } else {
+        const dataUrl = await toPng(ticketRef.current, {
+          cacheBust: true,
+          pixelRatio: 2,
+          quality: 1,
+        });
+        const response = await fetch(dataUrl);
+        blob = await response.blob();
+      }
+
+      const filename = `${sanitizedName}.${wantsPdf ? 'pdf' : 'png'}`;
+      const file = new File([blob], filename, {
+        type: wantsPdf ? 'application/pdf' : 'image/png',
+      });
+      const sharePayload = {
+        files: [file],
+        title: 'Ticket digital Xoco Café',
+        text: wantsPdf
+          ? 'Compartimos tu ticket en PDF.'
+          : 'Compartimos tu ticket en PNG.',
+      };
+
+      if (typeof navigator.canShare === 'function' && !navigator.canShare(sharePayload)) {
+        throw new Error('share_unsupported');
+      }
+
+      await navigator.share(sharePayload);
+      onNotify('Ticket compartido correctamente.');
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        onNotify('Cancelaste el intento de compartir el ticket.');
+      } else if (error instanceof Error && error.message === 'share_unsupported') {
+        onNotify('Tu dispositivo no soporta compartir este archivo.');
+      } else {
+        console.error('Error al compartir ticket:', error);
+        onNotify('No pudimos compartir el ticket.');
+      }
+    } finally {
+      setIsSharingTicket(false);
     }
   }, [onNotify, ticketIdentifier]);
   const paymentSummaryText = (() => {
@@ -7472,14 +7665,32 @@ const OrderDetailContent = ({
           <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
             Ticket digital (vista cliente)
           </p>
-          <button
-            type="button"
-            onClick={() => void handleTicketDownload()}
-            disabled={isDownloadingTicket}
-            className="rounded-full border border-primary-200 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.3em] text-primary-700 transition hover:border-primary-400 hover:bg-primary-50 disabled:opacity-40 dark:border-white/20 dark:text-white dark:hover:bg-white/10"
-          >
-            {isDownloadingTicket ? 'Generando…' : 'Descargar PNG'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleTicketShare()}
+              disabled={isSharingTicket}
+              className="rounded-full border border-primary-200 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.3em] text-primary-700 transition hover:border-primary-400 hover:bg-primary-50 disabled:opacity-40 dark:border-white/20 dark:text-white dark:hover:bg-white/10"
+            >
+              {isSharingTicket ? 'Compartiendo…' : 'Compartir ticket'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleTicketPdfDownload()}
+              disabled={isGeneratingTicketPdf}
+              className="rounded-full border border-primary-200 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.3em] text-primary-700 transition hover:border-primary-400 hover:bg-primary-50 disabled:opacity-40 dark:border-white/20 dark:text-white dark:hover:bg-white/10"
+            >
+              {isGeneratingTicketPdf ? 'Generando PDF…' : 'Descargar PDF'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleTicketDownload()}
+              disabled={isDownloadingTicket}
+              className="rounded-full border border-primary-200 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.3em] text-primary-700 transition hover:border-primary-400 hover:bg-primary-50 disabled:opacity-40 dark:border-white/20 dark:text-white dark:hover:bg-white/10"
+            >
+              {isDownloadingTicket ? 'Generando PNG…' : 'Descargar PNG'}
+            </button>
+          </div>
         </div>
         {customerName && (
           <p className="mt-2 text-xs text-[var(--brand-muted)] dark:text-white/80">

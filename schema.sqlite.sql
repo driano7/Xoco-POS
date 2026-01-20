@@ -362,6 +362,9 @@ CREATE TABLE IF NOT EXISTS staff_users (
   role TEXT NOT NULL CHECK (role IN ('barista','gerente','socio','super_admin')),
   branchId TEXT DEFAULT 'MATRIZ' REFERENCES branches(id) ON DELETE SET NULL,
   is_active INTEGER NOT NULL DEFAULT 1,
+  delivery_paused INTEGER NOT NULL DEFAULT 0,
+  delivery_paused_at TEXT,
+  delivery_pause_note TEXT,
   firstNameEncrypted TEXT,
   firstNameIv TEXT,
   firstNameTag TEXT,
@@ -631,4 +634,32 @@ CREATE TABLE IF NOT EXISTS product_recipes (
   inventoryItemId TEXT NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
   quantityUsed REAL NOT NULL,
   createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS promo_codes (
+  id TEXT PRIMARY KEY,
+  code TEXT UNIQUE NOT NULL,
+  description TEXT,
+  appliesTo TEXT NOT NULL DEFAULT 'product',
+  discountType TEXT NOT NULL DEFAULT 'percentage',
+  discountValue REAL,
+  durationDays INTEGER,
+  maxRedemptions INTEGER,
+  perUserLimit INTEGER NOT NULL DEFAULT 1,
+  metadata TEXT,
+  validFrom TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expiresAt TEXT,
+  isActive INTEGER NOT NULL DEFAULT 1,
+  createdBy TEXT,
+  createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS promo_redemptions (
+  id TEXT PRIMARY KEY,
+  promoCodeId TEXT REFERENCES promo_codes(id) ON DELETE CASCADE,
+  userId TEXT REFERENCES users(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'redeemed',
+  context TEXT,
+  redeemedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

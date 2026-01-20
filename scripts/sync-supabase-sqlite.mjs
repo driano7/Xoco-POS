@@ -144,6 +144,8 @@ const SYNC_TABLES = [
   { name: 'pest_control_logs', pk: 'id', updatedColumn: 'createdAt' },
   { name: 'waste_logs', pk: 'id', updatedColumn: 'createdAt' },
   { name: 'product_recipes', pk: 'id', updatedColumn: 'createdAt' },
+  { name: 'promo_codes', pk: 'id', updatedColumn: 'updatedAt' },
+  { name: 'promo_redemptions', pk: 'id', updatedColumn: 'redeemedAt' },
 ];
 
 const SCHEMA_PATCHES = {};

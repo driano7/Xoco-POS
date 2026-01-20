@@ -31,11 +31,20 @@ import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '@/lib/supabase-server';
 import { meetsPasswordPolicy, PASSWORD_POLICY_MESSAGE } from '@/lib/password-policy';
+import {
+  getResetRecord,
+  isResetTableAvailable,
+  markResetRecordUsed,
+  markResetTableUnavailable,
+  type StaffPasswordResetRecord,
+} from '@/lib/password-reset-store';
 
 const STAFF_TABLE = process.env.SUPABASE_STAFF_TABLE ?? 'staff_users';
 const PASSWORD_RESET_TABLE = process.env.SUPABASE_PASSWORD_RESETS_TABLE ?? 'staff_password_resets';
 
 const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');
+const isMissingTableError = (error: { message?: string } | null) =>
+  Boolean(error?.message && error.message.toLowerCase().includes(PASSWORD_RESET_TABLE));
 
 export async function POST(request: Request) {
   try {
@@ -53,24 +62,45 @@ export async function POST(request: Request) {
 
     const hashedToken = hashToken(token);
 
-    const { data: resetRecord, error: resetError } = await supabaseAdmin
-      .from(PASSWORD_RESET_TABLE)
-      .select('id,email,staff_id,expires_at,used_at')
-      .eq('token_hash', hashedToken)
-      .maybeSingle();
+    let resetRecord: StaffPasswordResetRecord | null = null;
 
-    if (resetError) {
-      throw resetError;
+    if (isResetTableAvailable()) {
+      const { data, error: resetError } = await supabaseAdmin
+        .from(PASSWORD_RESET_TABLE)
+        .select('id,email,staff_id,expires_at,used_at,token_hash')
+        .eq('token_hash', hashedToken)
+        .maybeSingle();
+
+      if (resetError) {
+        if (isMissingTableError(resetError)) {
+          markResetTableUnavailable();
+        } else {
+          throw resetError;
+        }
+      } else if (data) {
+        resetRecord = {
+          id: data.id,
+          staffId: data.staff_id ?? null,
+          email: data.email,
+          tokenHash: data.token_hash,
+          expiresAt: data.expires_at,
+          usedAt: data.used_at ?? null,
+        };
+      }
     }
 
-    if (!resetRecord || resetRecord.used_at) {
+    if (!resetRecord) {
+      resetRecord = getResetRecord(hashedToken);
+    }
+
+    if (!resetRecord || resetRecord.usedAt) {
       return NextResponse.json(
         { success: false, error: 'El enlace que usaste ya no es válido.' },
         { status: 400 }
       );
     }
 
-    if (new Date(resetRecord.expires_at).getTime() < Date.now()) {
+    if (new Date(resetRecord.expiresAt).getTime() < Date.now()) {
       return NextResponse.json(
         { success: false, error: 'El enlace ha expirado. Solicita uno nuevo.' },
         { status: 400 }
@@ -79,8 +109,8 @@ export async function POST(request: Request) {
 
     const staffQuery = supabaseAdmin.from(STAFF_TABLE).select('id,email');
     const staffFilter =
-      resetRecord.staff_id != null
-        ? staffQuery.eq('id', resetRecord.staff_id)
+      resetRecord.staffId != null
+        ? staffQuery.eq('id', resetRecord.staffId)
         : staffQuery.ilike('email', resetRecord.email);
 
     const { data: staffRecord, error: staffError } = await staffFilter.maybeSingle();
@@ -114,10 +144,24 @@ export async function POST(request: Request) {
       throw updateError;
     }
 
-    await supabaseAdmin
-      .from(PASSWORD_RESET_TABLE)
-      .update({ used_at: new Date().toISOString() })
-      .eq('id', resetRecord.id);
+    const usedAt = new Date().toISOString();
+
+    if (isResetTableAvailable()) {
+      const { error: updateResetError } = await supabaseAdmin
+        .from(PASSWORD_RESET_TABLE)
+        .update({ used_at: usedAt })
+        .eq('id', resetRecord.id);
+
+      if (updateResetError) {
+        if (isMissingTableError(updateResetError)) {
+          markResetTableUnavailable();
+        } else {
+          throw updateResetError;
+        }
+      }
+    }
+
+    markResetRecordUsed(resetRecord.tokenHash, usedAt);
 
     return NextResponse.json({ success: true });
   } catch (error) {

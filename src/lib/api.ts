@@ -369,6 +369,9 @@ export interface StaffMember {
   createdAt?: string | null;
   updatedAt?: string | null;
   lastLoginAt?: string | null;
+  deliveryPaused?: boolean;
+  deliveryPauseNote?: string | null;
+  deliveryPausedAt?: string | null;
 }
 
 export interface StaffSessionRecord {
@@ -396,6 +399,15 @@ export interface StaffDashboard {
   staff: StaffMember[];
   sessions: StaffSessionRecord[];
   metrics: StaffMetrics;
+}
+
+export interface DeliveryStatusRecord {
+  staffId: string;
+  branchId?: string | null;
+  paused: boolean;
+  pausedAt?: string | null;
+  note?: string | null;
+  updatedAt?: string | null;
 }
 
 export interface CatalogCategorySummary {
@@ -1099,6 +1111,58 @@ export async function fetchStaffDashboard(): Promise<StaffDashboard> {
 
   if (!payload.success || !payload.data) {
     throw new Error('Respuesta inválida del servidor');
+  }
+
+  return payload.data;
+}
+
+export interface UpdateDeliveryStatusPayload {
+  staffId: string;
+  paused: boolean;
+  note?: string | null;
+}
+
+export interface DeliveryStatusQuery {
+  staffId?: string;
+  branchId?: string;
+}
+
+export async function updateDeliveryStatus(
+  payload: UpdateDeliveryStatusPayload
+): Promise<DeliveryStatusRecord> {
+  const response = await fetch(buildApiUrl('/api/staff/delivery-status'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    keepalive: true,
+  });
+
+  const data = (await response.json()) as { success: boolean; data?: DeliveryStatusRecord; error?: string };
+
+  if (!response.ok || !data.success || !data.data) {
+    throw new Error(data.error || 'No pudimos actualizar el estado de entregas.');
+  }
+
+  return data.data;
+}
+
+export async function fetchDeliveryStatuses(
+  query?: DeliveryStatusQuery
+): Promise<DeliveryStatusRecord[]> {
+  const url = buildApiUrl(
+    '/api/staff/delivery-status',
+    query ? { staffId: query.staffId, branchId: query.branchId } : undefined
+  );
+  const response = await fetch(url, { cache: 'no-store', keepalive: true });
+
+  const payload = (await response.json()) as {
+    success: boolean;
+    data?: DeliveryStatusRecord[];
+    error?: string;
+  };
+
+  if (!response.ok || !payload.success || !payload.data) {
+    throw new Error(payload.error || 'No pudimos obtener el estado de entregas.');
   }
 
   return payload.data;
