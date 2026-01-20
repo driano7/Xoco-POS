@@ -1185,8 +1185,41 @@ export async function fetchCatalog(): Promise<CatalogPayload> {
   return payload.data;
 }
 
-export async function fetchTransactionsHistory(): Promise<TransactionHistoryEntry[]> {
-  const url = buildApiUrl('/api/transactions-history');
+export type TransactionsHistoryFilters = {
+  from?: string;
+  to?: string;
+  clientId?: string;
+  minTotal?: number;
+  maxTotal?: number;
+  days?: number;
+};
+
+export async function fetchTransactionsHistory(
+  filters?: TransactionsHistoryFilters
+): Promise<TransactionHistoryEntry[]> {
+  const params: Record<string, string> = {};
+  if (filters?.from) {
+    params.from = filters.from;
+  }
+  if (filters?.to) {
+    params.to = filters.to;
+  }
+  if (filters?.clientId) {
+    params.clientId = filters.clientId;
+  }
+  if (typeof filters?.minTotal === 'number') {
+    params.minTotal = String(filters.minTotal);
+  }
+  if (typeof filters?.maxTotal === 'number') {
+    params.maxTotal = String(filters.maxTotal);
+  }
+  if (typeof filters?.days === 'number') {
+    params.days = String(filters.days);
+  }
+  const url = buildApiUrl(
+    '/api/transactions-history',
+    Object.keys(params).length ? params : undefined
+  );
   const response = await fetch(url, { cache: 'no-store', keepalive: true });
 
   if (!response.ok) {

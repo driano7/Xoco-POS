@@ -93,6 +93,9 @@ CREATE TABLE IF NOT EXISTS public.users (
   "lifetimeValue" NUMERIC(10,2) NOT NULL DEFAULT 0.00
 );
 
+ALTER TABLE public.users
+  ADD COLUMN IF NOT EXISTS "rewardEarned" BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE INDEX IF NOT EXISTS users_email_idx ON public.users (email);
 CREATE INDEX IF NOT EXISTS users_client_id_idx ON public.users ("clientId");
 CREATE INDEX IF NOT EXISTS users_google_id_idx ON public.users ("googleId");
@@ -125,10 +128,37 @@ CREATE TABLE IF NOT EXISTS public.addresses (
   state TEXT,
   "postalCode" TEXT NOT NULL,
   country TEXT NOT NULL,
+  reference TEXT,
+  "additionalInfo" TEXT,
+  "contactPhone" TEXT,
+  "isWhatsapp" BOOLEAN NOT NULL DEFAULT FALSE,
   "isDefault" BOOLEAN NOT NULL DEFAULT FALSE,
   "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'addresses'
+      AND column_name = 'contactphone'
+  ) THEN
+    EXECUTE 'ALTER TABLE public.addresses RENAME COLUMN contactphone TO "contactPhone"';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'addresses'
+      AND column_name = 'iswhatsapp'
+  ) THEN
+    EXECUTE 'ALTER TABLE public.addresses RENAME COLUMN iswhatsapp TO "isWhatsapp"';
+  END IF;
+END$$;
 
 CREATE INDEX IF NOT EXISTS addresses_user_id_idx ON public.addresses ("userId");
 
@@ -924,6 +954,7 @@ CREATE INDEX IF NOT EXISTS turnos_estado_idx ON public.turnos (estado);
 
 ALTER TABLE public.ventas
   ADD COLUMN IF NOT EXISTS turno_id INTEGER REFERENCES public.turnos(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS order_id TEXT,
   ADD COLUMN IF NOT EXISTS total NUMERIC(12,2) NOT NULL,
   ADD COLUMN IF NOT EXISTS metodo_pago TEXT NOT NULL,
   ADD COLUMN IF NOT EXISTS monto_recibido NUMERIC(12,2),
@@ -1683,6 +1714,15 @@ alter table if exists public.orders
   add column if not exists message text,
   add column if not exists instructions text;
 
+alter table if exists public.orders
+  add column if not exists "queuedByStaffId" text,
+  add column if not exists "queuedByStaffName" text,
+  add column if not exists "queuedPaymentMethod" text,
+  add column if not exists "queuedPaymentReference" text,
+  add column if not exists "queuedPaymentReferenceType" text,
+  add column if not exists "montoRecibido" numeric(12,2),
+  add column if not exists "cambioEntregado" numeric(12,2);
+
 -- --------------------------------------------------------------------
 --  Marketing analytics (idempotent setup to avoid 42P07 errors)
 -- --------------------------------------------------------------------
@@ -1952,24 +1992,36 @@ ADD COLUMN IF NOT EXISTS "is_low_stock" BOOLEAN DEFAULT FALSE,
 ADD COLUMN IF NOT EXISTS "out_of_stock_reason" TEXT;
 
 
--- 1. Eliminar la tabla antigua para recrearla limpia con la nueva estructura
-DROP TABLE IF EXISTS public.addresses CASCADE;
+DO $$
+BEGIN
+  IF to_regclass('public.addresses') IS NULL THEN
+    CREATE TABLE public.addresses (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+      "userId" TEXT NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+      label TEXT NOT NULL,
+      nickname TEXT,
+      type TEXT NOT NULL,
+      payload TEXT NOT NULL, -- Aquí irán street, city, etc. encriptados
+      payload_iv TEXT NOT NULL,
+      payload_tag TEXT NOT NULL,
+      payload_salt TEXT NOT NULL,
+      "isDefault" BOOLEAN NOT NULL DEFAULT FALSE,
+      "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  END IF;
+END$$;
 
--- 2. Crear la tabla con soporte para encriptación
-CREATE TABLE public.addresses (
-  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
-  "userId" TEXT NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
-  label TEXT NOT NULL,
-  nickname TEXT,
-  type TEXT NOT NULL,
-  payload TEXT NOT NULL, -- Aquí irán street, city, etc. encriptados
-  payload_iv TEXT NOT NULL,
-  payload_tag TEXT NOT NULL,
-  payload_salt TEXT NOT NULL,
-  "isDefault" BOOLEAN NOT NULL DEFAULT FALSE,
-  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+ALTER TABLE public.addresses
+  ADD COLUMN IF NOT EXISTS street TEXT,
+  ADD COLUMN IF NOT EXISTS city TEXT,
+  ADD COLUMN IF NOT EXISTS state TEXT,
+  ADD COLUMN IF NOT EXISTS "postalCode" TEXT,
+  ADD COLUMN IF NOT EXISTS country TEXT,
+  ADD COLUMN IF NOT EXISTS reference TEXT,
+  ADD COLUMN IF NOT EXISTS "additionalInfo" TEXT,
+  ADD COLUMN IF NOT EXISTS "contactPhone" TEXT,
+  ADD COLUMN IF NOT EXISTS "isWhatsapp" BOOLEAN DEFAULT FALSE;
 
 -- 3. Índices y Triggers (necesarios para el funcionamiento)
 CREATE INDEX IF NOT EXISTS addresses_user_id_idx ON public.addresses ("userId");
@@ -2039,7 +2091,7 @@ ADD COLUMN IF NOT EXISTS "manualStockReason" TEXT,
 ADD COLUMN IF NOT EXISTS "manualStatusUpdatedAt" TIMESTAMPTZ;
 
 
-CREATE TABLE public.promo_codes (
+CREATE TABLE IF NOT EXISTS public.promo_codes (
   id TEXT PRIMARY KEY,
   code TEXT UNIQUE NOT NULL,
   description TEXT,
@@ -2057,7 +2109,7 @@ CREATE TABLE public.promo_codes (
   "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE TABLE public.promo_redemptions (
+CREATE TABLE IF NOT EXISTS public.promo_redemptions (
   id TEXT PRIMARY KEY,
   "promoCodeId" TEXT REFERENCES public.promo_codes(id) ON DELETE CASCADE,
   "userId" TEXT REFERENCES public.users(id) ON DELETE CASCADE,

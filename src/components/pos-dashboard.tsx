@@ -52,6 +52,7 @@ import {
   getFallbackVariantById,
 } from '@/hooks/use-menu-options';
 import { ThemeToggle } from '@/components/theme-toggle';
+import { PastTicketsPanel } from '@/components/past-tickets-panel';
 import { isPublicSaleOrder } from '@/lib/loyalty';
 import type {
   LoyaltyCustomer,
@@ -71,6 +72,7 @@ import type {
   MarketingInsights,
   TicketDetail,
   ManualStockStatus,
+  TransactionHistoryEntry,
 } from '@/lib/api';
 import {
   enqueueOrder,
@@ -2696,6 +2698,10 @@ export function PosDashboard() {
     message: null,
     error: null,
   });
+  const [ticketReplayState, setTicketReplayState] = useState<{ id: string | null; error: string | null }>({
+    id: null,
+    error: null,
+  });
   const notifyOrderScanState = useCallback(
     (order?: Order | null) => {
       if (!order) {
@@ -2710,6 +2716,36 @@ export function PosDashboard() {
       }
     },
     [enqueueSnackbar, hiddenQueueOrderIds]
+  );
+  const handleHistoricalTicketReplay = useCallback(
+    async (entry: TransactionHistoryEntry) => {
+      const identifier =
+        entry.ticket?.ticketCode ??
+        entry.order.ticketCode ??
+        entry.order.orderNumber ??
+        entry.order.id ??
+        null;
+      if (!identifier) {
+        const message = 'No encontramos un identificador para recrear ese ticket.';
+        setTicketReplayState({ id: null, error: message });
+        enqueueSnackbar(message);
+        return;
+      }
+      setTicketReplayState({ id: identifier, error: null });
+      try {
+        const detail = await fetchTicketDetail(identifier);
+        const orderFromDetail = buildOrderFromTicketDetail(detail);
+        setDetail({ type: 'order', data: orderFromDetail });
+        enqueueSnackbar('Mostramos de nuevo el ticket seleccionado.');
+        setTicketReplayState({ id: null, error: null });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'No pudimos recrear el ticket seleccionado.';
+        setTicketReplayState({ id: null, error: message });
+        enqueueSnackbar(message);
+      }
+    },
+    [enqueueSnackbar, setDetail, setTicketReplayState]
   );
   useEffect(() => {
     const statusMap = orderStatusSnapshotRef.current;
@@ -4631,6 +4667,22 @@ export function PosDashboard() {
                   />
                 </div>
               )}
+            </section>
+
+            <section id="tickets-history-panel" className="card space-y-6 p-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="badge">Historial de tickets</p>
+                  <p className="text-sm text-[var(--brand-muted)]">
+                    Consulta tickets pasados por rango de fechas, cliente o monto y vuelve a cargarlos.
+                  </p>
+                </div>
+              </div>
+              <PastTicketsPanel
+                onReplay={handleHistoricalTicketReplay}
+                replayingId={ticketReplayState.id}
+                replayError={ticketReplayState.error}
+              />
             </section>
 
             <section id="loyalty-panel" className="card space-y-6 p-6">

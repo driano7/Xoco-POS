@@ -1642,40 +1642,20 @@ const supabaseOrdersLoader: OrdersDataLoader = {
     if (!addressIds.length) {
       return map;
     }
-    type AddressRowResponse = {
+    type AddressRowResponse = Record<string, unknown> & {
       id: string;
       userId?: string | null;
-      label?: string | null;
-      nickname?: string | null;
-    type?: string | null;
-      street?: string | null;
-      city?: string | null;
-      state?: string | null;
-      postalCode?: string | null;
-      country?: string | null;
-      reference?: string | null;
-      additionalInfo?: string | null;
-      payload?: string | null;
-      payload_iv?: string | null;
-      payload_tag?: string | null;
-      payload_salt?: string | null;
-      isDefault?: boolean | null;
-      contactPhone?: string | null;
-      isWhatsapp?: boolean | null;
-      createdAt?: string | null;
-      updatedAt?: string | null;
       user?:
         | { id?: string | null; email?: string | null }
         | { id?: string | null; email?: string | null }[]
         | null;
     };
-    const { data, error } = await supabaseAdmin
+    let { data, error } = await supabaseAdmin
       .from(ADDRESSES_TABLE)
-      .select(
-        'id,"userId",label,nickname,type,"isDefault","createdAt","updatedAt",street,city,state,"postalCode",country,reference,"additionalInfo",payload,payload_iv,payload_tag,payload_salt,contactPhone,"isWhatsapp",user:users(id,email)'
-      )
+      .select('*,user:users(id,email)')
       .in('id', addressIds)
       .returns<AddressRowResponse[] | null>();
+
     if (error) {
       console.error('No pudimos recuperar direcciones de envío:', error);
       return map;
@@ -1690,25 +1670,46 @@ const supabaseOrdersLoader: OrdersDataLoader = {
         {
           id: row.id,
           userId: row.userId ?? (typeof userRecord?.id === 'string' ? userRecord.id : null),
-          label: row.label,
-          nickname: row.nickname,
-          type: row.type,
-          street: row.street,
-          city: row.city,
-          state: row.state,
-          postalCode: row.postalCode,
-          country: row.country,
-          reference: row.reference,
-          additionalInfo: row.additionalInfo,
-          payload: row.payload,
-          payload_iv: row.payload_iv,
-          payload_tag: row.payload_tag,
-          payload_salt: row.payload_salt,
-          isDefault: row.isDefault,
-          contactPhone: row.contactPhone,
-          isWhatsapp: typeof row.isWhatsapp === 'boolean' ? row.isWhatsapp : null,
-          createdAt: row.createdAt,
-          updatedAt: row.updatedAt,
+          label: typeof row.label === 'string' ? row.label : null,
+          nickname: typeof row.nickname === 'string' ? row.nickname : null,
+          type: typeof row.type === 'string' ? row.type : null,
+          street: typeof row.street === 'string' ? row.street : null,
+          city: typeof row.city === 'string' ? row.city : null,
+          state: typeof row.state === 'string' ? row.state : null,
+          postalCode:
+            typeof row.postalCode === 'string'
+              ? row.postalCode
+              : typeof (row as { postalcode?: string }).postalcode === 'string'
+                ? (row as { postalcode?: string }).postalcode
+                : null,
+          country: typeof row.country === 'string' ? row.country : null,
+          reference: typeof row.reference === 'string' ? row.reference : null,
+          additionalInfo:
+            typeof row.additionalInfo === 'string' ? row.additionalInfo : null,
+          payload: typeof row.payload === 'string' ? row.payload : null,
+          payload_iv: typeof row.payload_iv === 'string' ? row.payload_iv : null,
+          payload_tag: typeof row.payload_tag === 'string' ? row.payload_tag : null,
+          payload_salt: typeof row.payload_salt === 'string' ? row.payload_salt : null,
+          isDefault:
+            typeof row.isDefault === 'boolean'
+              ? row.isDefault
+              : typeof (row as { isdefault?: boolean }).isdefault === 'boolean'
+                ? (row as { isdefault?: boolean }).isdefault
+                : null,
+          contactPhone:
+            typeof row.contactPhone === 'string'
+              ? row.contactPhone
+              : typeof (row as { contactphone?: string }).contactphone === 'string'
+                ? (row as { contactphone?: string }).contactphone
+                : null,
+          isWhatsapp:
+            typeof row.isWhatsapp === 'boolean'
+              ? row.isWhatsapp
+              : typeof (row as { iswhatsapp?: boolean }).iswhatsapp === 'boolean'
+                ? (row as { iswhatsapp?: boolean }).iswhatsapp
+                : null,
+          createdAt: typeof row.createdAt === 'string' ? row.createdAt : null,
+          updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : null,
         },
         email
       );
