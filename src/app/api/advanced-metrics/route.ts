@@ -51,11 +51,13 @@ const PREP_QUEUE_TABLE = process.env.SUPABASE_PREP_QUEUE_TABLE ?? 'prep_queue';
 const STAFF_SESSIONS_TABLE = process.env.SUPABASE_STAFF_SESSIONS_TABLE ?? 'staff_sessions';
 const STAFF_TABLE = process.env.SUPABASE_STAFF_TABLE ?? 'staff_users';
 const PRODUCTS_TABLE = process.env.SUPABASE_PRODUCTS_TABLE ?? 'products';
+const TICKETS_TABLE = process.env.SUPABASE_TICKETS_TABLE ?? 'tickets';
 const PAGE_ANALYTICS_TABLE = process.env.SUPABASE_PAGE_ANALYTICS_TABLE ?? 'page_analytics';
 const INVENTORY_LEDGER_TABLE = process.env.SUPABASE_STOCK_LEDGER_TABLE ?? 'inventory_stock_ledger';
 const INVENTORY_ITEMS_TABLE = process.env.SUPABASE_INVENTORY_ITEMS_TABLE ?? 'inventory_items';
 const INVENTORY_STOCK_TABLE = process.env.SUPABASE_INVENTORY_STOCK_TABLE ?? 'inventory_stock';
 const LOYALTY_PUNCHES_TABLE = process.env.SUPABASE_LOYALTY_PUNCHES_TABLE ?? 'loyalty_points';
+const ADDRESSES_TABLE = process.env.SUPABASE_ADDRESSES_TABLE ?? 'addresses';
 const parseEmailList = (value?: string | null) =>
   (value ?? '')
     .split(',')
@@ -387,6 +389,95 @@ const classifyBeverageTemperature = (item: unknown) => {
   return null;
 };
 
+type NormalizedCryptoDetail = {
+  token?: string | null;
+  chain?: string | null;
+  hash?: string | null;
+  mxn?: number | null;
+  tokenAmount?: number | null;
+};
+
+const readStringField = (source: Record<string, unknown>, keys: string[]): string | null => {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'string' && value.trim().length) {
+      return value.trim();
+    }
+  }
+  return null;
+};
+
+const readNumberField = (source: Record<string, unknown>, keys: string[]): number | null => {
+  for (const key of keys) {
+    const value = source[key];
+    const parsed = typeof value === 'string' ? Number(value) : Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+};
+
+const parsePaymentDetails = (raw: unknown): NormalizedCryptoDetail[] => {
+  if (!raw) return [];
+  let value: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  const entries: Array<Record<string, unknown>> = [];
+  if (Array.isArray(value)) {
+    value.forEach((entry) => {
+      if (entry && typeof entry === 'object') {
+        entries.push(entry as Record<string, unknown>);
+      }
+    });
+  } else if (value && typeof value === 'object') {
+    const objectValue = value as Record<string, unknown>;
+    if (Array.isArray(objectValue.entries)) {
+      objectValue.entries.forEach((entry) => {
+        if (entry && typeof entry === 'object') {
+          entries.push(entry as Record<string, unknown>);
+        }
+      });
+    } else if (Array.isArray(objectValue.payments)) {
+      objectValue.payments.forEach((entry) => {
+        if (entry && typeof entry === 'object') {
+          entries.push(entry as Record<string, unknown>);
+        }
+      });
+    } else {
+      entries.push(objectValue);
+    }
+  }
+  return entries.map((entry) => ({
+    token: readStringField(entry, ['tokenSymbol', 'token', 'symbol', 'ticker', 'currency']),
+    chain: readStringField(entry, ['chain', 'network', 'networkName']),
+    hash: readStringField(entry, ['txHash', 'hash', 'transactionHash']),
+    mxn: readNumberField(entry, ['mxnEquivalent', 'mxn', 'fiatAmount', 'fiatValue', 'mxn_amount']),
+    tokenAmount: readNumberField(entry, ['tokenAmount', 'amount', 'value', 'cryptoAmount']),
+  }));
+};
+
+const isCoffeeProduct = (product?: { category?: string | null; name?: string | null; subcategory?: string | null }) => {
+  if (!product) return false;
+  const haystack = `${product.name ?? ''} ${product.category ?? ''} ${product.subcategory ?? ''}`.toLowerCase();
+  return ['cafe', 'caf\u00e9', 'coffee', 'espresso', 'latte'].some((keyword) => haystack.includes(keyword));
+};
+
+type SupabaseRow = Record<string, any>;
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const asRows = (input: unknown): SupabaseRow[] => {
+  if (!Array.isArray(input)) return [];
+  return input.filter((entry): entry is SupabaseRow => isPlainObject(entry)) as SupabaseRow[];
+};
+
 const buildCsv = (table?: SectionTable) => {
   if (!table || !table.rows.length) {
     return 'mensaje,Sin datos disponibles';
@@ -405,6 +496,15 @@ const buildCsv = (table?: SectionTable) => {
       .join(',')
   );
   return [header, ...rows].join('\n');
+};
+
+const monthStartIsoFrom = (referenceIso: string) => {
+  const referenceDate = new Date(referenceIso);
+  if (Number.isNaN(referenceDate.getTime())) {
+    return referenceIso;
+  }
+  const start = new Date(Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth(), 1, 0, 0, 0, 0));
+  return start.toISOString();
 };
 
 const buildEmptySection = (title: string, message?: string): SectionPayload => ({
@@ -467,12 +567,50 @@ const fetchRangeData = async (sinceIso: string, untilIso: string) => {
   const [orders, payments, reservations, prepQueue, staffSessions, pageAnalytics, ledger] = await Promise.all([
     supabaseAdmin
       .from(ORDERS_TABLE)
-      .select('id,"userId","orderNumber",status,total,"createdAt","sourceType",items,"tipAmount","tipPercent","queuedPaymentMethod"')
+      .select(
+        [
+          'id',
+          '"userId"',
+          '"orderNumber"',
+          'status',
+          'total',
+          'currency',
+          '"createdAt"',
+          '"sourceType"',
+          'items',
+          '"tipAmount"',
+          '"tipPercent"',
+          '"queuedPaymentMethod"',
+          'subtotal',
+          'vat_amount',
+          'vat_percent',
+          '"deliveryTipAmount"',
+          '"deliveryTipPercent"',
+          'shipping_address_id',
+        ].join(',')
+      )
       .gte('createdAt', sinceIso)
       .lte('createdAt', untilIso),
     supabaseAdmin
       .from(PAYMENTS_TABLE)
-      .select('id,method,amount,currency,status,"tipAmount","tipPercent","createdAt"')
+      .select(
+        [
+          'id',
+          '"orderId"',
+          '"ticketId"',
+          'method',
+          'amount',
+          'currency',
+          'status',
+          '"tipAmount"',
+          '"tipPercent"',
+          '"cryptoToken"',
+          '"cryptoChain"',
+          '"externalPaymentId"',
+          '"createdAt"',
+          '"updatedAt"',
+        ].join(',')
+      )
       .gte('createdAt', sinceIso)
       .lte('createdAt', untilIso),
     supabaseAdmin
@@ -502,7 +640,20 @@ const fetchRangeData = async (sinceIso: string, untilIso: string) => {
       .lte('createdAt', untilIso),
   ]);
 
-  const orderIds = (orders.data ?? []).map((order) => order.id);
+  const orderRows = asRows(orders.data);
+  const paymentRows = asRows(payments.data);
+  const reservationRows = asRows(reservations.data);
+  const prepQueueRows = asRows(prepQueue.data);
+  const staffSessionRows = asRows(staffSessions.data);
+  const analyticsRows = asRows(pageAnalytics.data);
+  const ledgerRows = asRows(ledger.data);
+
+  const orderIds = orderRows
+    .map((order) => {
+      const candidate = (order as { id?: unknown }).id;
+      return typeof candidate === 'string' ? candidate : null;
+    })
+    .filter((id): id is string => Boolean(id));
   const orderItemsPromise = orderIds.length
     ? supabaseAdmin
         .from(ORDER_ITEMS_TABLE)
@@ -516,9 +667,24 @@ const fetchRangeData = async (sinceIso: string, untilIso: string) => {
     .select('id,name,"categoryId",unit,"minStock"');
 
   const userIds = new Set<string>();
-  (orders.data ?? []).forEach((order) => order.userId && userIds.add(order.userId));
-  (reservations.data ?? []).forEach((reservation) => reservation.userId && userIds.add(reservation.userId));
-  (pageAnalytics.data ?? []).forEach((entry) => entry.userId && userIds.add(entry.userId));
+  orderRows.forEach((order) => {
+    const userId = (order as { userId?: unknown }).userId;
+    if (typeof userId === 'string') {
+      userIds.add(userId);
+    }
+  });
+  reservationRows.forEach((reservation) => {
+    const userId = (reservation as { userId?: unknown }).userId;
+    if (typeof userId === 'string') {
+      userIds.add(userId);
+    }
+  });
+  analyticsRows.forEach((entry) => {
+    const userId = (entry as { userId?: unknown }).userId;
+    if (typeof userId === 'string') {
+      userIds.add(userId);
+    }
+  });
 
   const inventoryStockPromise = supabaseAdmin
     .from(INVENTORY_STOCK_TABLE)
@@ -528,12 +694,88 @@ const fetchRangeData = async (sinceIso: string, untilIso: string) => {
     ? supabaseAdmin.from(LOYALTY_PUNCHES_TABLE).select('"userId"').in('userId', Array.from(userIds))
     : Promise.resolve({ data: [] });
 
-  const [orderItems, inventoryItems, inventoryStock, loyaltyPunches] = await Promise.all([
-    orderItemsPromise,
-    inventoryItemsPromise,
-    inventoryStockPromise,
-    loyaltyPunchesPromise,
-  ]);
+  const shippingAddressIds = new Set<string>();
+  orderRows.forEach((order) => {
+    const rawId =
+      (order as { shipping_address_id?: string | null }).shipping_address_id ??
+      (order as { shippingAddressId?: string | null }).shippingAddressId ??
+      null;
+    if (typeof rawId === 'string' && rawId.trim()) {
+      shippingAddressIds.add(rawId.trim());
+    }
+  });
+
+  const shippingAddressesPromise = shippingAddressIds.size
+    ? supabaseAdmin
+        .from(ADDRESSES_TABLE)
+        .select('id,street,city,state,country,"postalCode","label"')
+        .in('id', Array.from(shippingAddressIds))
+    : Promise.resolve({ data: [] });
+
+  const ticketsPromise = orderIds.length
+    ? supabaseAdmin
+        .from(TICKETS_TABLE)
+        .select('id,"orderId","ticketCode","paymentDetails","createdAt"')
+        .in('orderId', orderIds)
+    : Promise.resolve({ data: [] });
+
+  const productsPromise = supabaseAdmin
+    .from(PRODUCTS_TABLE)
+    .select('id,"productId",name,category,subcategory,cost,price,metadata');
+
+  const monthOrdersPromise = supabaseAdmin
+    .from(ORDERS_TABLE)
+    .select(
+      [
+        'id',
+        '"userId"',
+        '"orderNumber"',
+        'status',
+        'total',
+        'currency',
+        '"createdAt"',
+        '"sourceType"',
+        'items',
+        '"tipAmount"',
+        '"tipPercent"',
+        '"queuedPaymentMethod"',
+        'subtotal',
+        'vat_amount',
+        'vat_percent',
+        'shipping_address_id',
+      ].join(',')
+    )
+    .gte('createdAt', monthStartIsoFrom(untilIso))
+    .lte('createdAt', untilIso);
+
+  const [
+    orderItemsResponse,
+    inventoryItemsResponse,
+    inventoryStockResponse,
+    loyaltyPunches,
+    shippingAddressesResponse,
+    ticketsResponse,
+    productsResponse,
+    monthOrdersResponse,
+  ] =
+    await Promise.all([
+      orderItemsPromise,
+      inventoryItemsPromise,
+      inventoryStockPromise,
+      loyaltyPunchesPromise,
+      shippingAddressesPromise,
+      ticketsPromise,
+      productsPromise,
+      monthOrdersPromise,
+    ]);
+
+  const orderItemRows = asRows(orderItemsResponse.data);
+  const inventoryItemRows = asRows(inventoryItemsResponse.data);
+  const inventoryStockRows = asRows(inventoryStockResponse.data);
+  const shippingAddressRows = asRows(shippingAddressesResponse.data);
+  const ticketRows = asRows(ticketsResponse.data);
+  const productRows = asRows(productsResponse.data);
+  const monthOrderRows = asRows(monthOrdersResponse.data);
 
   const usersResult = userIds.size
     ? await supabaseAdmin
@@ -564,8 +806,18 @@ const fetchRangeData = async (sinceIso: string, untilIso: string) => {
     : { data: [] };
 
   const staffIds = new Set<string>();
-  (staffSessions.data ?? []).forEach((session) => session.staffId && staffIds.add(session.staffId));
-  (prepQueue.data ?? []).forEach((task) => task.handledByStaffId && staffIds.add(task.handledByStaffId));
+  staffSessionRows.forEach((session) => {
+    const staffId = (session as { staffId?: unknown }).staffId;
+    if (typeof staffId === 'string') {
+      staffIds.add(staffId);
+    }
+  });
+  prepQueueRows.forEach((task) => {
+    const staffId = (task as { handledByStaffId?: unknown }).handledByStaffId;
+    if (typeof staffId === 'string') {
+      staffIds.add(staffId);
+    }
+  });
 
   const baseStaffSelect = [
     'id',
@@ -635,18 +887,22 @@ const fetchRangeData = async (sinceIso: string, untilIso: string) => {
       .map((record) => withDecryptedUserNames(record as RawUserRecord) ?? record) ?? [];
 
   return {
-    orders: orders.data ?? [],
-    payments: payments.data ?? [],
-    reservations: reservations.data ?? [],
-    prepQueue: prepQueue.data ?? [],
-    staffSessions: staffSessions.data ?? [],
-    pageAnalytics: pageAnalytics.data ?? [],
-    ledger: ledger.data ?? [],
-    orderItems: orderItems.data ?? [],
-    inventoryItems: inventoryItems.data ?? [],
-    inventoryStock: inventoryStock.data ?? [],
+    orders: orderRows,
+    payments: paymentRows,
+    reservations: reservationRows,
+    prepQueue: prepQueueRows,
+    staffSessions: staffSessionRows,
+    pageAnalytics: analyticsRows,
+    ledger: ledgerRows,
+    orderItems: orderItemRows,
+    inventoryItems: inventoryItemRows,
+    inventoryStock: inventoryStockRows,
     users: decryptedUsers,
     staff: decryptedStaff,
+    shippingAddresses: shippingAddressRows,
+    tickets: ticketRows,
+    products: productRows,
+    monthOrders: monthOrderRows,
     loyaltyPunches: (loyaltyPunches.data ?? []).reduce((map, entry) => {
       const userId = typeof entry.userId === 'string' ? entry.userId : null;
       if (!userId) return map;
@@ -683,18 +939,20 @@ const buildClientsSection = (data: Awaited<ReturnType<typeof fetchRangeData>>): 
     })
   );
   const customerMap = new Map<string, { orders: number; reservations: number; spent: number }>();
-  data.orders.forEach((order) => {
-    if (!order.userId) return;
-    const entry = customerMap.get(order.userId) ?? { orders: 0, reservations: 0, spent: 0 };
+  (data.orders ?? []).forEach((order) => {
+    const userId = (order as { userId?: unknown }).userId;
+    if (typeof userId !== 'string' || !userId) return;
+    const entry = customerMap.get(userId) ?? { orders: 0, reservations: 0, spent: 0 };
     entry.orders += 1;
-    entry.spent += toNumber(order.total);
-    customerMap.set(order.userId, entry);
+    entry.spent += toNumber((order as { total?: unknown }).total);
+    customerMap.set(userId, entry);
   });
-  data.reservations.forEach((reservation) => {
-    if (!reservation.userId) return;
-    const entry = customerMap.get(reservation.userId) ?? { orders: 0, reservations: 0, spent: 0 };
+  (data.reservations ?? []).forEach((reservation) => {
+    const userId = (reservation as { userId?: unknown }).userId;
+    if (typeof userId !== 'string' || !userId) return;
+    const entry = customerMap.get(userId) ?? { orders: 0, reservations: 0, spent: 0 };
     entry.reservations += 1;
-    customerMap.set(reservation.userId, entry);
+    customerMap.set(userId, entry);
   });
   const sortedCustomers = Array.from(customerMap.entries())
     .map(([userId, stats]) => ({
@@ -767,6 +1025,31 @@ const buildClientsSection = (data: Awaited<ReturnType<typeof fetchRangeData>>): 
       Gastado: entry.spent,
     })),
   };
+  const loyaltyRows = Array.from(loyaltyMap.entries())
+    .map(([userId, punches]) => {
+      const completions = Math.floor(punches / 6);
+      const userInfo = userMap.get(userId);
+      const label = userInfo?.displayName || userInfo?.clientId || userId;
+      return {
+        label,
+        punches,
+        completions,
+      };
+    })
+    .sort((a, b) => b.completions - a.completions || b.punches - a.punches)
+    .slice(0, 10);
+  const loyaltyTable =
+    loyaltyRows.length > 0
+      ? {
+          columns: ['#', 'Cliente', 'Sellos', 'Programas completados'],
+          rows: loyaltyRows.map((entry, index) => ({
+            '#': index + 1,
+            Cliente: entry.label,
+            Sellos: entry.punches,
+            'Programas completados': entry.completions,
+          })),
+        }
+      : null;
   const hasData = Boolean(totalCustomers || data.pageAnalytics.length);
   if (!hasData) {
     return buildEmptySection(sectionTitles.clients);
@@ -778,6 +1061,7 @@ const buildClientsSection = (data: Awaited<ReturnType<typeof fetchRangeData>>): 
     bars,
     table,
     message: mostCommonStageLabel ? `Etapa más común: ${mostCommonStageLabel}` : undefined,
+    ...(loyaltyTable ? { extraTables: [{ title: 'Programa de lealtad', table: loyaltyTable }] } : {}),
   };
 };
 
@@ -821,8 +1105,23 @@ const buildSalesSection = (data: Awaited<ReturnType<typeof fetchRangeData>>): Se
     },
     { cold: 0, hot: 0 }
   );
+  const totalVat = completedOrders.reduce(
+    (sum, order) => sum + toNumber((order as { vat_amount?: unknown }).vat_amount ?? 0),
+    0
+  );
+  const totalSubtotal = completedOrders.reduce(
+    (sum, order) =>
+      sum +
+      toNumber(
+        (order as { subtotal?: unknown }).subtotal ??
+          (order.total ? order.total - toNumber((order as { vat_amount?: unknown }).vat_amount ?? 0) : 0)
+      ),
+    0
+  );
   const cards: MetricCard[] = [
     { label: 'Ventas totales', value: `$${salesTotal.toFixed(2)}` },
+    { label: 'IVA periodo', value: `$${totalVat.toFixed(2)}` },
+    { label: 'Subtotal periodo', value: `$${totalSubtotal.toFixed(2)}` },
     { label: 'Ticket promedio', value: `$${avgTicket.toFixed(2)}` },
     { label: 'Pedidos completados', value: completedOrders.length },
   ];
@@ -839,9 +1138,62 @@ const buildSalesSection = (data: Awaited<ReturnType<typeof fetchRangeData>>): Se
       Ingresos: Number(product.revenue.toFixed(2)),
     })),
   };
+  const monthCompletedOrders = (data.monthOrders?.length ? data.monthOrders : data.orders).filter(
+    (order) => order.status === 'completed'
+  );
+  const ivaDailyMap = new Map<
+    string,
+    { label: string; subtotal: number; vat: number; total: number; count: number }
+  >();
+  monthCompletedOrders.forEach((order) => {
+    const date = order.createdAt ? new Date(order.createdAt) : null;
+    const isoKey = date ? date.toISOString().slice(0, 10) : order.id ?? 'sin-fecha';
+    const label = date
+      ? date.toLocaleDateString('es-MX', { month: 'short', day: '2-digit' })
+      : 'Sin fecha';
+    const vatAmount = toNumber((order as { vat_amount?: unknown }).vat_amount ?? 0);
+    const subtotalValue =
+      toNumber((order as { subtotal?: unknown }).subtotal ?? 0) ||
+      Math.max(toNumber(order.total) - vatAmount, 0);
+    const entry = ivaDailyMap.get(isoKey) ?? {
+      label,
+      subtotal: 0,
+      vat: 0,
+      total: 0,
+      count: 0,
+    };
+    entry.subtotal += subtotalValue;
+    entry.vat += vatAmount;
+    entry.total += toNumber(order.total);
+    entry.count += 1;
+    ivaDailyMap.set(isoKey, entry);
+  });
+  const ivaDailyTable =
+    ivaDailyMap.size > 0
+      ? {
+          columns: ['#', 'Fecha', 'Subtotal', 'IVA', 'Total', 'Pedidos'],
+          rows: Array.from(ivaDailyMap.entries())
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([_, entry], index) => ({
+              '#': index + 1,
+              Fecha: entry.label,
+              Subtotal: Number(entry.subtotal.toFixed(2)),
+              IVA: Number(entry.vat.toFixed(2)),
+              Total: Number(entry.total.toFixed(2)),
+              Pedidos: entry.count,
+            })),
+        }
+      : null;
   const hasData = Boolean(data.orders.length);
   return hasData
-    ? { title: sectionTitles.sales, hasData, cards, bars, table }
+    ? {
+        title: sectionTitles.sales,
+        hasData,
+        cards,
+        bars,
+        table,
+        ...(ivaDailyTable ? { extraTables: [{ title: 'IVA diario (mes actual)', table: ivaDailyTable }] } : {}),
+      }
     : buildEmptySection(sectionTitles.sales);
 };
 
@@ -851,6 +1203,14 @@ const buildPaymentsSection = (data: Awaited<ReturnType<typeof fetchRangeData>>):
   let totalTips = 0;
   let avgTipPercent = 0;
   let processedCount = 0;
+  const orderMap = new Map((data.orders ?? []).map((order) => [order.id, order]));
+  const ticketEntries = (data.tickets ?? [])
+    .map((ticket) => {
+      const orderId = (ticket as { orderId?: string | null }).orderId;
+      return typeof orderId === 'string' ? [orderId, ticket] : null;
+    })
+    .filter((entry): entry is [string, Record<string, unknown>] => Array.isArray(entry));
+  const ticketMap = new Map<string, Record<string, unknown>>(ticketEntries);
 
   if (completedOrders.length) {
     completedOrders.forEach((order) => {
@@ -880,6 +1240,79 @@ const buildPaymentsSection = (data: Awaited<ReturnType<typeof fetchRangeData>>):
     processedCount = data.payments.length;
   }
 
+  const summarizeOrders = (ordersList: typeof data.orders) => {
+    const result = { total: 0, vat: 0, count: ordersList.length };
+    ordersList.forEach((order) => {
+      result.total += toNumber(order.total);
+      result.vat += toNumber((order as { vat_amount?: unknown }).vat_amount ?? 0);
+    });
+    return result;
+  };
+
+  const cryptoPayments = data.payments.filter((payment) =>
+    (payment.method ?? '').toLowerCase().includes('crypto')
+  );
+  const cryptoTotals = { total: 0, vat: 0, count: 0 };
+  const cryptoDetailMap = new Map<
+    string,
+    { token: string; chain: string; mxn: number; tokenAmount: number; hashes: Set<string> }
+  >();
+  cryptoPayments.forEach((payment) => {
+    const order = payment.orderId ? orderMap.get(payment.orderId) : null;
+    if (order) {
+      cryptoTotals.total += toNumber(order.total);
+      cryptoTotals.vat += toNumber((order as { vat_amount?: unknown }).vat_amount ?? 0);
+      cryptoTotals.count += 1;
+    } else {
+      cryptoTotals.total += toNumber(payment.amount);
+    }
+    const ticket = payment.orderId ? ticketMap.get(payment.orderId) : null;
+    const paymentDetails = ticket ? (ticket as { paymentDetails?: unknown }).paymentDetails : null;
+    const parsedDetails = parsePaymentDetails(paymentDetails);
+    const entries = parsedDetails.length
+      ? parsedDetails
+      : [
+          {
+            token: payment.cryptoToken ?? null,
+            chain: payment.cryptoChain ?? null,
+            hash: payment.externalPaymentId ?? null,
+            mxn: toNumber(payment.amount),
+            tokenAmount: null,
+          },
+        ];
+    entries.forEach((detail) => {
+      const tokenKey = (detail.token ?? payment.cryptoToken ?? 'CRYPTO').toUpperCase();
+      const chainKey = detail.chain ?? payment.cryptoChain ?? '—';
+      const key = `${tokenKey}|${chainKey}`;
+      const entry = cryptoDetailMap.get(key) ?? {
+        token: tokenKey,
+        chain: chainKey,
+        mxn: 0,
+        tokenAmount: 0,
+        hashes: new Set<string>(),
+      };
+      entry.mxn += Number.isFinite(detail.mxn ?? NaN) ? detail.mxn ?? 0 : toNumber(payment.amount);
+      if (Number.isFinite(detail.tokenAmount ?? NaN) && detail.tokenAmount !== null) {
+        entry.tokenAmount += detail.tokenAmount ?? 0;
+      }
+      const hash = detail.hash ?? payment.externalPaymentId;
+      if (hash) {
+        entry.hashes.add(hash);
+      }
+      cryptoDetailMap.set(key, entry);
+    });
+  });
+
+  const publicOrders = data.orders.filter((order) => isPublicSaleOrder(order));
+  const identifiedOrders = data.orders.filter((order) => !isPublicSaleOrder(order));
+  const publicSummary = summarizeOrders(publicOrders);
+  const identifiedSummary = summarizeOrders(identifiedOrders);
+  const cryptoSummary = {
+    total: cryptoTotals.total,
+    vat: cryptoTotals.vat,
+    count: cryptoPayments.length ? cryptoTotals.count || cryptoPayments.length : 0,
+  };
+
   const methodRows = Array.from(methodMap.entries())
     .map(([method, entry]) => ({
       label: method,
@@ -906,9 +1339,57 @@ const buildPaymentsSection = (data: Awaited<ReturnType<typeof fetchRangeData>>):
     { label: 'Promedio % propinas', value: `${avgTipPercent.toFixed(1)}%` },
     { label: 'Pagos procesados', value: processedCount },
   ];
+  if (cryptoPayments.length) {
+    cards.push({
+      label: 'Pagos cripto',
+      value: cryptoPayments.length,
+      hint: cryptoDetailMap.size ? `${cryptoDetailMap.size} tokens/redes` : undefined,
+    });
+  }
+  const segmentTable = {
+    columns: ['Segmento', 'Ventas MXN', 'IVA MXN', 'Pedidos'],
+    rows: [
+      {
+        Segmento: 'Cripto',
+        'Ventas MXN': Number(cryptoSummary.total.toFixed(2)),
+        'IVA MXN': Number(cryptoSummary.vat.toFixed(2)),
+        Pedidos: cryptoSummary.count,
+      },
+      {
+        Segmento: 'Público en general',
+        'Ventas MXN': Number(publicSummary.total.toFixed(2)),
+        'IVA MXN': Number(publicSummary.vat.toFixed(2)),
+        Pedidos: publicSummary.count,
+      },
+      {
+        Segmento: 'Clientes identificados',
+        'Ventas MXN': Number(identifiedSummary.total.toFixed(2)),
+        'IVA MXN': Number(identifiedSummary.vat.toFixed(2)),
+        Pedidos: identifiedSummary.count,
+      },
+    ],
+  };
+  const cryptoTokenTable =
+    cryptoDetailMap.size > 0
+      ? {
+          columns: ['#', 'Token', 'Red', 'Equivalente MXN', 'Monto token', 'Hashes'],
+          rows: Array.from(cryptoDetailMap.values()).map((detail, index) => ({
+            '#': index + 1,
+            Token: detail.token,
+            Red: detail.chain,
+            'Equivalente MXN': Number(detail.mxn.toFixed(2)),
+            'Monto token': Number(detail.tokenAmount.toFixed(6)),
+            Hashes: Array.from(detail.hashes).slice(0, 3).join(' · ') || '—',
+          })),
+        }
+      : null;
+  const extraTables = [
+    { title: 'Comparativo por segmento', table: segmentTable },
+    ...(cryptoTokenTable ? [{ title: 'Detalle tokens cripto', table: cryptoTokenTable }] : []),
+  ];
   const hasData = Boolean(methodMap.size);
   return hasData
-    ? { title: sectionTitles.payments, hasData, cards, bars, table }
+    ? { title: sectionTitles.payments, hasData, cards, bars, table, extraTables }
     : buildEmptySection(sectionTitles.payments);
 };
 
@@ -921,8 +1402,11 @@ const buildOrdersSection = (data: Awaited<ReturnType<typeof fetchRangeData>>): S
     (acc, reservation) => acc.set(reservation.status, (acc.get(reservation.status) ?? 0) + 1),
     new Map<string, number>()
   );
-  const bars: ChartBar[] = Array.from(statusCounts.entries()).map(([label, value]) => ({ label: `Pedido ${label}`, value }));
-  reservationStatus.forEach((value, label) => {
+  const bars: ChartBar[] = [...statusCounts.entries()].map(([label, value]) => ({
+    label: `Pedido ${label}`,
+    value,
+  }));
+  reservationStatus.forEach((value: number, label: string) => {
     bars.push({ label: `Reserva ${label}`, value });
   });
   const orderHours = new Map<string, number>();
@@ -982,6 +1466,107 @@ const buildOrdersSection = (data: Awaited<ReturnType<typeof fetchRangeData>>): S
       },
     ],
   };
+  const destinationMap = new Map<
+    string,
+    { city: string; state?: string | null; country?: string | null; orders: number; revenue: number }
+  >();
+  const shippingHours = new Map<string, number>();
+  const orderItemsByOrder = new Map<string, typeof data.orderItems>();
+  data.orderItems.forEach((item) => {
+    if (!item.orderId) return;
+    const list = orderItemsByOrder.get(item.orderId) ?? [];
+    list.push(item);
+    orderItemsByOrder.set(item.orderId, list);
+  });
+  const productMeta = new Map((data.products ?? []).map((product) => [product.id, product]));
+  const shippingProductMap = new Map<string, { name: string; units: number; orders: Set<string> }>();
+  const shippingAddressMap = new Map(
+    (data.shippingAddresses ?? [])
+      .map((address) => (address?.id ? [address.id, address] : null))
+      .filter((entry): entry is [string, Record<string, unknown>] => Boolean(entry && entry[0]))
+  );
+  data.orders.forEach((order) => {
+    const shippingId =
+      (order as { shipping_address_id?: string | null }).shipping_address_id ??
+      (order as { shippingAddressId?: string | null }).shippingAddressId ??
+      null;
+    if (!shippingId) return;
+    const address = shippingAddressMap.get(shippingId);
+    const city = (address as { city?: string })?.city ?? 'Sin ciudad';
+    const state = (address as { state?: string })?.state ?? '—';
+    const country = (address as { country?: string })?.country ?? 'MX';
+    const key = `${city}|${state}|${country}`;
+    const entry = destinationMap.get(key) ?? { city, state, country, orders: 0, revenue: 0 };
+    entry.orders += 1;
+    entry.revenue += toNumber(order.total);
+    destinationMap.set(key, entry);
+    const hour = hourBucket(order.createdAt);
+    shippingHours.set(hour, (shippingHours.get(hour) ?? 0) + 1);
+    const items = orderItemsByOrder.get(order.id) ?? [];
+    items.forEach((item) => {
+      const product = productMeta.get(item.productId ?? '') ?? null;
+      const name = product?.name ?? item.productId ?? item.id ?? 'Producto';
+      const mapKey = item.productId ?? item.id ?? name;
+      const productEntry = shippingProductMap.get(mapKey) ?? {
+        name,
+        units: 0,
+        orders: new Set<string>(),
+      };
+      productEntry.units += toNumber(item.quantity);
+      productEntry.orders.add(order.id);
+      shippingProductMap.set(mapKey, productEntry);
+    });
+  });
+  const shippingTables: Array<{ title: string; table: SectionTable }> = [];
+  if (destinationMap.size) {
+    shippingTables.push({
+      title: 'Destinos con más envíos',
+      table: {
+        columns: ['#', 'Ciudad', 'Estado', 'País', 'Pedidos', 'Ventas MXN'],
+        rows: Array.from(destinationMap.values())
+          .sort((a, b) => b.orders - a.orders)
+          .map((entry, index) => ({
+            '#': index + 1,
+            Ciudad: entry.city,
+            Estado: entry.state ?? '—',
+            País: entry.country ?? '—',
+            Pedidos: entry.orders,
+            'Ventas MXN': Number(entry.revenue.toFixed(2)),
+          })),
+      },
+    });
+  }
+  if (shippingHours.size) {
+    shippingTables.push({
+      title: 'Horarios fuertes de envíos',
+      table: {
+        columns: ['#', 'Hora (CDMX)', 'Pedidos'],
+        rows: Array.from(shippingHours.entries())
+          .sort((a, b) => b[1] - a[1])
+          .map(([hour, count], index) => ({
+            '#': index + 1,
+            'Hora (CDMX)': hour,
+            Pedidos: count,
+          })),
+      },
+    });
+  }
+  if (shippingProductMap.size) {
+    shippingTables.push({
+      title: 'Productos que más se envían',
+      table: {
+        columns: ['#', 'Producto', 'Unidades', 'Pedidos'],
+        rows: Array.from(shippingProductMap.values())
+          .sort((a, b) => b.units - a.units)
+          .map((entry, index) => ({
+            '#': index + 1,
+            Producto: entry.name,
+            Unidades: Number(entry.units.toFixed(2)),
+            Pedidos: entry.orders.size,
+          })),
+      },
+    });
+  }
   const extraTables = [
     {
       title: 'Detalle por prefijo',
@@ -994,6 +1579,7 @@ const buildOrdersSection = (data: Awaited<ReturnType<typeof fetchRangeData>>): S
         ],
       },
     },
+    ...shippingTables,
   ];
   const hasData = Boolean(data.orders.length || data.reservations.length);
   return hasData
@@ -1297,6 +1883,36 @@ const buildInventorySection = (data: Awaited<ReturnType<typeof fetchRangeData>>)
     spendByItem.set(entry.itemId, record);
   });
   const itemMeta = new Map(data.inventoryItems.map((item) => [item.id, item]));
+  const productCatalog = new Map((data.products ?? []).map((product) => [product.id, product]));
+  const coffeeMap = new Map<string, { name: string; units: number; revenue: number; cost: number }>();
+  data.orderItems.forEach((item) => {
+    if (!item.productId) return;
+    const product = productCatalog.get(item.productId);
+    if (!product || !isCoffeeProduct(product)) return;
+    const qty = toNumber(item.quantity);
+    const revenue = toNumber(item.price) * qty;
+    const unitCost = toNumber((product as { cost?: unknown }).cost ?? 0);
+    const entry = coffeeMap.get(item.productId) ?? {
+      name: product.name ?? 'Café',
+      units: 0,
+      revenue: 0,
+      cost: 0,
+    };
+    entry.units += qty;
+    entry.revenue += revenue;
+    entry.cost += unitCost * qty;
+    coffeeMap.set(item.productId, entry);
+  });
+  const coffeeTotals = Array.from(coffeeMap.values()).reduce(
+    (acc, entry) => {
+      acc.revenue += entry.revenue;
+      acc.cost += entry.cost;
+      return acc;
+    },
+    { revenue: 0, cost: 0 }
+  );
+  const coffeeProfit = coffeeTotals.revenue - coffeeTotals.cost;
+  const coffeeMargin = coffeeTotals.revenue ? (coffeeProfit / coffeeTotals.revenue) * 100 : 0;
   const restockAlerts = data.inventoryStock
     .map((stock) => {
       const meta = itemMeta.get(stock.itemId);
@@ -1316,6 +1932,13 @@ const buildInventorySection = (data: Awaited<ReturnType<typeof fetchRangeData>>)
     { label: 'Ítems con alerta', value: restockAlerts.length },
     { label: 'Consumos registrados', value: Array.from(spendByItem.values()).reduce((sum, entry) => sum + entry.outValue, 0).toFixed(2) },
   ];
+  if (coffeeMap.size) {
+    cards.push({
+      label: 'Utilidad cafés',
+      value: `$${coffeeProfit.toFixed(2)}`,
+      hint: `${coffeeMargin.toFixed(1)}% margen`,
+    });
+  }
   const bars: ChartBar[] = restockAlerts.slice(0, 5).map((entry) => ({
     label: entry.name,
     value: entry.quantity,
@@ -1330,9 +1953,32 @@ const buildInventorySection = (data: Awaited<ReturnType<typeof fetchRangeData>>)
       Umbral: entry.minStock,
     })),
   };
+  const coffeeTable =
+    coffeeMap.size > 0
+      ? {
+          columns: ['#', 'Producto', 'Unidades', 'Ingresos', 'Costo', 'Utilidad'],
+          rows: Array.from(coffeeMap.values())
+            .sort((a, b) => b.units - a.units)
+            .map((entry, index) => ({
+              '#': index + 1,
+              Producto: entry.name,
+              Unidades: Number(entry.units.toFixed(2)),
+              Ingresos: Number(entry.revenue.toFixed(2)),
+              Costo: Number(entry.cost.toFixed(2)),
+              Utilidad: Number((entry.revenue - entry.cost).toFixed(2)),
+            })),
+        }
+      : null;
   const hasData = Boolean(data.ledger.length || restockAlerts.length);
   return hasData
-    ? { title: sectionTitles.inventory, hasData, cards, bars, table }
+    ? {
+        title: sectionTitles.inventory,
+        hasData,
+        cards,
+        bars,
+        table,
+        ...(coffeeTable ? { extraTables: [{ title: 'Cafés vendidos · margen', table: coffeeTable }] } : {}),
+      }
     : buildEmptySection(sectionTitles.inventory);
 };
 
@@ -1523,11 +2169,12 @@ const buildMarketingInsights = (data: Awaited<ReturnType<typeof fetchRangeData>>
     { orders: number; spent: number; avgTicket: number }
   >();
   orders.forEach((order) => {
-    if (!order.userId) return;
-    const entry = customerStats.get(order.userId) ?? { orders: 0, spent: 0, avgTicket: 0 };
+    const userId = (order as { userId?: unknown }).userId;
+    if (typeof userId !== 'string' || !userId) return;
+    const entry = customerStats.get(userId) ?? { orders: 0, spent: 0, avgTicket: 0 };
     entry.orders += 1;
-    entry.spent += toNumber(order.total);
-    customerStats.set(order.userId, entry);
+    entry.spent += toNumber((order as { total?: unknown }).total);
+    customerStats.set(userId, entry);
   });
   const customerArray = Array.from(customerStats.values()).map((entry) => ({
     ...entry,
