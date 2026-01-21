@@ -29,6 +29,7 @@
 import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-server';
+import { db, type DatabaseResult } from '@/lib/database-manager';
 import {
   enqueuePendingOperations,
   flushPendingOperations,
@@ -1961,39 +1962,106 @@ const ensureProducts = async (items: IncomingOrderItem[]) => {
 
 export async function GET(request: Request) {
   try {
-    await flushPendingOperations();
+    await db.syncPending();
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
 
-    try {
-      const remoteData = await loadOrdersFromSupabase(status);
-      markSupabaseHealthy();
-      return NextResponse.json({ success: true, data: remoteData });
-    } catch (error) {
-      if (!isLikelyNetworkError(error)) {
-        throw error;
-      }
-      markSupabaseFailure(error);
-      const localData = await loadOrdersFromSqlite(status);
-      return NextResponse.json({ success: true, data: localData });
-    }
-  } catch (error) {
-    if (isLikelyNetworkError(error)) {
-      markSupabaseFailure(error);
+    // Use the unified database manager with automatic fallback
+    const result = await db.select(ORDERS_TABLE, {
+      columns: [
+        'id',
+        'userId',
+        'orderNumber',
+        'status',
+        'total',
+        'currency',
+        'items',
+        'totals',
+        'createdAt',
+        'updatedAt',
+        'queuedPaymentMethod',
+        'tipAmount',
+        'tipPercent',
+        'deliveryTipAmount',
+        'deliveryTipPercent',
+        'metadata',
+        'notes',
+        'message',
+        'instructions',
+        'customer_name',
+        'pos_customer_id',
+        'shipping_contact_phone',
+        'shipping_contact_is_whatsapp',
+        'shipping_address_id',
+        'user:users(' + [
+          '"firstNameEncrypted"',
+          '"firstNameIv"',
+          '"firstNameTag"',
+          '"firstNameSalt"',
+          '"lastNameEncrypted"',
+          '"lastNameIv"',
+          '"lastNameTag"',
+          '"lastNameSalt"',
+          '"phoneEncrypted"',
+          '"phoneIv"',
+          '"phoneTag"',
+          '"phoneSalt"',
+          '"clientId"',
+          '"email"',
+        ].join(',') + ')',
+        `order_items:${ORDER_ITEMS_TABLE}(id,"productId",quantity,price)`,
+      ],
+      filters: status ? { status } : undefined,
+      orderBy: { column: 'createdAt', ascending: false },
+      limit: MAX_RESULTS,
+    });
+
+    if (result.error) {
+      console.error('Error fetching orders:', result.error);
       return NextResponse.json(
-        { success: false, error: 'Supabase no disponible. Intentaremos sincronizar en cuanto vuelva.' },
-        { status: 503 }
+        { 
+          success: false, 
+          error: 'Failed to fetch orders',
+          source: result.source,
+          fallbackUsed: result.fallbackUsed
+        }, 
+        { status: 500 }
       );
     }
-    console.error('Error fetching orders:', error);
-    return NextResponse.json({ success: false, error: 'Failed to fetch orders' }, { status: 500 });
+
+    const ordersData = (
+      Array.isArray(result.data) 
+        ? result.data.filter((row) => !!row && typeof row === 'object' && !('error' in row)) 
+        : []
+    ) as Array<Record<string, unknown>>;
+
+    // Use appropriate loader based on source
+    const loader = result.source === 'sqlite' ? sqliteOrdersLoader : supabaseOrdersLoader;
+    const mappedData = await mapOrdersPayload(ordersData, loader);
+
+    return NextResponse.json({ 
+      success: true, 
+      data: mappedData,
+      source: result.source,
+      fallbackUsed: result.fallbackUsed
+    });
+  } catch (error) {
+    console.error('Error in GET /api/orders:', error);
+    return NextResponse.json(
+      { 
+        success: false, 
+        error: 'Internal server error',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      }, 
+      { status: 500 }
+    );
   }
 }
 
 export async function POST(request: Request) {
   try {
-    await flushPendingOperations();
+    await db.syncPending();
 
     const payload = await request.json().catch(() => null);
     if (!payload || typeof payload !== 'object') {
@@ -2231,79 +2299,73 @@ export async function POST(request: Request) {
           }
         : null;
 
-    const preferSupabase = shouldPreferSupabase();
-    let attemptedSupabase = false;
-
-    if (preferSupabase) {
-      try {
-        if (isPublicSaleContext) {
-          await ensurePublicSaleUser();
-        }
-
-        await ensureProducts(items);
-
-        const { error: orderError } = await supabaseAdmin.from(ORDERS_TABLE).upsert(orderRecord);
-        if (orderError) {
-          throw orderError;
-        }
-
-        const { error: deleteItemsError } = await supabaseAdmin
-          .from(ORDER_ITEMS_TABLE)
-          .delete()
-          .eq('orderId', orderId);
-        if (deleteItemsError) {
-          throw deleteItemsError;
-        }
-
-        const { error: insertItemsError } = await supabaseAdmin
-          .from(ORDER_ITEMS_TABLE)
-          .insert(orderItemsPayload);
-        if (insertItemsError) {
-          throw insertItemsError;
-        }
-
-        if (ticketRecord) {
-          const { error: ticketError } = await supabaseAdmin.from(TICKETS_TABLE).upsert(ticketRecord);
-          if (ticketError) {
-            throw ticketError;
-          }
-        }
-
-        markSupabaseHealthy();
-        return NextResponse.json({
-          success: true,
-          data: {
-            orderId,
-            ticketCode,
-            items: orderItemsPayload.length,
-            pendingSync: false,
-          },
-        });
-      } catch (error) {
-        attemptedSupabase = true;
-        if (!isLikelyNetworkError(error)) {
-          console.error('Error creating order:', error);
-          const message = error instanceof Error ? error.message : 'Failed to process order';
-          return NextResponse.json({ success: false, error: message }, { status: 500 });
-        }
-        markSupabaseFailure(error);
+    // Use unified database manager with automatic fallback
+    try {
+      if (isPublicSaleContext) {
+        await ensurePublicSaleUser();
       }
-    }
 
-    const queueId = await queueOfflineOrder(orderRecord, orderItemsPayload, ticketRecord, items);
-    return NextResponse.json(
-      {
+      await ensureProducts(items);
+
+      // Create order using database manager
+      const orderResult = await db.upsert(ORDERS_TABLE, orderRecord);
+      
+      if (orderResult.error) {
+        throw orderResult.error;
+      }
+
+      // Delete existing order items and insert new ones
+      await db.delete(ORDER_ITEMS_TABLE, { orderId });
+      const itemsResult = await db.insert(ORDER_ITEMS_TABLE, orderItemsPayload);
+      
+      if (itemsResult.error) {
+        throw itemsResult.error;
+      }
+
+      // Create ticket record if needed
+      if (ticketRecord) {
+        const ticketResult = await db.upsert(TICKETS_TABLE, ticketRecord);
+        if (ticketResult.error) {
+          throw ticketResult.error;
+        }
+      }
+
+      return NextResponse.json({
         success: true,
         data: {
           orderId,
           ticketCode,
           items: orderItemsPayload.length,
-          pendingSync: true,
-          queueId,
+          pendingSync: orderResult.fallbackUsed,
+          source: orderResult.source,
         },
-      },
-      { status: attemptedSupabase ? 202 : 201 }
-    );
+      });
+    } catch (error) {
+      console.error('Error creating order:', error);
+      const message = error instanceof Error ? error.message : 'Failed to process order';
+      
+      // If it's a network error, the database manager already handled fallback
+      if (isLikelyNetworkError(error)) {
+        // Queue for offline processing
+        const queueId = await queueOfflineOrder(orderRecord, orderItemsPayload, ticketRecord, items);
+        return NextResponse.json(
+          {
+            success: true,
+            data: {
+              orderId,
+              ticketCode,
+              items: orderItemsPayload.length,
+              pendingSync: true,
+              queueId,
+              source: 'sqlite',
+            },
+          },
+          { status: 202 }
+        );
+      }
+      
+      return NextResponse.json({ success: false, error: message }, { status: 500 });
+    }
   } catch (error) {
     console.error('Error processing order webhook:', error);
     const message = error instanceof Error ? error.message : 'Failed to process order';

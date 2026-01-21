@@ -7031,9 +7031,7 @@ const OrderDetailContent = ({
         const fallback = buildOrderFromTicketDetail(detail);
         setDetailSnapshot((previous) => previous ?? fallback);
         const resolvedItems = Array.isArray(fallback.items) ? fallback.items : [];
-        if (items.length === 0) {
-          setItems(resolvedItems.length ? resolvedItems : []);
-        }
+        setItems(resolvedItems.length ? resolvedItems : []);
         setItemsError(null);
       } catch (error) {
         if (!cancelled) {
