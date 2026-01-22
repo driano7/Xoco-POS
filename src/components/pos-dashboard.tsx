@@ -278,98 +278,6 @@ const dedupeProductList = (items: MenuItem[]) => {
   return Array.from(map.values());
 };
 
-interface ProductStockStatusPanelProps {
-  beverages: MenuItem[];
-  foods: MenuItem[];
-  packages: MenuItem[];
-  stockStatusMap: Record<string, ManualStockStatus>;
-  onStatusChange: (productId: string, status: ManualStockStatus) => void;
-  canEdit: boolean;
-}
-
-const ProductStockStatusPanel = ({
-  beverages,
-  foods,
-  packages,
-  stockStatusMap,
-  onStatusChange,
-  canEdit,
-}: ProductStockStatusPanelProps) => {
-  const sections = [
-    { title: 'Bebidas del menú', items: dedupeProductList(beverages) },
-    { title: 'Alimentos', items: dedupeProductList(foods) },
-    { title: 'Paquetes editoriales', items: dedupeProductList(packages) },
-  ];
-
-  return (
-    <div className="space-y-4 rounded-3xl border border-primary-100/70 bg-white/80 p-4 text-sm dark:border-white/10 dark:bg-white/5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs uppercase tracking-[0.3em] text-[var(--brand-muted)]">
-          Disponibilidad del menú
-        </p>
-        <p className="text-xs text-[var(--brand-muted)]">
-          Marca productos como agotados o con stock bajo; el POS reflejará la alerta.
-        </p>
-      </div>
-      {sections.map((section) => (
-        <div key={section.title} className="space-y-2 rounded-2xl border border-primary-50/80 p-3 dark:border-white/10">
-          <div className="flex items-center justify-between">
-            <h4 className="text-sm font-semibold text-primary-700 dark:text-primary-100">
-              {section.title}
-            </h4>
-            <span className="text-xs text-[var(--brand-muted)]">
-              {section.items.length} productos
-            </span>
-          </div>
-          {section.items.length === 0 ? (
-            <p className="text-xs text-[var(--brand-muted)]">Sin productos sincronizados.</p>
-          ) : (
-            section.items.slice(0, 8).map((item) => {
-              const productId = item.productId ?? item.id;
-              const status = stockStatusMap[productId] ?? 'normal';
-              return (
-                <div
-                  key={productId}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary-50/70 px-3 py-2 dark:border-white/10"
-                >
-                  <div>
-                    <p className="font-semibold">{item.label}</p>
-                    <p className="text-xs text-[var(--brand-muted)]">{item.category ?? 'Sin categoría'}</p>
-                  </div>
-                  <div className="flex flex-col items-end gap-1 text-xs">
-                    <StockStatusBadge status={status} />
-                    {canEdit && (
-                      <div className="flex flex-wrap gap-1">
-                        {STOCK_STATUS_OPTIONS.map((option) => {
-                          const isSelected = option.value === status;
-                          return (
-                            <button
-                              type="button"
-                              key={`${productId}-${option.value}`}
-                              className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold transition ${
-                                isSelected
-                                  ? `${option.tone} bg-white`
-                                  : 'border-primary-50/80 text-[var(--brand-muted)] hover:border-primary-200'
-                              }`}
-                              onClick={() => onStatusChange(productId, option.value)}
-                            >
-                              {option.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      ))}
-    </div>
-  );
-};
-
 const extractOrderNotes = (
   order?: { metadata?: unknown; notes?: unknown; message?: unknown; instructions?: unknown }
 ) => {
@@ -2251,9 +2159,6 @@ export function PosDashboard() {
   const [inventoryStockStatus, setInventoryStockStatus] = useState<Record<string, ManualStockStatus>>(
     {}
   );
-  const [productStockStatus, setProductStockStatus] = useState<Record<string, ManualStockStatus>>(
-    {}
-  );
   const [tipsInitialized, setTipsInitialized] = useState(false);
   const [pestAlertMessage, setPestAlertMessage] = useState<string | null>(null);
   const [cofeprisSummarySnapshot, setCofeprisSummarySnapshot] =
@@ -2281,9 +2186,6 @@ export function PosDashboard() {
       if (parsed.inventory) {
         setInventoryStockStatus(parsed.inventory);
       }
-      if (parsed.products) {
-        setProductStockStatus(parsed.products);
-      }
     } catch (error) {
       console.warn('No pudimos restaurar las banderas de inventario:', error);
     }
@@ -2292,13 +2194,12 @@ export function PosDashboard() {
     try {
       const payload = JSON.stringify({
         inventory: inventoryStockStatus,
-        products: productStockStatus,
       });
       localStorage.setItem(STOCK_STATUS_STORAGE_KEY, payload);
     } catch {
       // ignore persistence errors
     }
-  }, [inventoryStockStatus, productStockStatus]);
+  }, [inventoryStockStatus]);
 
   const refreshPublicSales = useCallback(async () => {
     setPublicSalesLoading(true);
@@ -3140,46 +3041,6 @@ export function PosDashboard() {
       }
     },
     [enqueueSnackbar, inventoryStockStatus]
-  );
-  const handleProductStockStatusChange = useCallback(
-    async (productId: string, status: ManualStockStatus) => {
-      const previousStatus = productStockStatus[productId] ?? 'normal';
-      setProductStockStatus((prev) => {
-        const next = { ...prev };
-        if (status === 'normal') {
-          delete next[productId];
-        } else {
-          next[productId] = status;
-        }
-        return next;
-      });
-      try {
-        await updateManualStockStatus({ target: 'product', id: productId, status });
-        enqueueSnackbar(
-          status === 'normal'
-            ? 'Eliminarte la bandera del producto.'
-            : status === 'low'
-              ? 'Producto marcado como stock bajo.'
-              : 'Producto marcado como agotado.'
-        );
-      } catch (error) {
-        setProductStockStatus((prev) => {
-          const next = { ...prev };
-          if (previousStatus === 'normal') {
-            delete next[productId];
-          } else {
-            next[productId] = previousStatus;
-          }
-          return next;
-        });
-        enqueueSnackbar(
-          error instanceof Error
-            ? error.message
-            : 'No pudimos actualizar el estado del producto.'
-        );
-      }
-    },
-    [enqueueSnackbar, productStockStatus]
   );
 
   const inventoryAccidentStats = useMemo(() => {
@@ -4507,8 +4368,6 @@ export function PosDashboard() {
         onCreateSuperUserAction={handleSuperUserAction}
         inventoryStockStatus={inventoryStockStatus}
         onInventoryStockStatusChange={handleInventoryStockStatusChange}
-        productStockStatus={productStockStatus}
-        onProductStockStatusChange={handleProductStockStatusChange}
         menuOptions={{ beverages: beverageOptions, foods: foodOptions, packages: packageOptions }}
         canManageInventory={canManageInventory}
       />
@@ -4585,7 +4444,6 @@ export function PosDashboard() {
                   prefillClientId={prefilledClientId}
                   onWalletScanRequest={handleWalletScanRequest}
                   resolveLoyaltyCustomer={resolveLoyaltyCustomerByIdentifier}
-                  productStockStatus={productStockStatus}
                   onSuccess={async () => {
                     await refresh();
                     enqueueSnackbar('Nuevo pedido creado manualmente.');
@@ -11843,8 +11701,6 @@ interface StaffSidePanelProps {
   onCreateSuperUserAction: (payload: { email: string; role: StaffRole; note?: string }) => void;
   inventoryStockStatus: Record<string, ManualStockStatus>;
   onInventoryStockStatusChange: (itemId: string, status: ManualStockStatus) => void;
-  productStockStatus: Record<string, ManualStockStatus>;
-  onProductStockStatusChange: (productId: string, status: ManualStockStatus) => void;
   menuOptions: {
     beverages: MenuItem[];
     foods: MenuItem[];
@@ -11896,8 +11752,6 @@ const StaffSidePanel = ({
   onCreateSuperUserAction,
   inventoryStockStatus,
   onInventoryStockStatusChange,
-  productStockStatus,
-  onProductStockStatusChange,
   menuOptions,
   canManageInventory,
 }: StaffSidePanelProps) => {
@@ -11977,14 +11831,6 @@ const StaffSidePanel = ({
                 canMarkStockStatus={canManageInventory}
                 stockStatusMap={inventoryStockStatus}
                 onStockStatusChange={onInventoryStockStatusChange}
-              />
-              <ProductStockStatusPanel
-                beverages={menuOptions.beverages}
-                foods={menuOptions.foods}
-                packages={menuOptions.packages}
-                stockStatusMap={productStockStatus}
-                onStatusChange={onProductStockStatusChange}
-                canEdit={canManageInventory}
               />
             </div>
           )}

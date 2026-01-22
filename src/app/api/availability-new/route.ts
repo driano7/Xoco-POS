@@ -27,16 +27,11 @@
  */
 
 import { NextResponse } from 'next/server';
+import { supabaseAdmin } from '@/lib/supabase-server';
 import { db } from '@/lib/database-manager';
 
 type ProductType = 'beverage' | 'food' | 'package';
-
-interface AvailabilityRequest {
-  productId: string;
-  productType: ProductType;
-  availabilityStatus: 'available' | 'low_stock' | 'unavailable';
-  reason?: string;
-}
+type AvailabilityStatus = 'available' | 'low_stock' | 'unavailable';
 
 interface AvailabilityItem {
   id: string;
@@ -45,7 +40,7 @@ interface AvailabilityItem {
   label: string;
   category?: string | null;
   subcategory?: string | null;
-  availabilityStatus: 'available' | 'low_stock' | 'unavailable';
+  availabilityStatus: AvailabilityStatus;
   reason?: string | null;
   lastModified?: string;
   modifiedBy?: string;
@@ -96,7 +91,7 @@ export async function GET() {
     const mapProductsToAvailability = (productList: any[], type: ProductType): AvailabilityItem[] => {
       return productList.map(product => {
         // Determinar estado basado en banderas de stock
-        let availabilityStatus: 'available' | 'low_stock' | 'unavailable' = 'available';
+        let availabilityStatus: AvailabilityStatus = 'available';
         let reason: string | null = null;
         
         if (product.out_of_stock_reason || product.manualStockStatus === 'out') {
@@ -158,12 +153,9 @@ export async function GET() {
       },
     };
 
-    return NextResponse.json({
-      success: true,
-      data: response,
-    });
+    return NextResponse.json(response);
   } catch (error) {
-    console.error('Error in availability GET:', error);
+    console.error('Error fetching availability:', error);
     return NextResponse.json(
       {
         success: false,
@@ -226,6 +218,23 @@ export async function POST(request: Request) {
     
     if (result.error) {
       throw result.error;
+    }
+
+    // Opcional: Registrar en historial si existe la tabla
+    try {
+      await db.insert('availability_history', {
+        id: `hist_${productId}_${Date.now()}`,
+        productId,
+        productType,
+        previousStatus: 'available', // Podría obtenerse del estado anterior
+        newStatus: availabilityStatus,
+        reason: reason || null,
+        staffId: 'current_user', // Obtener del auth context
+        createdAt: new Date().toISOString(),
+      });
+    } catch (historyError) {
+      // Ignorar error si la tabla no existe
+      console.warn('Could not log to availability_history:', historyError);
     }
 
     return NextResponse.json({ success: true });
