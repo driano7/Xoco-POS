@@ -35,6 +35,7 @@ import { useMenuOptions } from '@/hooks/use-menu-options';
 import type { MenuItem } from '@/hooks/use-menu-options';
 
 type ProductType = 'beverage' | 'food' | 'package';
+type AvailabilityStatus = 'available' | 'low_stock' | 'unavailable';
 
 interface AvailabilityItem {
   id: string;
@@ -43,7 +44,7 @@ interface AvailabilityItem {
   label: string;
   category?: string | undefined;
   subcategory?: string | null;
-  isAvailable: boolean;
+  availabilityStatus: AvailabilityStatus;
   reason?: string | null;
   lastModified?: string;
   modifiedBy?: string;
@@ -81,7 +82,7 @@ const PRODUCT_TYPE_CONFIG = {
 
 const AvailabilitySection = ({ section, onUpdateAvailability }: { 
   section: AvailabilitySection; 
-  onUpdateAvailability: (productId: string, productType: ProductType, isAvailable: boolean, reason: string) => void;
+  onUpdateAvailability: (productId: string, productType: ProductType, availabilityStatus: AvailabilityStatus, reason: string) => void;
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -143,17 +144,38 @@ const AvailabilitySection = ({ section, onUpdateAvailability }: {
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => onUpdateAvailability(item.id, item.productType, !item.isAvailable, 'Cambio manual')}
-                      className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
-                        item.isAvailable
-                          ? 'bg-green-100 text-green-700 hover:bg-green-200'
-                          : 'bg-red-100 text-red-700 hover:bg-red-200'
-                      }`}
-                      disabled={false} // Se puede habilitar cuando se implemente el endpoint
-                    >
-                      {item.isAvailable ? 'Disponible' : 'No disponible'}
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => onUpdateAvailability(item.id, item.productType, 'available', 'Disponible')}
+                        className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${
+                          item.availabilityStatus === 'available'
+                            ? 'bg-green-100 text-green-700'
+                            : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                        }`}
+                      >
+                        ✓
+                      </button>
+                      <button
+                        onClick={() => onUpdateAvailability(item.id, item.productType, 'low_stock', 'Poca disponibilidad')}
+                        className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${
+                          item.availabilityStatus === 'low_stock'
+                            ? 'bg-yellow-100 text-yellow-700'
+                            : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                        }`}
+                      >
+                        ⚠
+                      </button>
+                      <button
+                        onClick={() => onUpdateAvailability(item.id, item.productType, 'unavailable', 'Sin disponibilidad')}
+                        className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${
+                          item.availabilityStatus === 'unavailable'
+                            ? 'bg-red-100 text-red-700'
+                            : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                        }`}
+                      >
+                        ✗
+                      </button>
+                    </div>
                     {item.reason && (
                       <div className="text-xs text-[var(--brand-muted)] max-w-32 text-right">
                         {item.reason}
@@ -231,7 +253,7 @@ const AvailabilityPanel = () => {
   const handleUpdateAvailability = async (
     productId: string,
     productType: ProductType,
-    isAvailable: boolean,
+    availabilityStatus: AvailabilityStatus,
     reason: string
   ) => {
     if (!user) return;
@@ -245,7 +267,7 @@ const AvailabilityPanel = () => {
         body: JSON.stringify({
           productId,
           productType,
-          isAvailable,
+          availabilityStatus,
           reason,
         }),
       });
@@ -274,7 +296,7 @@ const AvailabilityPanel = () => {
       label: option.label,
       category: option.category || undefined,
       subcategory: option.subcategory || null,
-      isAvailable: true, // Por defecto, hasta cargar de BD
+      availabilityStatus: 'available', // Por defecto, hasta cargar de BD
       reason: null,
       lastModified: undefined,
       modifiedBy: undefined,
@@ -289,25 +311,29 @@ const AvailabilityPanel = () => {
 
   // Si no hay datos de BD, usar datos de los dropdowns
   if (!isLoading && !error && availabilityData.beverage.items.length === 0) {
-    availabilityData.beverage.items = mapMenuOptionsToAvailability(beverageOptions, 'beverage');
+    const beverageItems = mapMenuOptionsToAvailability(beverageOptions, 'beverage');
+    const foodItems = mapMenuOptionsToAvailability(foodOptions, 'food');
+    const packageItems = mapMenuOptionsToAvailability(packageOptions, 'package');
+
+    availabilityData.beverage.items = beverageItems;
     availabilityData.beverage.stats = {
-      total: beverageOptions.length,
-      available: beverageOptions.length,
-      unavailable: 0,
+      total: beverageItems.length,
+      available: beverageItems.filter(item => item.availabilityStatus === 'available').length,
+      unavailable: beverageItems.filter(item => item.availabilityStatus === 'unavailable').length,
     };
 
-    availabilityData.food.items = mapMenuOptionsToAvailability(foodOptions, 'food');
+    availabilityData.food.items = foodItems;
     availabilityData.food.stats = {
-      total: foodOptions.length,
-      available: foodOptions.length,
-      unavailable: 0,
+      total: foodItems.length,
+      available: foodItems.filter(item => item.availabilityStatus === 'available').length,
+      unavailable: foodItems.filter(item => item.availabilityStatus === 'unavailable').length,
     };
 
-    availabilityData.package.items = mapMenuOptionsToAvailability(packageOptions, 'package');
+    availabilityData.package.items = packageItems;
     availabilityData.package.stats = {
-      total: packageOptions.length,
-      available: packageOptions.length,
-      unavailable: 0,
+      total: packageItems.length,
+      available: packageItems.filter(item => item.availabilityStatus === 'available').length,
+      unavailable: packageItems.filter(item => item.availabilityStatus === 'unavailable').length,
     };
   }
 

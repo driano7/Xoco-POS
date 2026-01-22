@@ -8041,16 +8041,16 @@ const PrepTaskDetailContent = ({
       ? orderItems
       : displayProductName !== 'Sin producto'
         ? [
-          {
-            productId: task.orderItem?.productId ?? task.product?.id ?? null,
-            name: displayProductName,
-            quantity: displayQuantity,
-            price: task.orderItem?.price ?? null,
-            category: task.product?.category ?? null,
-            subcategory: task.product?.subcategory ?? null,
-          },
-        ]
-        : [];
+            {
+              productId: task.orderItem?.productId ?? task.product?.id ?? null,
+              name: displayProductName,
+              quantity: displayQuantity,
+              price: task.orderItem?.price ?? null,
+              category: task.product?.category ?? null,
+              subcategory: task.product?.subcategory ?? null,
+            },
+          ]
+        : orderItems; // Siempre fallback a orderItems aunque esté vacío
   const handlerDisplayName = getPrepTaskHandlerShortName(task);
   const customerLabel =
     task.customer?.name?.trim() ||

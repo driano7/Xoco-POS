@@ -200,16 +200,11 @@ export async function GET() {
 // POST - Actualizar disponibilidad de un producto
 export async function POST(request: Request) {
   try {
-    const body: AvailabilityRequest = await request.json();
-    const { productId, productType, isAvailable, reason } = body;
+    const { productId, productType, availabilityStatus, reason } = await request.json();
 
-    // Validar datos
-    if (!productId || !productType || typeof isAvailable !== 'boolean') {
+    if (!productId || !productType || !availabilityStatus) {
       return NextResponse.json(
-        {
-          success: false,
-          error: 'Datos inválidos: se requiere productId, productType e isAvailable',
-        },
+        { success: false, error: 'Missing required fields' },
         { status: 400 }
       );
     }
@@ -225,12 +220,12 @@ export async function POST(request: Request) {
     }
 
     const existingRecord = result.data as any;
-    const currentStatus = existingRecord?.isAvailable ? 1 : 0;
+    const currentStatus = existingRecord?.availabilityStatus || 'available';
 
     if (existingRecord) {
       // Actualizar registro existente
       const updateData = {
-        isAvailable: isAvailable ? 1 : 0,
+        availabilityStatus,
         reason: reason || null,
         updatedAt: new Date().toISOString(),
       };
@@ -246,7 +241,7 @@ export async function POST(request: Request) {
         productId,
         productType,
         previousStatus: currentStatus,
-        newStatus: isAvailable ? 1 : 0,
+        newStatus: availabilityStatus,
         reason: reason || null,
         createdAt: new Date().toISOString(),
       });
@@ -256,7 +251,7 @@ export async function POST(request: Request) {
         id: `avail_${productId}_${Date.now()}`,
         productId,
         productType,
-        isAvailable: isAvailable ? 1 : 0,
+        availabilityStatus,
         reason: reason || null,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -272,27 +267,20 @@ export async function POST(request: Request) {
       await db.insert(AVAILABILITY_HISTORY_TABLE, {
         productId,
         productType,
-        previousStatus: 0, // Antes no existía
-        newStatus: isAvailable ? 1 : 0,
+        previousStatus: 'available', // Antes no existía
+        newStatus: availabilityStatus,
         reason: reason || null,
         createdAt: new Date().toISOString(),
       });
     }
 
-    // Obtener datos actualizados para respuesta
-    const updatedAvailability = await getAvailabilityFromDB();
-
-    return NextResponse.json({
-      success: true,
-      data: updatedAvailability,
-      message: `Disponibilidad actualizada para ${productId}`,
-    });
+    return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('Error in availability POST:', error);
+    console.error('Error updating availability:', error);
     return NextResponse.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : 'Error al actualizar disponibilidad',
+      { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Error al actualizar disponibilidad' 
       },
       { status: 500 }
     );

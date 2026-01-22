@@ -1,5 +1,5 @@
 -- Tablas para gestionar disponibilidad de productos
--- Versión para Supabase (sin triggers ni IF NOT EXISTS en CREATE TRIGGER)
+-- Versión corregida para compatibilidad con el código actual
 
 -- Tabla de disponibilidad de productos
 CREATE TABLE product_availability (
@@ -36,4 +36,7 @@ CREATE INDEX availability_history_product_idx ON availability_history(productId)
 CREATE INDEX availability_history_staff_idx ON availability_history(staffId);
 CREATE INDEX availability_history_created_idx ON availability_history(createdAt);
 
--- NOTA: Supabase no soporta triggers, el updatedAt se manejará desde la aplicación
+-- NOTA: Este SQL es compatible con el código actualizado que usa:
+-- - availabilityStatus (TEXT) en lugar de isAvailable (INTEGER)
+-- - 3 estados: 'available', 'low_stock', 'unavailable'
+-- - Soporte completo para el panel de disponibilidad
