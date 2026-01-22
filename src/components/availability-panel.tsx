@@ -130,7 +130,13 @@ const AvailabilitySection = ({ section, onUpdateAvailability }: {
                   className="flex items-center justify-between rounded-lg border border-gray-200 p-3 bg-white dark:border-gray-700 dark:bg-gray-800"
                 >
                   <div className="flex-1">
-                    <p className="font-medium text-primary-900 dark:text-white">
+                    <p className={`font-medium ${
+                      item.availabilityStatus === 'low_stock' 
+                        ? 'text-yellow-600 dark:text-yellow-400' 
+                        : item.availabilityStatus === 'unavailable'
+                        ? 'text-red-600 dark:text-red-400'
+                        : 'text-primary-900 dark:text-white'
+                    }`}>
                       {item.label}
                     </p>
                     <p className="text-sm text-[var(--brand-muted)]">
