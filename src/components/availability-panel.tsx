@@ -79,7 +79,10 @@ const PRODUCT_TYPE_CONFIG = {
   },
 } as const;
 
-const AvailabilitySection = ({ section }: { section: AvailabilitySection }) => {
+const AvailabilitySection = ({ section, onUpdateAvailability }: { 
+  section: AvailabilitySection; 
+  onUpdateAvailability: (productId: string, productType: ProductType, isAvailable: boolean, reason: string) => void;
+}) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
   return (
@@ -141,7 +144,7 @@ const AvailabilitySection = ({ section }: { section: AvailabilitySection }) => {
                   </div>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => handleUpdateAvailability(item.id, item.productType, !item.isAvailable, 'Cambio manual')}
+                      onClick={() => onUpdateAvailability(item.id, item.productType, !item.isAvailable, 'Cambio manual')}
                       className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
                         item.isAvailable
                           ? 'bg-green-100 text-green-700 hover:bg-green-200'
@@ -268,7 +271,7 @@ const AvailabilityPanel = () => {
       id: option.id,
       productId: option.id,
       productType,
-      label: option.label || '',
+      label: option.name || '',
       category: option.category || undefined,
       subcategory: option.subcategory || null,
       isAvailable: true, // Por defecto, hasta cargar de BD
@@ -345,9 +348,9 @@ const AvailabilityPanel = () => {
       )}
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <AvailabilitySection section={availabilityData.beverage} />
-        <AvailabilitySection section={availabilityData.food} />
-        <AvailabilitySection section={availabilityData.package} />
+        <AvailabilitySection section={availabilityData.beverage} onUpdateAvailability={handleUpdateAvailability} />
+        <AvailabilitySection section={availabilityData.food} onUpdateAvailability={handleUpdateAvailability} />
+        <AvailabilitySection section={availabilityData.package} onUpdateAvailability={handleUpdateAvailability} />
       </div>
     </div>
   );
