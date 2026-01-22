@@ -26,22 +26,33 @@
  * --------------------------------------------------------------------
  */
 
-'use client';
+import { NextResponse } from 'next/server';
+import { 
+  markSupabaseHealthy, 
+  flushPendingOperations 
+} from '@/lib/offline-sync';
 
-import { PosDashboard } from '@/components/pos-dashboard';
-import { LoginPanel } from '@/components/auth/login-panel';
-import { AvailabilityPanel } from '@/components/availability-panel';
-import { useAuth } from '@/providers/auth-provider';
-
-export default function Page() {
-  const { user } = useAuth();
-  if (!user) {
-    return <LoginPanel />;
+// POST - Forzar recuperación de Supabase
+export async function POST() {
+  try {
+    // Forzar que Supabase se marque como saludable
+    markSupabaseHealthy();
+    
+    // Intentar sincronizar operaciones pendientes
+    await flushPendingOperations();
+    
+    return NextResponse.json({
+      success: true,
+      message: 'Estado de Supabase reseteado y sincronización iniciada',
+    });
+  } catch (error) {
+    console.error('Error resetting Supabase status:', error);
+    return NextResponse.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : 'Error desconocido',
+      },
+      { status: 500 }
+    );
   }
-  return (
-    <div className="space-y-8">
-      <AvailabilityPanel />
-      <PosDashboard />
-    </div>
-  );
 }
