@@ -1962,100 +1962,24 @@ const ensureProducts = async (items: IncomingOrderItem[]) => {
 
 export async function GET(request: Request) {
   try {
-    await db.syncPending();
-
+    // Forzar uso de Supabase - eliminar fallback a SQLite
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
 
-    // Use the unified database manager with automatic fallback
-    const result = await db.select(ORDERS_TABLE, {
-      columns: [
-        'id',
-        'userId',
-        'orderNumber',
-        'status',
-        'total',
-        'currency',
-        'items',
-        'totals',
-        'createdAt',
-        'updatedAt',
-        'queuedPaymentMethod',
-        'tipAmount',
-        'tipPercent',
-        'deliveryTipAmount',
-        'deliveryTipPercent',
-        'metadata',
-        'notes',
-        'message',
-        'instructions',
-        'customer_name',
-        'pos_customer_id',
-        'shipping_contact_phone',
-        'shipping_contact_is_whatsapp',
-        'shipping_address_id',
-        'user:users(' + [
-          '"firstNameEncrypted"',
-          '"firstNameIv"',
-          '"firstNameTag"',
-          '"firstNameSalt"',
-          '"lastNameEncrypted"',
-          '"lastNameIv"',
-          '"lastNameTag"',
-          '"lastNameSalt"',
-          '"phoneEncrypted"',
-          '"phoneIv"',
-          '"phoneTag"',
-          '"phoneSalt"',
-          '"clientId"',
-          '"email"',
-        ].join(',') + ')',
-        `order_items:${ORDER_ITEMS_TABLE}(id,"productId",quantity,price)`,
-      ],
-      filters: status ? { status } : undefined,
-      orderBy: { column: 'createdAt', ascending: false },
-      limit: MAX_RESULTS,
-    });
-
-    if (result.error) {
-      console.error('Error fetching orders:', result.error);
+    // Usar directamente Supabase sin fallback
+    const remoteData = await loadOrdersFromSupabase(status);
+    markSupabaseHealthy();
+    return NextResponse.json({ success: true, data: remoteData });
+  } catch (error) {
+    if (isLikelyNetworkError(error)) {
+      markSupabaseFailure(error);
       return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Failed to fetch orders',
-          source: result.source,
-          fallbackUsed: result.fallbackUsed
-        }, 
-        { status: 500 }
+        { success: false, error: 'Supabase no disponible. Intentaremos sincronizar en cuanto vuelva.' },
+        { status: 503 }
       );
     }
-
-    const ordersData = (
-      Array.isArray(result.data) 
-        ? result.data.filter((row) => !!row && typeof row === 'object' && !('error' in row)) 
-        : []
-    ) as Array<Record<string, unknown>>;
-
-    // Use appropriate loader based on source
-    const loader = result.source === 'sqlite' ? sqliteOrdersLoader : supabaseOrdersLoader;
-    const mappedData = await mapOrdersPayload(ordersData, loader);
-
-    return NextResponse.json({ 
-      success: true, 
-      data: mappedData,
-      source: result.source,
-      fallbackUsed: result.fallbackUsed
-    });
-  } catch (error) {
-    console.error('Error in GET /api/orders:', error);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: 'Internal server error',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      }, 
-      { status: 500 }
-    );
+    console.error('Error fetching orders:', error);
+    return NextResponse.json({ success: false, error: 'Failed to fetch orders' }, { status: 500 });
   }
 }
 

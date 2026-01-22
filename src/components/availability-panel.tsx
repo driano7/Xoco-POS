@@ -28,11 +28,11 @@
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useCatalog } from '@/hooks/use-catalog';
 import { useAuth } from '@/providers/auth-provider';
 import { useMenuOptions } from '@/hooks/use-menu-options';
-import type { CatalogProduct } from '@/lib/api';
+import type { MenuItem } from '@/hooks/use-menu-options';
 
 type ProductType = 'beverage' | 'food' | 'package';
 
@@ -200,7 +200,7 @@ const AvailabilityPanel = () => {
   const [error, setError] = useState<string | null>(null);
 
   // Función para obtener la disponibilidad desde la BD
-  const fetchAvailability = async () => {
+  const fetchAvailability = useCallback(async () => {
     if (!user) return;
     
     setIsLoading(true);
@@ -225,7 +225,7 @@ const AvailabilityPanel = () => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [user]);
 
   // Función para cambiar disponibilidad
   const handleUpdateAvailability = async (
@@ -264,14 +264,14 @@ const AvailabilityPanel = () => {
 
   // Mapear opciones del menú a datos de disponibilidad
   const mapMenuOptionsToAvailability = (
-    options: CatalogProduct[],
+    options: MenuItem[],
     productType: ProductType
   ): AvailabilityItem[] => {
     return options.map((option) => ({
       id: option.id,
-      productId: option.id,
+      productId: option.productId,
       productType,
-      label: option.name || '',
+      label: option.label,
       category: option.category || undefined,
       subcategory: option.subcategory || null,
       isAvailable: true, // Por defecto, hasta cargar de BD
@@ -285,7 +285,7 @@ const AvailabilityPanel = () => {
     if (user) {
       fetchAvailability();
     }
-  }, [user]);
+  }, [user, fetchAvailability]);
 
   // Si no hay datos de BD, usar datos de los dropdowns
   if (!isLoading && !error && availabilityData.beverage.items.length === 0) {

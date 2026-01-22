@@ -44,6 +44,7 @@ import { CustomerLoyaltyCoffees } from '@/components/customer-loyalty-coffees';
 import { SearchableDropdown } from '@/components/searchable-dropdown';
 import { CofeprisPanel } from '@/components/compliance/sanitary-compliance-panel';
 import { VirtualTicket, type VirtualTicketProps } from '@xoco/ui';
+import AvailabilityPanel from '@/components/availability-panel';
 import { toCanvas, toPng } from 'html-to-image';
 import { ChartButton } from '@/components/chart-button';
 import {
@@ -4683,6 +4684,18 @@ export function PosDashboard() {
                 replayingId={ticketReplayState.id}
                 replayError={ticketReplayState.error}
               />
+            </section>
+
+            <section id="availability-panel" className="card space-y-6 p-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="badge">Disponibilidad de productos</p>
+                  <p className="text-sm text-[var(--brand-muted)]">
+                    Gestiona la disponibilidad de bebidas, alimentos y paquetes del menú
+                  </p>
+                </div>
+              </div>
+              <AvailabilityPanel />
             </section>
 
             <section id="loyalty-panel" className="card space-y-6 p-6">
